@@ -1,3 +1,5 @@
+import type { RequestDebugInfoWire } from './agent-stream-protocol'
+
 // Shared types for the agent loop event protocol.
 // Used by both main-process cron loop and renderer interactive loop.
 
@@ -103,6 +105,7 @@ export type InteractiveAgentEvent =
       statusCode?: number
       reason: string
     }
+  | { type: 'request_debug'; debugInfo: RequestDebugInfoWire }
   | {
       type: 'iteration_end'
       toolResults: { toolUseId: string; content: AgentToolResultContent; isError?: boolean }[]
