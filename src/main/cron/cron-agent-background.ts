@@ -19,6 +19,7 @@ import type {
   AgentToolResultContent
 } from '../../shared/agent-loop-types'
 export type { ToolCallState, InteractiveAgentEvent }
+import type { RequestDebugInfoWire } from '../../shared/agent-stream-protocol'
 import { executePluginAction } from '../ipc/channel-handlers'
 import { getSshClientForGitExec } from '../ipc/ssh-handlers'
 import { safeSendToAllWindows } from '../window-ipc'
@@ -27,6 +28,10 @@ import {
   resolveResponsesWebsocketConfig,
   type ResponsesWebsocketMode
 } from '../../shared/openai-responses-websocket'
+import {
+  summarizeOpenAITextAndImages,
+  supportsOpenAIImageParts
+} from '../../shared/openai-message-support'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
 
 const DEFAULT_AGENT = 'CronAgent'
@@ -270,6 +275,7 @@ interface StreamEvent {
     | 'image_error'
     | 'message_end'
     | 'error'
+    | 'request_debug'
   thinking?: string
   thinkingEncryptedContent?: string
   thinkingEncryptedProvider?: 'anthropic' | 'openai-responses' | 'google'
@@ -290,6 +296,7 @@ interface StreamEvent {
   timing?: RequestTiming
   providerResponseId?: string
   error?: { type?: string; message?: string }
+  debugInfo?: RequestDebugInfoWire
 }
 
 export interface ToolContext {
@@ -414,6 +421,8 @@ type SearchMeta = {
   warnings?: string[]
 }
 
+const CRON_SEARCH_MAX_RESULTS = 20
+
 function shouldUseCompactSearchPayload(meta: SearchMeta, error?: string): boolean {
   return !error && !meta.truncated && !meta.timedOut && (meta.warnings?.length ?? 0) === 0
 }
@@ -425,19 +434,21 @@ function formatGlobToolResult(args: {
   warnings?: string[]
   error?: string
 }): string {
+  const matches = args.matches.slice(0, CRON_SEARCH_MAX_RESULTS)
+  const truncated = args.truncated === true || args.matches.length > matches.length
   const meta: SearchMeta = {
-    truncated: args.truncated === true,
+    truncated,
     timedOut: false,
-    limitReason: args.limitReason ?? null,
+    limitReason: args.limitReason ?? (truncated ? 'max_results' : null),
     warnings: args.warnings ?? []
   }
 
   if (shouldUseCompactSearchPayload(meta, args.error)) {
-    return encodeStructuredToolResult(args.matches)
+    return encodeStructuredToolResult(matches)
   }
 
   return encodeStructuredToolResult({
-    matches: args.matches,
+    matches,
     truncated: meta.truncated,
     timedOut: false,
     limitReason: meta.limitReason,
@@ -454,19 +465,21 @@ function formatGrepToolResult(args: {
   warnings?: string[]
   error?: string
 }): string {
+  const matches = args.matches.slice(0, CRON_SEARCH_MAX_RESULTS)
+  const truncated = args.truncated === true || args.matches.length > matches.length
   const meta: SearchMeta = {
-    truncated: args.truncated === true,
+    truncated,
     timedOut: args.timedOut === true,
-    limitReason: args.limitReason ?? null,
+    limitReason: args.limitReason ?? (truncated ? 'max_results' : null),
     warnings: args.warnings ?? []
   }
 
   if (shouldUseCompactSearchPayload(meta, args.error)) {
-    return encodeStructuredToolResult(args.matches)
+    return encodeStructuredToolResult(matches)
   }
 
   return encodeStructuredToolResult({
-    matches: args.matches,
+    matches,
     truncated: meta.truncated,
     timedOut: meta.timedOut,
     limitReason: meta.limitReason,
@@ -911,6 +924,47 @@ function maskHeaders(headers: Record<string, string>): Record<string, string> {
   return masked
 }
 
+function buildRequestDebugInfo(
+  config: ProviderConfig,
+  args: {
+    url: string
+    method: string
+    headers: Record<string, string>
+    body?: string
+    contextWindowBody?: string
+    transport: 'http' | 'websocket'
+    fallbackReason?: string
+    reusedConnection?: boolean
+    websocketRequestKind?: 'warmup' | 'full' | 'incremental'
+    websocketIncrementalReason?: string
+    previousResponseId?: string
+  }
+): RequestDebugInfoWire {
+  return {
+    url: args.url,
+    method: args.method,
+    headers: maskHeaders(args.headers),
+    ...(typeof args.body === 'string' ? { body: args.body } : {}),
+    ...(typeof args.contextWindowBody === 'string'
+      ? { contextWindowBody: args.contextWindowBody }
+      : {}),
+    timestamp: Date.now(),
+    ...(config.providerId ? { providerId: config.providerId } : {}),
+    ...(config.providerBuiltinId ? { providerBuiltinId: config.providerBuiltinId } : {}),
+    ...(config.model ? { model: config.model } : {}),
+    transport: args.transport,
+    ...(args.fallbackReason ? { fallbackReason: args.fallbackReason } : {}),
+    ...(typeof args.reusedConnection === 'boolean'
+      ? { reusedConnection: args.reusedConnection }
+      : {}),
+    ...(args.websocketRequestKind ? { websocketRequestKind: args.websocketRequestKind } : {}),
+    ...(args.websocketIncrementalReason
+      ? { websocketIncrementalReason: args.websocketIncrementalReason }
+      : {}),
+    ...(args.previousResponseId ? { previousResponseId: args.previousResponseId } : {})
+  }
+}
+
 interface FetchReaderLike {
   read(): Promise<{ done: boolean; value?: Uint8Array }>
 }
@@ -1073,6 +1127,18 @@ function formatOpenAIResponsesImagePart(block: ImageLikeBlock): unknown | null {
 function formatOpenAIChatToolResultContent(content: ToolResultContent): unknown {
   if (!Array.isArray(content)) return content
 
+  const textParts = content
+    .filter((block): block is Extract<ToolResultContentBlock, { type: 'text' }> => {
+      return block.type === 'text'
+    })
+    .map((block) => block.text)
+  const imageCount = content.filter((block) => block.type === 'image').length
+
+  // Chat-compatible tool messages are text-only on many OpenAI-compatible backends.
+  if (imageCount > 0 && !supportsOpenAIImageParts('chat-completions', 'tool')) {
+    return summarizeOpenAITextAndImages(textParts, imageCount)
+  }
+
   const parts: unknown[] = []
   for (const block of content) {
     if (block.type === 'text') {
@@ -1135,7 +1201,9 @@ function formatOpenAIChatMessages(
         if (block.type === 'text') {
           parts.push({ type: 'text', text: block.text })
         } else if (block.type === 'image') {
-          const imagePart = formatOpenAIChatImagePart(block)
+          const imagePart = supportsOpenAIImageParts('chat-completions', 'user')
+            ? formatOpenAIChatImagePart(block)
+            : null
           if (imagePart) parts.push(imagePart)
         }
       }
@@ -1244,7 +1312,9 @@ function formatOpenAIResponsesMessages(
         if (block.type === 'text') {
           parts.push({ type: 'input_text', text: block.text })
         } else if (block.type === 'image') {
-          const imagePart = formatOpenAIResponsesImagePart(block)
+          const imagePart = supportsOpenAIImageParts('responses', 'user')
+            ? formatOpenAIResponsesImagePart(block)
+            : null
           if (imagePart) parts.push(imagePart)
         }
       }
@@ -1584,6 +1654,17 @@ async function* sendOpenAIChat(
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   if (config.serviceTier) headers.service_tier = config.serviceTier
   applyHeaderOverrides(headers, config)
+  const bodyStr = JSON.stringify(body)
+  yield {
+    type: 'request_debug',
+    debugInfo: buildRequestDebugInfo(config, {
+      url,
+      method: 'POST',
+      headers,
+      body: bodyStr,
+      transport: 'http'
+    })
+  }
   console.log('[CronAgent][OpenAI Chat] request', {
     url,
     model: config.model,
@@ -1594,7 +1675,7 @@ async function* sendOpenAIChat(
     {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: bodyStr,
       signal
     },
     config.allowInsecureTls ?? true,
@@ -1807,12 +1888,23 @@ async function* sendAnthropic(
   }
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   applyHeaderOverrides(headers, config)
+  const bodyStr = JSON.stringify(body)
+  yield {
+    type: 'request_debug',
+    debugInfo: buildRequestDebugInfo(config, {
+      url,
+      method: 'POST',
+      headers,
+      body: bodyStr,
+      transport: 'http'
+    })
+  }
   const response = await sendFetchRequest(
     url,
     {
       method: 'POST',
       headers,
-      body: JSON.stringify(body),
+      body: bodyStr,
       signal
     },
     config.allowInsecureTls ?? true,
@@ -1998,6 +2090,7 @@ async function* sendOpenAIResponses(
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   if (config.serviceTier) headers.service_tier = config.serviceTier
   applyHeaderOverrides(headers, config)
+  const bodyStr = JSON.stringify(body)
   let emittedThinkingDelta = false
   const emittedThinkingEncrypted = new Set<string>()
   const tryBuildThinkingDeltaEvent = (thinking: unknown): StreamEvent | null => {
@@ -2271,12 +2364,22 @@ async function* sendOpenAIResponses(
   }
 
   const streamHttpResponse = async function* (): AsyncIterable<StreamEvent> {
+    yield {
+      type: 'request_debug',
+      debugInfo: buildRequestDebugInfo(config, {
+        url,
+        method: 'POST',
+        headers,
+        body: bodyStr,
+        transport: 'http'
+      })
+    }
     const response = await sendFetchRequest(
       url,
       {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: bodyStr,
         signal
       },
       config.allowInsecureTls ?? true,
@@ -2350,11 +2453,29 @@ async function* sendOpenAIResponses(
     sessionKey: connectionKey,
     websocketUrl,
     headers,
-    httpBody: JSON.stringify(body),
+    httpBody: bodyStr,
     useSystemProxy: config.useSystemProxy ?? false,
     allowInsecureTls: config.allowInsecureTls ?? true,
     signal,
     label: config.sessionId ?? config.providerId ?? config.model,
+    onDebug: (debugInfo) => {
+      pushEvent({
+        type: 'request_debug',
+        debugInfo: buildRequestDebugInfo(config, {
+          url: debugInfo.url,
+          method: 'WEBSOCKET',
+          headers: debugInfo.headers,
+          body: debugInfo.body,
+          contextWindowBody: debugInfo.contextWindowBody,
+          transport: debugInfo.transport,
+          fallbackReason: debugInfo.fallbackReason,
+          reusedConnection: debugInfo.reusedConnection,
+          websocketRequestKind: debugInfo.websocketRequestKind,
+          websocketIncrementalReason: debugInfo.websocketIncrementalReason,
+          previousResponseId: debugInfo.previousResponseId
+        })
+      })
+    },
     onEvent: (eventType, payload) => {
       for (const event of handleResponseEvent(
         eventType,
@@ -2475,6 +2596,14 @@ async function* runAgentLoop(
             return
           }
           switch (event.type) {
+            case 'request_debug':
+              if (event.debugInfo) {
+                yield {
+                  type: 'request_debug',
+                  debugInfo: event.debugInfo
+                }
+              }
+              break
             case 'thinking_delta':
               streamedContent = true
               yield { type: 'thinking_delta', thinking: event.thinking ?? '' }
@@ -3413,7 +3542,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
   const globHandler: ToolHandler = {
     definition: {
       name: 'Glob',
-      description: 'Fast file pattern matching tool',
+      description: 'Fast file pattern matching tool (returns at most 20 matches)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3433,7 +3562,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
           : pattern
         const result = await sshExecForCron(
           ctx.sshConnectionId,
-          `cd ${shellEscape(cwd)} && find . -type f ${nameOrPath} ${shellEscape(remotePattern)} -print | head -1000`,
+          `cd ${shellEscape(cwd)} && find . -type f ${nameOrPath} ${shellEscape(remotePattern)} -print | head -${CRON_SEARCH_MAX_RESULTS}`,
           60_000
         )
         if (result.exitCode !== 0) {
@@ -3442,12 +3571,21 @@ function buildToolHandlers(): Record<string, ToolHandler> {
             error: result.stderr || `Remote glob failed: ${pattern}`
           })
         }
+        const matches = result.stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) => path.posix.join(cwd, line.replace(/^\.\//, '')))
+        const truncated = matches.length >= CRON_SEARCH_MAX_RESULTS
         return formatGlobToolResult({
-          matches: result.stdout
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((line) => path.posix.join(cwd, line.replace(/^\.\//, '')))
+          matches,
+          truncated,
+          limitReason: truncated ? 'max_results' : null,
+          warnings: truncated
+            ? buildCronSearchWarnings([
+                `Cron glob reached the ${CRON_SEARCH_MAX_RESULTS} match limit`
+              ])
+            : []
         })
       }
       try {
@@ -3471,7 +3609,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
   const grepHandler: ToolHandler = {
     definition: {
       name: 'Grep',
-      description: 'Search file contents using regular expressions',
+      description: 'Search file contents using regular expressions (returns at most 20 matches)',
       inputSchema: {
         type: 'object',
         properties: {
@@ -3506,7 +3644,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         if (ctx.sshConnectionId) {
           const result = await sshExecForCron(
             ctx.sshConnectionId,
-            `cd ${shellEscape(searchRoot)} && grep -RIn --include=${shellEscape(include)} ${shellEscape(pattern)} . 2>/dev/null | head -200`,
+            `cd ${shellEscape(searchRoot)} && grep -RIn --include=${shellEscape(include)} ${shellEscape(pattern)} . 2>/dev/null | head -${CRON_SEARCH_MAX_RESULTS}`,
             60_000
           )
           if (result.exitCode !== 0 && result.exitCode !== 1) {
@@ -3515,20 +3653,29 @@ function buildToolHandlers(): Record<string, ToolHandler> {
               error: result.stderr || `Remote grep failed: ${pattern}`
             })
           }
+          const matches = result.stdout
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .map((line) => {
+              const match = line.match(/^(.+?):(\d+):(.*)$/)
+              if (!match) return null
+              return {
+                file: path.posix.join(searchRoot, match[1].replace(/^\.\//, '')),
+                line: Number(match[2]),
+                text: match[3]
+              }
+            })
+            .filter((item): item is { file: string; line: number; text: string } => !!item)
+          const truncated = matches.length >= CRON_SEARCH_MAX_RESULTS
           return formatGrepToolResult({
-            matches: result.stdout
-              .split(/\r?\n/)
-              .filter(Boolean)
-              .map((line) => {
-                const match = line.match(/^(.+?):(\d+):(.*)$/)
-                if (!match) return null
-                return {
-                  file: path.posix.join(searchRoot, match[1].replace(/^\.\//, '')),
-                  line: Number(match[2]),
-                  text: match[3]
-                }
-              })
-              .filter((item): item is { file: string; line: number; text: string } => !!item)
+            matches,
+            truncated,
+            limitReason: truncated ? 'max_results' : null,
+            warnings: truncated
+              ? buildCronSearchWarnings([
+                  `Cron grep reached the ${CRON_SEARCH_MAX_RESULTS} match limit`
+                ])
+              : []
           })
         }
         const files = await glob(include, {
@@ -3553,12 +3700,14 @@ function buildToolHandlers(): Record<string, ToolHandler> {
             const line = lines[index]
             if (!regex.test(line)) continue
             results.push({ file, line: index + 1, text: line })
-            if (results.length >= 200) {
+            if (results.length >= CRON_SEARCH_MAX_RESULTS) {
               return formatGrepToolResult({
                 matches: results,
                 truncated: true,
                 limitReason: 'max_results',
-                warnings: buildCronSearchWarnings(['Cron grep reached the 200 match limit'])
+                warnings: buildCronSearchWarnings([
+                  `Cron grep reached the ${CRON_SEARCH_MAX_RESULTS} match limit`
+                ])
               })
             }
           }
