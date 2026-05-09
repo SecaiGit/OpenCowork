@@ -20,7 +20,7 @@ async function readInstalledElectronVersion(projectDir) {
 async function main() {
   const projectDir = process.cwd()
   const electronVersion = await readInstalledElectronVersion(projectDir)
-  const ignoreModules = process.platform === 'win32' ? ['node-pty'] : []
+  const ignoreModules = []
 
   console.log(`> Rebuilding native dependencies for Electron ${electronVersion}`)
 
@@ -34,6 +34,8 @@ async function main() {
     arch: process.arch,
     platform: process.platform,
     projectRootPath: projectDir,
+    types: ['prod', 'dev', 'optional'],
+    force: true,
     mode: 'sequential',
     disablePreGypCopy: true,
     ignoreModules

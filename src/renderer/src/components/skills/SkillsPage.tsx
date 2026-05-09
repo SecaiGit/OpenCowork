@@ -16,12 +16,15 @@ import {
   Loader2,
   Settings2,
   ExternalLink,
-  KeyRound
+  KeyRound,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@renderer/lib/utils'
 import {
   useSkillsStore,
+  type SkillInfo,
   type ScanFileInfo,
   type MarketSkillInfo
 } from '@renderer/stores/skills-store'
@@ -39,6 +42,134 @@ import { SkillInstallDialog } from './SkillInstallDialog'
 
 const SKILLS_MARKET_DOCS_URL = 'https://skills.open-cowork.shop/docs'
 const SKILLS_MARKET_DASHBOARD_URL = 'https://skills.open-cowork.shop/dashboard'
+
+interface SkillTreeSkillEntry {
+  type: 'skill'
+  path: string
+  label: string
+  skill: SkillInfo
+}
+
+interface SkillTreeDirectoryEntry {
+  type: 'directory'
+  path: string
+  label: string
+  children: SkillTreeEntry[]
+  count: number
+}
+
+type SkillTreeEntry = SkillTreeSkillEntry | SkillTreeDirectoryEntry
+
+function splitSkillName(name: string): string[] {
+  return name
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+}
+
+function getSkillDisplayName(name: string): string {
+  const segments = splitSkillName(name)
+  return segments[segments.length - 1] ?? name
+}
+
+function getSkillParentPaths(name: string): string[] {
+  const parentSegments = splitSkillName(name).slice(0, -1)
+  const paths: string[] = []
+  let currentPath = ''
+
+  for (const segment of parentSegments) {
+    currentPath = currentPath ? `${currentPath}/${segment}` : segment
+    paths.push(currentPath)
+  }
+
+  return paths
+}
+
+function skillMatchesQuery(skill: SkillInfo, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+
+  return (
+    skill.name.toLowerCase().includes(q) ||
+    splitSkillName(skill.name).some((segment) => segment.toLowerCase().includes(q)) ||
+    skill.description.toLowerCase().includes(q)
+  )
+}
+
+function sortSkillTreeEntries(entries: SkillTreeEntry[]): SkillTreeEntry[] {
+  return entries.sort((left, right) => {
+    if (left.type !== right.type) return left.type === 'directory' ? -1 : 1
+    return left.label.localeCompare(right.label)
+  })
+}
+
+function countSkillTreeEntries(entries: SkillTreeEntry[]): number {
+  return entries.reduce((count, entry) => count + (entry.type === 'skill' ? 1 : entry.count), 0)
+}
+
+function buildSkillTree(skills: SkillInfo[]): SkillTreeEntry[] {
+  interface MutableSkillDirectory {
+    label: string
+    path: string
+    directories: Map<string, MutableSkillDirectory>
+    skills: SkillTreeSkillEntry[]
+  }
+
+  const createDirectory = (label: string, path: string): MutableSkillDirectory => ({
+    label,
+    path,
+    directories: new Map(),
+    skills: []
+  })
+
+  const root = createDirectory('', '')
+
+  for (const skill of skills) {
+    const segments = splitSkillName(skill.name)
+    if (segments.length === 0) continue
+
+    let current = root
+    let currentPath = ''
+    for (const segment of segments.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment
+      let directory = current.directories.get(segment)
+      if (!directory) {
+        directory = createDirectory(segment, currentPath)
+        current.directories.set(segment, directory)
+      }
+      current = directory
+    }
+
+    current.skills.push({
+      type: 'skill',
+      path: skill.name,
+      label: getSkillDisplayName(skill.name),
+      skill
+    })
+  }
+
+  const toEntries = (directory: MutableSkillDirectory): SkillTreeEntry[] => {
+    const directories = [...directory.directories.values()].map<SkillTreeDirectoryEntry>(
+      (child) => {
+        const children = toEntries(child)
+        return {
+          type: 'directory',
+          path: child.path,
+          label: child.label,
+          children,
+          count: countSkillTreeEntries(children)
+        }
+      }
+    )
+
+    return sortSkillTreeEntries([
+      ...directories,
+      ...directory.skills.sort((left, right) => left.label.localeCompare(right.label))
+    ])
+  }
+
+  return toEntries(root)
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -94,6 +225,98 @@ function FileListSection({
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function SkillTreeList({
+  entries,
+  selectedSkill,
+  expandedPaths,
+  forceExpand,
+  level = 0,
+  onToggleDirectory,
+  onSelectSkill
+}: {
+  entries: SkillTreeEntry[]
+  selectedSkill: string | null
+  expandedPaths: Set<string>
+  forceExpand: boolean
+  level?: number
+  onToggleDirectory: (path: string) => void
+  onSelectSkill: (name: string) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-0.5">
+      {entries.map((entry) => {
+        if (entry.type === 'directory') {
+          const expanded = forceExpand || expandedPaths.has(entry.path)
+          return (
+            <div key={`directory:${entry.path}`} className="min-w-0">
+              <button
+                type="button"
+                onClick={() => onToggleDirectory(entry.path)}
+                className="flex w-full items-center gap-1.5 rounded-md py-1.5 pr-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                style={{ paddingLeft: `${8 + level * 12}px` }}
+              >
+                {expanded ? (
+                  <ChevronDown className="size-3 shrink-0" />
+                ) : (
+                  <ChevronRight className="size-3 shrink-0" />
+                )}
+                <FolderOpen className="size-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                <Badge variant="outline" className="h-4 px-1.5 py-0 text-[9px] font-normal">
+                  {entry.count}
+                </Badge>
+              </button>
+              {expanded ? (
+                <SkillTreeList
+                  entries={entry.children}
+                  selectedSkill={selectedSkill}
+                  expandedPaths={expandedPaths}
+                  forceExpand={forceExpand}
+                  level={level + 1}
+                  onToggleDirectory={onToggleDirectory}
+                  onSelectSkill={onSelectSkill}
+                />
+              ) : null}
+            </div>
+          )
+        }
+
+        const selected = selectedSkill === entry.path
+        return (
+          <button
+            key={`skill:${entry.path}`}
+            type="button"
+            onClick={() => onSelectSkill(entry.path)}
+            className={cn(
+              'flex w-full flex-col gap-0.5 rounded-md py-2 pr-2 text-left transition-colors',
+              selected ? 'bg-primary/10 text-primary' : 'text-foreground hover:bg-muted'
+            )}
+            style={{ paddingLeft: `${10 + level * 12}px` }}
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Wand2
+                className={cn(
+                  'size-3.5 shrink-0',
+                  selected ? 'text-primary' : 'text-muted-foreground'
+                )}
+              />
+              <span className="min-w-0 truncate text-xs font-medium">{entry.label}</span>
+            </span>
+            {level > 0 ? (
+              <span className="truncate font-mono text-[10px] text-muted-foreground/70">
+                {entry.path}
+              </span>
+            ) : null}
+            <span className="text-[10px] text-muted-foreground line-clamp-2">
+              {entry.skill.description}
+            </span>
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -284,8 +507,8 @@ export function SkillsPage(): React.JSX.Element {
   const setEditContent = useSkillsStore((s) => s.setEditContent)
   const setMarketQuery = useSkillsStore((s) => s.setMarketQuery)
 
-  // Installed tab search
   const [installedQuery, setInstalledQuery] = useState('')
+  const [expandedSkillPaths, setExpandedSkillPaths] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
     void loadSkills()
@@ -294,13 +517,37 @@ export function SkillsPage(): React.JSX.Element {
 
   const installedNames = useMemo(() => new Set(skills.map((s) => s.name.toLowerCase())), [skills])
 
-  const filteredInstalled = useMemo(() => {
-    if (!installedQuery.trim()) return skills
-    const q = installedQuery.toLowerCase()
-    return skills.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
-    )
-  }, [skills, installedQuery])
+  const filteredInstalled = useMemo(
+    () => skills.filter((skill) => skillMatchesQuery(skill, installedQuery)),
+    [skills, installedQuery]
+  )
+
+  const installedTree = useMemo(() => buildSkillTree(filteredInstalled), [filteredInstalled])
+  const selectedSkillParentPaths = useMemo(() => {
+    return new Set(selectedSkill ? getSkillParentPaths(selectedSkill) : [])
+  }, [selectedSkill])
+  const visibleExpandedSkillPaths = useMemo(() => {
+    if (selectedSkillParentPaths.size === 0) return expandedSkillPaths
+
+    const next = new Set(expandedSkillPaths)
+    for (const path of selectedSkillParentPaths) {
+      next.add(path)
+    }
+    return next
+  }, [expandedSkillPaths, selectedSkillParentPaths])
+  const forceExpandSkillTree = installedQuery.trim().length > 0
+
+  const toggleSkillDirectory = useCallback((path: string): void => {
+    setExpandedSkillPaths((previous) => {
+      const next = new Set(previous)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }, [])
 
   const handleAddSkill = async (): Promise<void> => {
     const result = (await ipcClient.invoke('fs:select-folder')) as {
@@ -509,25 +756,14 @@ export function SkillsPage(): React.JSX.Element {
                 )}
               </div>
             ) : (
-              <div className="flex flex-col gap-0.5">
-                {filteredInstalled.map((skill) => (
-                  <button
-                    key={skill.name}
-                    onClick={() => selectSkill(skill.name)}
-                    className={cn(
-                      'flex flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                      selectedSkill === skill.name
-                        ? 'bg-primary/10 text-primary'
-                        : 'text-foreground hover:bg-muted'
-                    )}
-                  >
-                    <span className="text-xs font-medium truncate">{skill.name}</span>
-                    <span className="text-[10px] text-muted-foreground line-clamp-2">
-                      {skill.description}
-                    </span>
-                  </button>
-                ))}
-              </div>
+              <SkillTreeList
+                entries={installedTree}
+                selectedSkill={selectedSkill}
+                expandedPaths={visibleExpandedSkillPaths}
+                forceExpand={forceExpandSkillTree}
+                onToggleDirectory={toggleSkillDirectory}
+                onSelectSkill={selectSkill}
+              />
             )}
           </div>
         </div>

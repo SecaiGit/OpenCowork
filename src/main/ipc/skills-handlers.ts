@@ -26,6 +26,7 @@ const SKILLS_MARKET_BASE_URL = 'https://skills.open-cowork.shop'
 const SKILLS_MARKET_API_BASE_URL = `${SKILLS_MARKET_BASE_URL}/api/v1`
 const SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills')
 const SKILLS_FILENAME = 'SKILL.md'
+const MAX_SKILL_DIRECTORY_DEPTH = 8
 const TEXT_FILE_EXTENSIONS = new Set([
   '.md',
   '.txt',
@@ -48,6 +49,92 @@ const TEXT_FILE_EXTENSIONS = new Set([
   '.ini',
   '.env'
 ])
+
+interface SkillDirectoryInfo {
+  name: string
+  dir: string
+  manifestPath: string
+}
+
+function normalizeSkillName(name: string): string | null {
+  const trimmed = name.trim().replace(/\\/g, '/')
+  if (!trimmed) return null
+
+  const segments = trimmed.split('/')
+  const hasUnsafeSegment = segments.some(
+    (segment) => !segment || segment === '.' || segment === '..' || segment.includes('\0')
+  )
+
+  if (segments.length > MAX_SKILL_DIRECTORY_DEPTH || hasUnsafeSegment) {
+    return null
+  }
+
+  return segments.join('/')
+}
+
+function resolveSkillDir(name: string): string | null {
+  const normalizedName = normalizeSkillName(name)
+  if (!normalizedName) return null
+
+  const rootDir = path.resolve(SKILLS_DIR)
+  const skillDir = path.resolve(rootDir, ...normalizedName.split('/'))
+  const relativePath = path.relative(rootDir, skillDir)
+
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return null
+  }
+
+  return skillDir
+}
+
+function listSkillDirectories(rootDir: string): SkillDirectoryInfo[] {
+  const skills: SkillDirectoryInfo[] = []
+  const visitedDirs = new Set<string>()
+
+  function walk(currentDir: string, segments: string[]): void {
+    if (segments.length > MAX_SKILL_DIRECTORY_DEPTH) return
+
+    let realCurrentDir: string
+    try {
+      realCurrentDir = fs.realpathSync(currentDir)
+    } catch {
+      return
+    }
+
+    if (visitedDirs.has(realCurrentDir)) return
+    visitedDirs.add(realCurrentDir)
+
+    const manifestPath = path.join(currentDir, SKILLS_FILENAME)
+    if (segments.length > 0 && fs.existsSync(manifestPath)) {
+      skills.push({ name: segments.join('/'), dir: currentDir, manifestPath })
+    }
+
+    if (segments.length >= MAX_SKILL_DIRECTORY_DEPTH) return
+
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries) {
+      const nextDir = path.join(currentDir, entry.name)
+      if (!entry.isDirectory()) {
+        if (!entry.isSymbolicLink()) continue
+        try {
+          if (!fs.statSync(nextDir).isDirectory()) continue
+        } catch {
+          continue
+        }
+      }
+      walk(nextDir, [...segments, entry.name])
+    }
+  }
+
+  walk(rootDir, [])
+  return skills.sort((left, right) => left.name.localeCompare(right.name))
+}
 
 /**
  * Recursively copy a directory from src to dest.
@@ -103,14 +190,12 @@ function ensureBuiltinSkills(): void {
       fs.mkdirSync(SKILLS_DIR, { recursive: true })
     }
 
-    const entries = fs.readdirSync(bundledDir, { withFileTypes: true })
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const sourceDir = path.join(bundledDir, entry.name)
-      const targetDir = path.join(SKILLS_DIR, entry.name)
+    const skills = listSkillDirectories(bundledDir)
+    for (const skill of skills) {
+      const targetDir = path.join(SKILLS_DIR, ...skill.name.split('/'))
       if (fs.existsSync(targetDir)) continue
 
-      copyDirRecursive(sourceDir, targetDir)
+      copyDirRecursive(skill.dir, targetDir)
     }
   } catch (err) {
     console.error('[Skills] Failed to initialize builtin skills:', err)
@@ -277,22 +362,18 @@ export function registerSkillsHandlers(): void {
 
   /**
    * skills:list — scan ~/.agents/skills/ and return all available skills.
-   * Each subdirectory containing a SKILL.md is treated as a skill.
+   * A skill may live directly under the root or nested in category directories.
    */
   ipcMain.handle('skills:list', async (): Promise<SkillInfo[]> => {
     try {
       if (!fs.existsSync(SKILLS_DIR)) return []
-      const entries = fs.readdirSync(SKILLS_DIR, { withFileTypes: true })
       const skills: SkillInfo[] = []
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const mdPath = path.join(SKILLS_DIR, entry.name, SKILLS_FILENAME)
-        if (!fs.existsSync(mdPath)) continue
+      for (const skill of listSkillDirectories(SKILLS_DIR)) {
         try {
-          const content = fs.readFileSync(mdPath, 'utf-8')
+          const content = fs.readFileSync(skill.manifestPath, 'utf-8')
           skills.push({
-            name: entry.name,
-            description: extractDescription(content, entry.name)
+            name: skill.name,
+            description: extractDescription(content, skill.name)
           })
         } catch {
           // Skip unreadable files
@@ -314,7 +395,10 @@ export function registerSkillsHandlers(): void {
       args: { name: string }
     ): Promise<{ content: string; workingDirectory: string } | { error: string }> => {
       try {
-        const skillDir = path.join(SKILLS_DIR, args.name)
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { error: `Invalid skill name "${args.name}"` }
+        }
         const mdPath = path.join(skillDir, SKILLS_FILENAME)
         if (!fs.existsSync(mdPath)) {
           return { error: `Skill "${args.name}" not found at ${mdPath}` }
@@ -337,7 +421,11 @@ export function registerSkillsHandlers(): void {
     'skills:read',
     async (_event, args: { name: string }): Promise<{ content: string } | { error: string }> => {
       try {
-        const mdPath = path.join(SKILLS_DIR, args.name, SKILLS_FILENAME)
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { error: `Invalid skill name "${args.name}"` }
+        }
+        const mdPath = path.join(skillDir, SKILLS_FILENAME)
         if (!fs.existsSync(mdPath)) {
           return { error: `Skill "${args.name}" not found` }
         }
@@ -358,8 +446,11 @@ export function registerSkillsHandlers(): void {
       args: { name: string }
     ): Promise<{ files: ScanFileInfo[] } | { error: string }> => {
       try {
-        const skillDir = path.join(SKILLS_DIR, args.name)
-        if (!fs.existsSync(skillDir)) {
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { error: `Invalid skill name "${args.name}"` }
+        }
+        if (!fs.existsSync(path.join(skillDir, SKILLS_FILENAME))) {
           return { error: `Skill "${args.name}" not found` }
         }
         const files: ScanFileInfo[] = []
@@ -395,8 +486,11 @@ export function registerSkillsHandlers(): void {
     'skills:delete',
     async (_event, args: { name: string }): Promise<{ success: boolean; error?: string }> => {
       try {
-        const skillDir = path.join(SKILLS_DIR, args.name)
-        if (!fs.existsSync(skillDir)) {
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { success: false, error: `Invalid skill name "${args.name}"` }
+        }
+        if (!fs.existsSync(path.join(skillDir, SKILLS_FILENAME))) {
           return { success: false, error: `Skill "${args.name}" not found` }
         }
         fs.rmSync(skillDir, { recursive: true, force: true })
@@ -414,8 +508,11 @@ export function registerSkillsHandlers(): void {
     'skills:open-folder',
     async (_event, args: { name: string }): Promise<{ success: boolean; error?: string }> => {
       try {
-        const skillDir = path.join(SKILLS_DIR, args.name)
-        if (!fs.existsSync(skillDir)) {
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { success: false, error: `Invalid skill name "${args.name}"` }
+        }
+        if (!fs.existsSync(path.join(skillDir, SKILLS_FILENAME))) {
           return { success: false, error: `Skill "${args.name}" not found` }
         }
         await shell.openPath(skillDir)
@@ -467,7 +564,11 @@ export function registerSkillsHandlers(): void {
       args: { name: string; content: string }
     ): Promise<{ success: boolean; error?: string }> => {
       try {
-        const mdPath = path.join(SKILLS_DIR, args.name, SKILLS_FILENAME)
+        const skillDir = resolveSkillDir(args.name)
+        if (!skillDir) {
+          return { success: false, error: `Invalid skill name "${args.name}"` }
+        }
+        const mdPath = path.join(skillDir, SKILLS_FILENAME)
         if (!fs.existsSync(path.dirname(mdPath))) {
           return { success: false, error: `Skill "${args.name}" not found` }
         }
