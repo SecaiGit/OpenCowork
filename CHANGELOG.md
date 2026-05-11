@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.92] - 2026-05-12
+
+### Added
+
+- Added assistant-message branching so a new session can be forked directly from a previous reply.
+- Added Anthropic tool replay normalization to keep `tool_use` and `tool_result` history aligned when restoring forked or background sessions.
+
+### Changed
+
+- Scoped right-panel, terminal, browser, SSH preview, and related UI state by both session and project to prevent cross-session leakage.
+- Hardened the dev startup flow by clearing the Vite cache and pinning the renderer port before launching.
+- Refined Codex OAuth header handling to strip `session_id` and `conversation_id` outside supported `chatgpt.com/backend-api/codex` flows.
+- Refreshed the packaged desktop icons.
+
+### Fixed
+
+- Prevented stale or misaligned Anthropic tool history when replaying forked sessions.
+
 ## [0.9.91] - 2026-05-11
 
 ### Added
