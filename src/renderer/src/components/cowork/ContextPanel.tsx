@@ -119,16 +119,14 @@ export function ContextPanel(): React.JSX.Element {
       }
     })
   )
-  const compressionConfig = activeModelCfg
-    ? {
-        enabled: true,
-        contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
-        threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
-        strategyId: compressionDefaults.strategyId,
-        preCompressThreshold: 0.65,
-        reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
-      }
-    : null
+  const compressionConfig = {
+    enabled: true,
+    contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
+    threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
+    strategyId: compressionDefaults.strategyId,
+    preCompressThreshold: 0.65,
+    reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
+  }
   const compressionWindow = compressionConfig ? getEffectiveContextWindow(compressionConfig) : null
   const manualCompressionTrigger = compressionConfig
     ? getPreCompressionTriggerTokens(compressionConfig)

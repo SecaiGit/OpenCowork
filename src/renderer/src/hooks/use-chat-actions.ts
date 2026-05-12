@@ -92,6 +92,7 @@ import {
   resolveCompressionReservedOutputBudget,
   resolveCompressionThreshold
 } from '@renderer/lib/agent/context-compression'
+import { shouldUseRendererLoopForCompression } from '@renderer/lib/agent/context-compression-routing'
 import { runAgentLoop } from '@renderer/lib/agent/agent-loop'
 import {
   liveToolInputSignature,
@@ -2156,9 +2157,16 @@ async function canUseSidecarForAgentRun(args: {
   hasChannels: boolean
   hasMcps: boolean
 }): Promise<boolean> {
-  if (args.compression?.enabled) {
+  if (
+    shouldUseRendererLoopForCompression({
+      messages: args.messages,
+      provider: args.provider,
+      tools: args.tools,
+      compression: args.compression
+    })
+  ) {
     // Main-process runInteractiveAgentLoop does not support context compression yet.
-    // Keep compressed runs on the renderer node loop so the runtime config is honored.
+    // Only route to the renderer node loop when the current request already needs it.
     return false
   }
 
@@ -2173,7 +2181,7 @@ async function canUseSidecarForAgentRun(args: {
     maxIterations: args.maxIterations,
     forceApproval: args.forceApproval,
     maxParallelTools,
-    compression: args.compression,
+    compression: null,
     sessionMode: 'agent',
     planMode: args.isPlanMode,
     planModeAllowedTools: args.isPlanMode ? [...PLAN_MODE_ALLOWED_TOOLS] : undefined
@@ -3536,7 +3544,7 @@ export function useChatActions(): {
               maxIterations: DEFAULT_AGENT_MAX_ITERATIONS,
               forceApproval: false,
               maxParallelTools,
-              compression: compressionConfig,
+              compression: null,
               sessionMode: 'agent',
               planMode: isPlanMode,
               planModeAllowedTools: isPlanMode ? [...PLAN_MODE_ALLOWED_TOOLS] : undefined,

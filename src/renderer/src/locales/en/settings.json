@@ -575,7 +575,7 @@
     "modelNamePlaceholder": "GPT-4o",
     "contextLength": "Context Length",
     "contextCompressionThreshold": "Context compression threshold (%)",
-    "contextCompressionThresholdDesc": "Trigger full compression at this context usage ratio. Range: {{min}}% - {{max}}%",
+    "contextCompressionThresholdDesc": "Trigger full compression at this context usage ratio. Range: {{min}}% - {{max}}%. Leave empty to use the global default.",
     "enabledModels": "Enabled Models",
     "noModels": "No models configured",
     "noModelsHint": "Fetch from API or add manually",

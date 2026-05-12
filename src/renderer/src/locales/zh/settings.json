@@ -575,7 +575,7 @@
     "modelNamePlaceholder": "GPT-4o",
     "contextLength": "上下文长度",
     "contextCompressionThreshold": "上下文压缩阈值 (%)",
-    "contextCompressionThresholdDesc": "达到模型上下文窗口使用率后触发正式压缩，范围 {{min}}% - {{max}}%",
+    "contextCompressionThresholdDesc": "达到模型上下文窗口使用率后触发正式压缩，范围 {{min}}% - {{max}}%。留空则使用全局默认阈值。",
     "enabledModels": "已启用模型",
     "noModels": "未配置模型",
     "noModelsHint": "从 API 获取或手动添加",

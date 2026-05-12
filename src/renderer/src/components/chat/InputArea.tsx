@@ -151,16 +151,14 @@ function ContextRing(): React.JSX.Element | null {
       }
     })
   )
-  const compressionConfig = activeModelCfg
-    ? {
-        enabled: true,
-        contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
-        threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
-        strategyId: compressionDefaults.strategyId,
-        preCompressThreshold: 0.65,
-        reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
-      }
-    : null
+  const compressionConfig = {
+    enabled: true,
+    contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
+    threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
+    strategyId: compressionDefaults.strategyId,
+    preCompressThreshold: 0.65,
+    reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
+  }
 
   const [ctxUsedRaw, ctxLimitRaw] = useStoreWithEqualityFn(
     useChatStore,

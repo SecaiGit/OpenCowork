@@ -110,7 +110,6 @@ import { loadPrompt } from '@renderer/lib/prompts/prompt-loader'
 import { ProviderIcon, ModelIcon } from './provider-icons'
 import {
   clampCompressionThreshold,
-  DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
   MAX_CONTEXT_COMPRESSION_THRESHOLD,
   MIN_CONTEXT_COMPRESSION_THRESHOLD
 } from '@renderer/lib/agent/context-compression'
@@ -150,6 +149,11 @@ const REASONING_EFFORT_OPTIONS: ReasoningEffortLevel[] = [
   'max',
   'xhigh'
 ]
+
+function formatModelCompressionThreshold(value?: number): string {
+  if (typeof value !== 'number') return ''
+  return Math.round(clampCompressionThreshold(value) * 100).toString()
+}
 
 function toOptionalSelectValue<T extends string>(
   value?: T
@@ -440,11 +444,7 @@ function ModelFormDialog({
   const [contextLength, setContextLength] = useState(initial?.contextLength?.toString() ?? '')
   const [maxOutputTokens, setMaxOutputTokens] = useState(initial?.maxOutputTokens?.toString() ?? '')
   const [contextCompressionThreshold, setContextCompressionThreshold] = useState(
-    Math.round(
-      clampCompressionThreshold(
-        initial?.contextCompressionThreshold ?? DEFAULT_CONTEXT_COMPRESSION_THRESHOLD
-      ) * 100
-    ).toString()
+    formatModelCompressionThreshold(initial?.contextCompressionThreshold)
   )
   const [inputPrice, setInputPrice] = useState(initial?.inputPrice?.toString() ?? '')
   const [outputPrice, setOutputPrice] = useState(initial?.outputPrice?.toString() ?? '')
@@ -527,6 +527,8 @@ function ModelFormDialog({
       if (!isNaN(v)) {
         model.contextCompressionThreshold = clampCompressionThreshold(v / 100)
       }
+    } else if (isEdit) {
+      model.contextCompressionThreshold = undefined
     }
     if (inputPrice.trim()) {
       const v = parseFloat(inputPrice)

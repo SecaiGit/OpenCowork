@@ -6,6 +6,8 @@ import { buildSidecarAgentRunRequest } from '../ipc/sidecar-protocol'
 import { agentBridge } from '../ipc/agent-bridge'
 import { registerSidecarApprovalHandler } from '../ipc/sidecar-approval-registry'
 import { runAgentViaSidecar } from './run-agent-via-sidecar'
+import { runAgentLoop } from './agent-loop'
+import { shouldUseRendererLoopForCompression } from './context-compression-routing'
 
 export type SharedAgentRuntimeReason = LoopEndReason | 'shutdown'
 
@@ -114,28 +116,6 @@ export async function runSharedAgentRuntime(
   }
 
   try {
-    const sidecarRequest = buildSidecarAgentRunRequest({
-      messages: initialMessages,
-      provider: loopConfig.provider,
-      tools: loopConfig.tools,
-      sessionId: toolContext.sessionId,
-      workingFolder: toolContext.workingFolder ?? loopConfig.workingFolder,
-      maxIterations: loopConfig.maxIterations,
-      forceApproval: loopConfig.forceApproval === true,
-      maxParallelTools: loopConfig.maxParallelTools,
-      compression: loopConfig.contextCompression?.config ?? null,
-      pluginId: toolContext.pluginId,
-      pluginChatId: toolContext.pluginChatId,
-      pluginChatType: toolContext.pluginChatType,
-      pluginSenderId: toolContext.pluginSenderId,
-      pluginSenderName: toolContext.pluginSenderName,
-      sshConnectionId: toolContext.sshConnectionId,
-      captureFinalMessages: true
-    })
-    if (!sidecarRequest) {
-      throw new Error('Failed to build main-process agent request')
-    }
-
     let messagePumpActive = false
     const pendingInjectedMessages: UnifiedMessage[] = []
 
@@ -167,40 +147,97 @@ export async function runSharedAgentRuntime(
       }, MAIN_RUNTIME_MESSAGE_POLL_MS)
     }
 
-    const loop = runAgentViaSidecar(sidecarRequest, {
-      signal: toolContext.signal,
-      onRunIdAssigned: (assignedRunId) => {
-        activeRunId = assignedRunId
-        unregisterApprovalHandler = registerSidecarApprovalHandler(activeRunId, async (request) => {
-          try {
-            if (isReadOnlyTool?.(request.toolCall.name)) {
-              return { approved: true }
-            }
-
-            if (onApprovalNeeded) {
-              const approved = await onApprovalNeeded(request.toolCall)
-              return {
-                approved,
-                ...(approved ? {} : { reason: 'Runtime approval callback denied permission' })
-              }
-            }
-
-            return {
-              approved: false,
-              reason: 'No runtime approval handler registered for this agent run'
-            }
-          } catch (error) {
-            return {
-              approved: false,
-              reason: error instanceof Error ? error.message : String(error)
-            }
-          }
-        })
-        void flushQueuedMessages()
-      }
+    const useRendererCompressionLoop = shouldUseRendererLoopForCompression({
+      messages: initialMessages,
+      provider: loopConfig.provider,
+      tools: loopConfig.tools,
+      compression: loopConfig.contextCompression?.config ?? null
     })
 
-    startMessagePump()
+    const handleApproval = async (toolCall: ToolCallState): Promise<boolean> => {
+      if (isReadOnlyTool?.(toolCall.name)) return true
+      if (onApprovalNeeded) return await onApprovalNeeded(toolCall)
+      return false
+    }
+
+    const previousCaptureFinalMessages = loopConfig.captureFinalMessages
+    const loop: AsyncIterable<AgentEvent> = useRendererCompressionLoop
+      ? runAgentLoop(
+          initialMessages,
+          {
+            ...loopConfig,
+            captureFinalMessages: (messages) => {
+              capturedFinalMessages = messages
+              previousCaptureFinalMessages?.(messages)
+            }
+          },
+          toolContext,
+          handleApproval
+        )
+      : (() => {
+          const sidecarRequest = buildSidecarAgentRunRequest({
+            messages: initialMessages,
+            provider: loopConfig.provider,
+            tools: loopConfig.tools,
+            sessionId: toolContext.sessionId,
+            workingFolder: toolContext.workingFolder ?? loopConfig.workingFolder,
+            maxIterations: loopConfig.maxIterations,
+            forceApproval: loopConfig.forceApproval === true,
+            maxParallelTools: loopConfig.maxParallelTools,
+            compression: null,
+            pluginId: toolContext.pluginId,
+            pluginChatId: toolContext.pluginChatId,
+            pluginChatType: toolContext.pluginChatType,
+            pluginSenderId: toolContext.pluginSenderId,
+            pluginSenderName: toolContext.pluginSenderName,
+            sshConnectionId: toolContext.sshConnectionId,
+            captureFinalMessages: true
+          })
+          if (!sidecarRequest) {
+            throw new Error('Failed to build main-process agent request')
+          }
+
+          const sidecarLoop = runAgentViaSidecar(sidecarRequest, {
+            signal: toolContext.signal,
+            onRunIdAssigned: (assignedRunId) => {
+              activeRunId = assignedRunId
+              unregisterApprovalHandler = registerSidecarApprovalHandler(
+                activeRunId,
+                async (request) => {
+                  try {
+                    if (isReadOnlyTool?.(request.toolCall.name)) {
+                      return { approved: true }
+                    }
+
+                    if (onApprovalNeeded) {
+                      const approved = await onApprovalNeeded(request.toolCall)
+                      return {
+                        approved,
+                        ...(approved
+                          ? {}
+                          : { reason: 'Runtime approval callback denied permission' })
+                      }
+                    }
+
+                    return {
+                      approved: false,
+                      reason: 'No runtime approval handler registered for this agent run'
+                    }
+                  } catch (error) {
+                    return {
+                      approved: false,
+                      reason: error instanceof Error ? error.message : String(error)
+                    }
+                  }
+                }
+              )
+              void flushQueuedMessages()
+            }
+          })
+
+          startMessagePump()
+          return sidecarLoop
+        })()
 
     for await (const event of loop) {
       if (toolContext.signal.aborted) {
