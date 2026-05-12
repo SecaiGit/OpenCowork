@@ -39,9 +39,9 @@ import type { AIModelConfig, AIProvider, ReasoningEffortLevel } from '@renderer/
 import { isResponsesImageGenerationEnabled } from '@renderer/lib/api/responses-image-generation'
 import {
   clampCompressionThreshold,
-  DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
   MAX_CONTEXT_COMPRESSION_THRESHOLD,
-  MIN_CONTEXT_COMPRESSION_THRESHOLD
+  MIN_CONTEXT_COMPRESSION_THRESHOLD,
+  resolveCompressionThreshold
 } from '@renderer/lib/agent/context-compression'
 
 function formatContextLength(length?: number): string | null {
@@ -167,6 +167,9 @@ function ModelSettingsPopover({
   const fastModeEnabled = useSettingsStore((s) => s.fastModeEnabled)
   const reasoningEffort = useSettingsStore((s) => s.reasoningEffort)
   const reasoningEffortByModel = useSettingsStore((s) => s.reasoningEffortByModel)
+  const contextCompressionDefaultThreshold = useSettingsStore(
+    (s) => s.contextCompressionDefaultThreshold
+  )
   const effortKey = getReasoningEffortKey(providerId, model?.id)
   const effectiveReasoningEffort = resolveReasoningEffortForModel({
     reasoningEffort,
@@ -212,9 +215,9 @@ function ModelSettingsPopover({
     supportsContextCompression
 
   const contextCompressionPercent = Math.round(
-    clampCompressionThreshold(
-      model?.contextCompressionThreshold ?? DEFAULT_CONTEXT_COMPRESSION_THRESHOLD
-    ) * 100
+    resolveCompressionThreshold(model, {
+      defaultThreshold: contextCompressionDefaultThreshold
+    }) * 100
   )
 
   const updateContextCompressionThreshold = useCallback(

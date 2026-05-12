@@ -119,9 +119,38 @@ export function ContextPanel(): React.JSX.Element {
       }
     })
   )
+  const recentContextUsage = (() => {
+    if (!activeSession) return { contextTokens: 0, contextLength: null as number | null }
+    let latestContextTokens = 0
+    let latestContextLength: number | null = null
+    for (let index = activeSession.messages.length - 1; index >= 0; index -= 1) {
+      const usage = activeSession.messages[index]?.usage
+      const contextTokens = usage?.contextTokens ?? 0
+      if (latestContextTokens <= 0 && contextTokens > 0) {
+        latestContextTokens = contextTokens
+      }
+      if (
+        latestContextLength === null &&
+        typeof usage?.contextLength === 'number' &&
+        usage.contextLength > 0
+      ) {
+        latestContextLength = usage.contextLength
+      }
+      if (latestContextTokens > 0 && latestContextLength !== null) {
+        return { contextTokens: latestContextTokens, contextLength: latestContextLength }
+      }
+    }
+    return { contextTokens: latestContextTokens, contextLength: latestContextLength }
+  })()
+  const hasModelContextLength =
+    typeof activeModelCfg?.contextLength === 'number' && activeModelCfg.contextLength > 0
+  const effectiveCompressionDefaults =
+    !hasModelContextLength && recentContextUsage.contextLength
+      ? { ...compressionDefaults, defaultContextLength: recentContextUsage.contextLength }
+      : compressionDefaults
   const compressionConfig = {
     enabled: true,
-    contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
+    contextLength: resolveCompressionContextLength(activeModelCfg, effectiveCompressionDefaults),
     threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
     strategyId: compressionDefaults.strategyId,
     preCompressThreshold: 0.65,
@@ -417,13 +446,9 @@ export function ContextPanel(): React.JSX.Element {
                 const totalTokens = hasTokenUsage
                   ? getBillableTotalTokens(totalUsage, activeModelCfg?.type)
                   : 0
-                const lastUsage = [...activeSession.messages].reverse().find((m) => {
-                  if (!m.usage) return false
-                  return (m.usage.contextTokens ?? 0) > 0
-                })?.usage
-                const ctxUsed = lastUsage?.contextTokens ?? 0
+                const ctxUsed = recentContextUsage.contextTokens
                 const ctxLimit =
-                  lastUsage?.contextLength ?? compressionConfig?.contextLength ?? null
+                  recentContextUsage.contextLength ?? compressionConfig?.contextLength ?? null
                 const ctxGaugeLimit = compressionWindow ?? ctxLimit
                 const pct = ctxGaugeLimit ? Math.min((ctxUsed / ctxGaugeLimit) * 100, 100) : null
                 const barColor =

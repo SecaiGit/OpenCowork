@@ -151,15 +151,6 @@ function ContextRing(): React.JSX.Element | null {
       }
     })
   )
-  const compressionConfig = {
-    enabled: true,
-    contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
-    threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
-    strategyId: compressionDefaults.strategyId,
-    preCompressThreshold: 0.65,
-    reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
-  }
-
   const [ctxUsedRaw, ctxLimitRaw] = useStoreWithEqualityFn(
     useChatStore,
     React.useCallback((s): [number, number | null] => {
@@ -167,18 +158,45 @@ function ContextRing(): React.JSX.Element | null {
       const activeSession = idx !== undefined ? s.sessions[idx] : undefined
       if (!activeSession) return [0, null]
       const messages = activeSession.messages
+      let latestContextTokens = 0
+      let latestContextLength: number | null = null
       for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index]
         const usage = message?.usage
         if (!usage) continue
         const contextTokens = usage.contextTokens ?? 0
-        if (contextTokens <= 0) continue
-        return [contextTokens, usage.contextLength ?? null]
+        if (latestContextTokens <= 0 && contextTokens > 0) {
+          latestContextTokens = contextTokens
+        }
+        if (
+          latestContextLength === null &&
+          typeof usage.contextLength === 'number' &&
+          usage.contextLength > 0
+        ) {
+          latestContextLength = usage.contextLength
+        }
+        if (latestContextTokens > 0 && latestContextLength !== null) {
+          return [latestContextTokens, latestContextLength]
+        }
       }
-      return [0, null]
+      return [latestContextTokens, latestContextLength]
     }, []),
     (a, b) => a[0] === b[0] && a[1] === b[1]
   )
+  const hasModelContextLength =
+    typeof activeModelCfg?.contextLength === 'number' && activeModelCfg.contextLength > 0
+  const effectiveCompressionDefaults =
+    !hasModelContextLength && ctxLimitRaw
+      ? { ...compressionDefaults, defaultContextLength: ctxLimitRaw }
+      : compressionDefaults
+  const compressionConfig = {
+    enabled: true,
+    contextLength: resolveCompressionContextLength(activeModelCfg, effectiveCompressionDefaults),
+    threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
+    strategyId: compressionDefaults.strategyId,
+    preCompressThreshold: 0.65,
+    reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
+  }
 
   const ctxUsed = ctxUsedRaw
   const ctxLimit = ctxLimitRaw ?? compressionConfig?.contextLength ?? null

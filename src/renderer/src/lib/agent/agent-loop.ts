@@ -155,7 +155,7 @@ export async function* runAgentLoop(
           }
         } else if (shouldPreCompress(lastInputTokens, cc.config)) {
           // Lightweight pre-compression: clear stale tool results + thinking blocks (no API call)
-          conversationMessages = [...preCompressMessages(conversationMessages)]
+          conversationMessages = [...preCompressMessages(conversationMessages, cc.config)]
         }
       }
       if (config.signal.aborted) {

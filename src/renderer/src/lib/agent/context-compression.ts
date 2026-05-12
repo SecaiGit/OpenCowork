@@ -209,8 +209,10 @@ const COMPRESSION_STRATEGIES: Record<ContextCompressionStrategyId, ContextCompre
   'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY
 }
 
-export function getCompressionStrategy(config: CompressionConfig): ContextCompressionStrategy {
-  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config.strategyId)]
+export function getCompressionStrategy(
+  config?: Pick<CompressionConfig, 'strategyId'> | null
+): ContextCompressionStrategy {
+  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config?.strategyId)]
 }
 
 export function shouldCompress(inputTokens: number, config: CompressionConfig): boolean {
@@ -550,8 +552,11 @@ async function partialSummaryCompressMessages(
   }
 }
 
-export function preCompressMessages(messages: UnifiedMessage[]): UnifiedMessage[] {
-  return PARTIAL_SUMMARY_STRATEGY.preCompressMessages(messages)
+export function preCompressMessages(
+  messages: UnifiedMessage[],
+  config?: Pick<CompressionConfig, 'strategyId'> | null
+): UnifiedMessage[] {
+  return getCompressionStrategy(config).preCompressMessages(messages)
 }
 
 export async function compressMessages(
@@ -562,9 +567,10 @@ export async function compressMessages(
   focusPrompt?: string,
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
-  preTokens = 0
+  preTokens = 0,
+  config?: Pick<CompressionConfig, 'strategyId'> | null
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
-  return PARTIAL_SUMMARY_STRATEGY.compressMessages(
+  return getCompressionStrategy(config).compressMessages(
     messages,
     providerConfig,
     signal,

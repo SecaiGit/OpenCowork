@@ -3633,7 +3633,13 @@ export function useChatActions(): {
                           const { messages: compressed } = await compressMessages(
                             msgs,
                             agentProviderConfig,
-                            abortController.signal
+                            abortController.signal,
+                            undefined,
+                            undefined,
+                            undefined,
+                            'manual',
+                            0,
+                            compressionConfig
                           )
                           return compressed
                         }
@@ -5094,12 +5100,29 @@ export function useChatActions(): {
     }
 
     try {
+      const compressionDefaults = {
+        defaultContextLength: settings.contextCompressionDefaultContextLength,
+        defaultThreshold: settings.contextCompressionDefaultThreshold,
+        strategyId: settings.contextCompressionStrategy
+      }
+      const manualCompressionConfig: CompressionConfig = {
+        enabled: true,
+        contextLength: resolveCompressionContextLength(activeModelConfig, compressionDefaults),
+        threshold: resolveCompressionThreshold(activeModelConfig, compressionDefaults),
+        strategyId: settings.contextCompressionStrategy,
+        preCompressThreshold: 0.65,
+        reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelConfig)
+      }
       const { messages: compressed, result } = await compressMessages(
         messages,
         config,
         undefined, // no abort signal for manual
         undefined, // adaptive preserve count
-        focusPrompt || undefined
+        focusPrompt || undefined,
+        undefined,
+        'manual',
+        0,
+        manualCompressionConfig
       )
       if (!result.compressed) {
         toast.warning('无需压缩', { description: '当前消息数量不足以进行有效压缩' })
