@@ -1129,11 +1129,12 @@ export const useAgentStore = create<AgentStore>()(
           delete state.sessionSubAgentLiveCache[sessionId]
           delete state.sessionSubAgentSummaries[sessionId]
 
-          if (state.liveSessionId !== sessionId) return
-          state.pendingToolCalls = []
-          state.executedToolCalls = []
-          state.activeSubAgents = {}
-          state.completedSubAgents = {}
+          if (state.liveSessionId === sessionId) {
+            state.pendingToolCalls = []
+            state.executedToolCalls = []
+            state.activeSubAgents = {}
+            state.completedSubAgents = {}
+          }
           rebuildRunningSubAgentDerived(state)
         })
       },

@@ -21,18 +21,26 @@ export function TokenCounter({
   startFrom = 0,
   animate = true
 }: TokenCounterProps): React.JSX.Element {
-  const [displayValue, setDisplayValue] = useState(startFrom)
+  const [animationState, setAnimationState] = useState(() => ({
+    key: `${target}:${startFrom}:${duration}:${animate}`,
+    value: startFrom
+  }))
   const rafRef = useRef<number | undefined>(undefined)
   const startTimeRef = useRef<number | undefined>(undefined)
+  const animationKey = `${target}:${startFrom}:${duration}:${animate}`
+  const displayValue =
+    !animate || target === startFrom
+      ? target
+      : animationState.key === animationKey
+        ? animationState.value
+        : startFrom
 
   useEffect(() => {
     if (!animate) {
-      setDisplayValue(target)
       return
     }
 
     if (target === startFrom) {
-      setDisplayValue(target)
       return
     }
 
@@ -55,12 +63,12 @@ export function TokenCounter({
       const eased = 1 - Math.pow(1 - progress, 3)
       const current = startValue + delta * eased
 
-      setDisplayValue(current)
+      setAnimationState({ key: animationKey, value: current })
 
       if (progress < 1) {
         rafRef.current = requestAnimationFrame(animateCount)
       } else {
-        setDisplayValue(target)
+        setAnimationState({ key: animationKey, value: target })
       }
     }
 
@@ -71,7 +79,7 @@ export function TokenCounter({
         cancelAnimationFrame(rafRef.current)
       }
     }
-  }, [target, duration, startFrom, animate])
+  }, [target, duration, startFrom, animate, animationKey])
 
   return <span className="tabular-nums">{formatTokensDecimal(displayValue)}</span>
 }

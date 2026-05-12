@@ -57,6 +57,45 @@ interface WebFetchResponse {
   totalResults: number
 }
 
+interface SearchApiResult {
+  title?: unknown
+  url?: unknown
+  content?: unknown
+  snippet?: unknown
+  score?: unknown
+  published_date?: unknown
+  publishedDate?: unknown
+}
+
+function toSearchText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value == null) return ''
+  return String(value)
+}
+
+function toSearchScore(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined
+}
+
+function toSearchResults(value: unknown): SearchApiResult[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is SearchApiResult => Boolean(item) && typeof item === 'object')
+}
+
+function mapSearchApiResult(
+  result: SearchApiResult,
+  contentSelector: (result: SearchApiResult) => unknown
+): WebSearchResult {
+  const publishedDate = result.publishedDate ?? result.published_date
+  return {
+    title: toSearchText(result.title),
+    url: toSearchText(result.url),
+    content: toSearchText(contentSelector(result)),
+    score: toSearchScore(result.score),
+    publishedDate: typeof publishedDate === 'string' ? publishedDate : undefined
+  }
+}
+
 // Helper function for HTTP/HTTPS requests
 function makeHttpRequest(
   method: string,
@@ -191,7 +230,7 @@ function extractSnippet(section: string, patterns: RegExp[], title: string): str
 }
 
 function extractHtmlTagContent(html: string, tagName: string): string | null {
-  const match = html.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\/${tagName}>`, 'i'))
+  const match = html.match(new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)</${tagName}>`, 'i'))
   return match?.[1] ?? null
 }
 
@@ -647,17 +686,11 @@ async function searchTavily(request: WebSearchRequest): Promise<WebSearchRespons
     throw new Error(`Tavily API error: ${response.statusCode} - ${response.body}`)
   }
 
-  const data = JSON.parse(response.body)
-  const results = data.results || []
+  const data = JSON.parse(response.body) as { results?: unknown }
+  const results = toSearchResults(data.results)
 
   return {
-    results: results.map((r: any) => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.content || '',
-      score: r.score,
-      publishedDate: r.published_date
-    })),
+    results: results.map((result) => mapSearchApiResult(result, (item) => item.content)),
     query: request.query,
     provider: 'tavily',
     totalResults: results.length
@@ -675,17 +708,11 @@ async function searchSearxng(request: WebSearchRequest): Promise<WebSearchRespon
     throw new Error(`Searxng API error: ${response.statusCode} - ${response.body}`)
   }
 
-  const data = JSON.parse(response.body)
-  const results = data.results || []
+  const data = JSON.parse(response.body) as { results?: unknown }
+  const results = toSearchResults(data.results)
 
   return {
-    results: results.map((r: any) => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.content || '',
-      score: r.score,
-      publishedDate: r.published_date
-    })),
+    results: results.map((result) => mapSearchApiResult(result, (item) => item.content)),
     query: request.query,
     provider: 'searxng',
     totalResults: results.length
@@ -719,17 +746,11 @@ async function searchExa(request: WebSearchRequest): Promise<WebSearchResponse> 
     throw new Error(`Exa API error: ${response.statusCode} - ${response.body}`)
   }
 
-  const data = JSON.parse(response.body)
-  const results = data.results || []
+  const data = JSON.parse(response.body) as { results?: unknown }
+  const results = toSearchResults(data.results)
 
   return {
-    results: results.map((r: any) => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.snippet || '',
-      score: r.score,
-      publishedDate: r.publishedDate
-    })),
+    results: results.map((result) => mapSearchApiResult(result, (item) => item.snippet)),
     query: request.query,
     provider: 'exa',
     totalResults: results.length
@@ -762,17 +783,11 @@ async function searchBocha(request: WebSearchRequest): Promise<WebSearchResponse
     throw new Error(`Bocha API error: ${response.statusCode} - ${response.body}`)
   }
 
-  const data = JSON.parse(response.body)
-  const results = data.results || []
+  const data = JSON.parse(response.body) as { results?: unknown }
+  const results = toSearchResults(data.results)
 
   return {
-    results: results.map((r: any) => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.snippet || '',
-      score: r.score,
-      publishedDate: r.publishedDate
-    })),
+    results: results.map((result) => mapSearchApiResult(result, (item) => item.snippet)),
     query: request.query,
     provider: 'bocha',
     totalResults: results.length
@@ -805,17 +820,13 @@ async function searchZhipu(request: WebSearchRequest): Promise<WebSearchResponse
     throw new Error(`Zhipu API error: ${response.statusCode} - ${response.body}`)
   }
 
-  const data = JSON.parse(response.body)
-  const results = data.results || []
+  const data = JSON.parse(response.body) as { results?: unknown }
+  const results = toSearchResults(data.results)
 
   return {
-    results: results.map((r: any) => ({
-      title: r.title || '',
-      url: r.url || '',
-      content: r.content || r.snippet || '',
-      score: r.score,
-      publishedDate: r.publishedDate
-    })),
+    results: results.map((result) =>
+      mapSearchApiResult(result, (item) => item.content ?? item.snippet)
+    ),
     query: request.query,
     provider: 'zhipu',
     totalResults: results.length

@@ -881,6 +881,8 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     tailToolExecutionState,
     orchestrationBindingSignature: orchestrationMessageBindingSignature
   } = transcriptAnalysis
+
+  /* eslint-disable react-hooks/refs -- Keep the orchestration snapshot stable while streaming tool output updates arrive. */
   const stableMessagesRef = React.useRef(messages)
   const stableMessagesBindingSignatureRef = React.useRef(orchestrationMessageBindingSignature)
   if (
@@ -891,6 +893,7 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
     stableMessagesBindingSignatureRef.current = orchestrationMessageBindingSignature
   }
   const orchestrationMessages = stableMessagesRef.current
+  /* eslint-enable react-hooks/refs */
 
   const listRef = React.useRef<HTMLDivElement | null>(null)
   const containerRef = React.useRef<HTMLDivElement | null>(null)
@@ -1262,9 +1265,18 @@ function MessageListInner(props: MessageListProps): React.JSX.Element {
   }, [syncActiveUserLocator, syncBottomState])
 
   React.useEffect(() => {
-    if (!activeSessionId) return
+    if (!activeSessionId || activeSessionMessageCount === 0) return
+    const isFullyHydrated =
+      activeSessionLoaded && loadedRangeStart === 0 && messages.length >= activeSessionMessageCount
+    if (isFullyHydrated) return
     void useChatStore.getState().loadSessionMessages(activeSessionId)
-  }, [activeSessionId])
+  }, [
+    activeSessionId,
+    activeSessionLoaded,
+    activeSessionMessageCount,
+    loadedRangeStart,
+    messages.length
+  ])
 
   React.useEffect(() => {
     if (!activeSessionId || !streamingMessageId) return

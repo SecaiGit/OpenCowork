@@ -19,9 +19,10 @@ import { randomUUID } from 'crypto'
 import { spawn } from 'child_process'
 
 // Delay import of @electron-toolkit/utils to avoid accessing app before ready
-let electronApp: any
-let optimizer: any
-let is: any
+type ElectronToolkitUtils = typeof import('@electron-toolkit/utils')
+let electronApp: ElectronToolkitUtils['electronApp']
+let optimizer: ElectronToolkitUtils['optimizer']
+let is: ElectronToolkitUtils['is']
 
 import icon from '../../resources/icon.png?asset'
 import icon_mac from '../../resources/icon-mac.png?asset'
@@ -871,7 +872,7 @@ if (gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     // Import @electron-toolkit/utils after app is ready
-    const utils = require('@electron-toolkit/utils')
+    const utils = await import('@electron-toolkit/utils')
     electronApp = utils.electronApp
     optimizer = utils.optimizer
     is = utils.is

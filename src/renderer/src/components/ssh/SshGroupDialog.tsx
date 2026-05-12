@@ -19,6 +19,7 @@ export function SshGroupDialog({ open, group, onClose }: SshGroupDialogProps): R
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Reset dialog draft when opening a different group.
       setName(group?.name ?? '')
     }
   }, [open, group])

@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { TokenCounter } from './TokenCounter'
 
 interface LoadingIndicatorProps {
@@ -24,24 +24,24 @@ export function LoadingIndicator({
   outputTokens = 0,
   className = ''
 }: LoadingIndicatorProps): React.JSX.Element {
-  const previousOutputRef = useRef(0)
+  const [previousOutput, setPreviousOutput] = useState(0)
   const isReceiving = state === 'receiving'
   const arrow = isReceiving ? '↓' : '↑'
   const tokens = isReceiving ? outputTokens : inputTokens
-  const startFrom = isReceiving ? previousOutputRef.current : 0
+  const startFrom = isReceiving ? previousOutput : 0
   const shouldAnimate = state === 'sending' || state === 'receiving'
 
   // Update previous output after animation completes
   useEffect(() => {
-    if (isReceiving && outputTokens > previousOutputRef.current) {
+    if (isReceiving && outputTokens > previousOutput) {
       // Delay update to allow animation to complete
       const timer = setTimeout(() => {
-        previousOutputRef.current = outputTokens
+        setPreviousOutput(outputTokens)
       }, 500)
       return () => clearTimeout(timer)
     }
     return undefined
-  }, [isReceiving, outputTokens])
+  }, [isReceiving, outputTokens, previousOutput])
 
   return (
     <div className={`flex items-center gap-1.5 text-xs ${className}`}>

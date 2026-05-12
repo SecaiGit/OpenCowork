@@ -1578,6 +1578,20 @@ function shouldReloadSessionMessagesForMutation(
   )
 }
 
+function shouldHydrateFullSessionBeforeUserTurn(
+  chatStore: ChatStoreState,
+  sessionId: string
+): boolean {
+  const session = chatStore.sessions.find((item) => item.id === sessionId)
+  if (!session) return false
+  const knownCount = session.messageCount ?? session.messages.length
+  return (
+    chatStore.activeSessionId === sessionId &&
+    knownCount > 0 &&
+    shouldReloadSessionMessagesForMutation(chatStore, sessionId)
+  )
+}
+
 async function resolveSessionMessageTarget<T>(
   chatStore: ChatStoreState,
   sessionId: string,
@@ -2575,7 +2589,11 @@ export function useChatActions(): {
         // not carry over into new user messages.
         clearLastTaskInvocation(sessionId)
       }
-      await chatStore.loadRecentSessionMessages(sessionId)
+      if (shouldHydrateFullSessionBeforeUserTurn(useChatStore.getState(), sessionId)) {
+        await chatStore.loadSessionMessages(sessionId)
+      } else {
+        await chatStore.loadRecentSessionMessages(sessionId)
+      }
 
       const inMemoryMessages = chatStore.getSessionMessages(sessionId)
       const existingAssistantMessage =

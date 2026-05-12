@@ -11,7 +11,6 @@ export function useDebouncedTokens(text: string, delay = 300): number {
 
   useEffect(() => {
     if (!text) {
-      setTokens(0)
       return
     }
     clearTimeout(timerRef.current)
@@ -21,7 +20,7 @@ export function useDebouncedTokens(text: string, delay = 300): number {
     return () => clearTimeout(timerRef.current)
   }, [text, delay])
 
-  return tokens
+  return text ? tokens : 0
 }
 
 /**

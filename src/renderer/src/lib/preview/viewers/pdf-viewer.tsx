@@ -14,17 +14,28 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString()
 
+interface PdfLoadState {
+  key: string
+  data: Uint8Array | null
+  error: string | null
+}
+
 export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX.Element {
-  const [pdfData, setPdfData] = useState<Uint8Array | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const loadKey = `${sshConnectionId ?? 'local'}:${filePath}`
+  const [loadState, setLoadState] = useState<PdfLoadState>(() => ({
+    key: loadKey,
+    data: null,
+    error: null
+  }))
   const [numPages, setNumPages] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
+  const isCurrentLoad = loadState.key === loadKey
+  const pdfData = isCurrentLoad ? loadState.data : null
+  const error = isCurrentLoad ? loadState.error : null
+  const loading = !isCurrentLoad || (!loadState.data && !loadState.error)
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
 
     const channel = sshConnectionId ? IPC.SSH_FS_READ_FILE_BINARY : IPC.FS_READ_FILE_BINARY
     const args = sshConnectionId
@@ -34,20 +45,21 @@ export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX
       if (cancelled) return
       const result = raw as { data?: string; error?: string }
       if (result.error || !result.data) {
-        setError(result.error || 'Failed to read file')
-        setLoading(false)
+        setLoadState({
+          key: loadKey,
+          data: null,
+          error: result.error || 'Failed to read file'
+        })
         return
       }
       try {
         const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0))
         if (!cancelled) {
-          setPdfData(bytes)
-          setLoading(false)
+          setLoadState({ key: loadKey, data: bytes, error: null })
         }
       } catch (err) {
         if (!cancelled) {
-          setError(String(err))
-          setLoading(false)
+          setLoadState({ key: loadKey, data: null, error: String(err) })
         }
       }
     })
@@ -55,7 +67,7 @@ export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX
     return () => {
       cancelled = true
     }
-  }, [filePath, sshConnectionId])
+  }, [filePath, sshConnectionId, loadKey])
 
   const onDocumentLoadSuccess = ({ numPages: n }: { numPages: number }): void => {
     setNumPages(n)
