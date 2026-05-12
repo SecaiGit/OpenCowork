@@ -462,24 +462,32 @@ function updateToolUseInputInSubAgent(
 }
 
 function rebuildRunningSubAgentDerived(state: {
+  liveSessionId: string | null
   activeSubAgents: Record<string, SubAgentState>
-  sessionSubAgentSummaries: Record<string, SubAgentState[]>
+  sessionSubAgentLiveCache: Record<string, SessionSubAgentLiveState>
   runningSubAgentNamesSig: string
   runningSubAgentSessionIdsSig: string
 }): void {
   const runningNames: string[] = []
   const runningSessionIds = new Set<string>()
 
-  for (const subAgent of Object.values(state.activeSubAgents)) {
-    if (!subAgent.isRunning) continue
-    runningNames.push(subAgent.name)
-    if (subAgent.sessionId) runningSessionIds.add(subAgent.sessionId)
+  const collectRunning = (
+    subAgents: Record<string, SubAgentState>,
+    fallbackSessionId?: string
+  ): void => {
+    for (const subAgent of Object.values(subAgents)) {
+      if (!subAgent.isRunning) continue
+      runningNames.push(subAgent.name)
+      const sessionId = subAgent.sessionId ?? fallbackSessionId
+      if (sessionId) runningSessionIds.add(sessionId)
+    }
   }
 
-  for (const [sessionId, summaries] of Object.entries(state.sessionSubAgentSummaries)) {
-    if (summaries.some((subAgent) => subAgent.isRunning)) {
-      runningSessionIds.add(sessionId)
-    }
+  collectRunning(state.activeSubAgents)
+
+  for (const [sessionId, cache] of Object.entries(state.sessionSubAgentLiveCache)) {
+    if (state.liveSessionId && sessionId === state.liveSessionId) continue
+    collectRunning(cache.active, sessionId)
   }
 
   state.runningSubAgentNamesSig = runningNames.join('\u0000')
@@ -508,6 +516,82 @@ function cloneSubAgentMap(source: Record<string, SubAgentState>): Record<string,
   return Object.fromEntries(
     Object.entries(source).map(([key, value]) => [key, cloneSubAgentStateSnapshot(value)])
   )
+}
+
+function ensureSessionSubAgentLiveState(
+  state: {
+    sessionSubAgentLiveCache: Record<string, SessionSubAgentLiveState>
+  },
+  sessionId: string
+): SessionSubAgentLiveState {
+  const existing = state.sessionSubAgentLiveCache[sessionId]
+  if (existing) return existing
+  const created: SessionSubAgentLiveState = { active: {}, completed: {} }
+  state.sessionSubAgentLiveCache[sessionId] = created
+  return created
+}
+
+function resolveSubAgentBucketsForSession(
+  state: {
+    liveSessionId: string | null
+    activeSubAgents: Record<string, SubAgentState>
+    completedSubAgents: Record<string, SubAgentState>
+    sessionSubAgentLiveCache: Record<string, SessionSubAgentLiveState>
+  },
+  sessionId?: string
+): SessionSubAgentLiveState {
+  if (!sessionId || !state.liveSessionId || sessionId === state.liveSessionId) {
+    return {
+      active: state.activeSubAgents,
+      completed: state.completedSubAgents
+    }
+  }
+  return ensureSessionSubAgentLiveState(state, sessionId)
+}
+
+function resolveSubAgentEventTarget(
+  state: {
+    liveSessionId: string | null
+    activeSubAgents: Record<string, SubAgentState>
+    completedSubAgents: Record<string, SubAgentState>
+    sessionSubAgentLiveCache: Record<string, SessionSubAgentLiveState>
+  },
+  id: string,
+  sessionId?: string
+): { subAgent: SubAgentState; buckets: SessionSubAgentLiveState } | null {
+  const checkedBuckets: SessionSubAgentLiveState[] = []
+  const wasChecked = (buckets: SessionSubAgentLiveState): boolean =>
+    checkedBuckets.some(
+      (checked) => checked.active === buckets.active && checked.completed === buckets.completed
+    )
+  const checkBuckets = (buckets: SessionSubAgentLiveState): SubAgentState | null => {
+    checkedBuckets.push(buckets)
+    return buckets.active[id] ?? buckets.completed[id] ?? null
+  }
+
+  if (sessionId) {
+    const buckets = resolveSubAgentBucketsForSession(state, sessionId)
+    const subAgent = checkBuckets(buckets)
+    if (subAgent) return { subAgent, buckets }
+  }
+
+  const liveBuckets: SessionSubAgentLiveState = {
+    active: state.activeSubAgents,
+    completed: state.completedSubAgents
+  }
+  if (!wasChecked(liveBuckets)) {
+    const subAgent = checkBuckets(liveBuckets)
+    if (subAgent) return { subAgent, buckets: liveBuckets }
+  }
+
+  for (const [cacheSessionId, cache] of Object.entries(state.sessionSubAgentLiveCache)) {
+    if (state.liveSessionId && cacheSessionId === state.liveSessionId) continue
+    if (wasChecked(cache)) continue
+    const subAgent = checkBuckets(cache)
+    if (subAgent) return { subAgent, buckets: cache }
+  }
+
+  return null
 }
 
 export interface BackgroundProcessState {
@@ -1470,11 +1554,12 @@ export const useAgentStore = create<AgentStore>()(
       handleSubAgentEvent: (event, sessionId) => {
         set((state) => {
           const id = event.toolUseId
-          const existing = state.activeSubAgents[id] ?? state.completedSubAgents[id]
           switch (event.type) {
             case 'sub_agent_start': {
+              const buckets = resolveSubAgentBucketsForSession(state, sessionId)
+              const existing = buckets.active[id] ?? buckets.completed[id]
               if (existing?.isRunning) return
-              state.activeSubAgents[id] = {
+              buckets.active[id] = {
                 name: event.subAgentName,
                 displayName: String(event.input.subagent_type ?? event.subAgentName),
                 toolUseId: id,
@@ -1504,7 +1589,7 @@ export const useAgentStore = create<AgentStore>()(
               if (sessionId) {
                 const previous = state.sessionSubAgentSummaries[sessionId] ?? []
                 state.sessionSubAgentSummaries[sessionId] = [
-                  buildSubAgentSummary(state.activeSubAgents[id]),
+                  buildSubAgentSummary(buckets.active[id]),
                   ...previous.filter((item) => item.toolUseId !== id)
                 ].slice(0, MAX_SUBAGENT_HISTORY)
               }
@@ -1512,7 +1597,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_iteration': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 sa.iteration = event.iteration
                 const currentAssistant = sa.currentAssistantMessageId
@@ -1526,12 +1611,12 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_thinking_delta': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) appendThinkingToSubAgent(sa, event.thinking)
               break
             }
             case 'sub_agent_thinking_encrypted': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 appendThinkingEncryptedToSubAgent(
                   sa,
@@ -1542,7 +1627,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_tool_use_streaming_start': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 upsertToolUseBlockInSubAgent(sa, {
                   type: 'tool_use',
@@ -1557,22 +1642,22 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_tool_use_args_delta': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) updateToolUseInputInSubAgent(sa, event.toolCallId, event.partialInput)
               break
             }
             case 'sub_agent_tool_use_generated': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) upsertToolUseBlockInSubAgent(sa, event.toolUseBlock)
               break
             }
             case 'sub_agent_image_generated': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) appendBlockToSubAgent(sa, event.imageBlock)
               break
             }
             case 'sub_agent_image_error': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 appendBlockToSubAgent(sa, {
                   type: 'image_error',
@@ -1583,7 +1668,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_message_end': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 finalizeAssistantMessage(sa, event.usage, event.providerResponseId, false)
                 if (event.usage) {
@@ -1593,7 +1678,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_tool_result_message': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 sa.transcript.push(event.message)
                 trimSubAgentTranscript(sa)
@@ -1602,7 +1687,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_user_message': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 finalizeAssistantMessage(sa)
                 sa.transcript.push(event.message)
@@ -1612,7 +1697,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_report_update': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 sa.report = event.report
                 sa.reportStatus = event.status
@@ -1621,7 +1706,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_tool_call': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 const normalizedToolCall = normalizeToolCall(event.toolCall)
                 const existing = sa.toolCalls.find((t) => t.id === normalizedToolCall.id)
@@ -1637,7 +1722,7 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_text_delta': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
+              const sa = resolveSubAgentEventTarget(state, id, sessionId)?.subAgent
               if (sa) {
                 sa.streamingText = truncateText(
                   sa.streamingText + event.text,
@@ -1648,8 +1733,9 @@ export const useAgentStore = create<AgentStore>()(
               break
             }
             case 'sub_agent_end': {
-              const sa = state.activeSubAgents[id] ?? state.completedSubAgents[id]
-              if (sa) {
+              const target = resolveSubAgentEventTarget(state, id, sessionId)
+              if (target) {
+                const { subAgent: sa, buckets } = target
                 sa.isRunning = false
                 sa.success = event.result.success
                 sa.errorMessage = event.result.error ?? null
@@ -1660,7 +1746,7 @@ export const useAgentStore = create<AgentStore>()(
                 }
                 sa.usage = event.result.usage
                 sa.reportStatus = sa.report.trim() ? 'submitted' : 'missing'
-                state.completedSubAgents[id] = sa
+                buckets.completed[id] = sa
                 if (sa.sessionId) {
                   const previous = state.sessionSubAgentSummaries[sa.sessionId] ?? []
                   state.sessionSubAgentSummaries[sa.sessionId] = [
@@ -1669,8 +1755,8 @@ export const useAgentStore = create<AgentStore>()(
                   ].slice(0, MAX_SUBAGENT_HISTORY)
                 }
                 upsertSubAgentHistory(state.subAgentHistory, sa)
-                trimCompletedSubAgentsMap(state.completedSubAgents)
-                delete state.activeSubAgents[id]
+                trimCompletedSubAgentsMap(buckets.completed)
+                delete buckets.active[id]
                 rebuildRunningSubAgentDerived(state)
               }
               break
@@ -1782,6 +1868,7 @@ export const useAgentStore = create<AgentStore>()(
               )
             }
           }
+          rebuildRunningSubAgentDerived(state)
         })
       },
 

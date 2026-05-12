@@ -513,8 +513,12 @@ function reconcileSubAgentCompletionFromTaskToolCall(
   if (toolCall.name !== TASK_TOOL_NAME || toolCall.input.run_in_background === true) return
 
   const agentStore = useAgentStore.getState()
+  const cachedSubAgents = agentStore.sessionSubAgentLiveCache[sessionId]
   const tracked =
-    agentStore.activeSubAgents[toolCall.id] ?? agentStore.completedSubAgents[toolCall.id]
+    agentStore.activeSubAgents[toolCall.id] ??
+    agentStore.completedSubAgents[toolCall.id] ??
+    cachedSubAgents?.active[toolCall.id] ??
+    cachedSubAgents?.completed[toolCall.id]
   if (!tracked) return
 
   const rawOutput = extractToolResultText(toolCall.output)
@@ -4128,30 +4132,26 @@ export function useChatActions(): {
                       settledInput
                     )
                   }
-                  if (isSessionForeground(sessionId!)) {
-                    useAgentStore.getState().updateToolCall(
-                      event.toolCall.id,
-                      {
-                        ...(settledInput ? { input: settledInput } : {}),
-                        status: event.toolCall.status,
-                        output: event.toolCall.output,
-                        error: event.toolCall.error,
-                        completedAt: event.toolCall.completedAt
-                      },
-                      sessionId!
-                    )
-                    if (
-                      event.toolCall.status === 'completed' ||
-                      event.toolCall.status === 'error'
-                    ) {
-                      reconcileSubAgentCompletionFromTaskToolCall(sessionId!, event.toolCall)
-                    }
-                    if (
-                      event.toolCall.status === 'completed' &&
-                      (event.toolCall.name === 'Write' || event.toolCall.name === 'Edit')
-                    ) {
-                      void useAgentStore.getState().refreshRunChanges(assistantMsgId)
-                    }
+                  useAgentStore.getState().updateToolCall(
+                    event.toolCall.id,
+                    {
+                      ...(settledInput ? { input: settledInput } : {}),
+                      status: event.toolCall.status,
+                      output: event.toolCall.output,
+                      error: event.toolCall.error,
+                      completedAt: event.toolCall.completedAt
+                    },
+                    sessionId!
+                  )
+                  if (event.toolCall.status === 'completed' || event.toolCall.status === 'error') {
+                    reconcileSubAgentCompletionFromTaskToolCall(sessionId!, event.toolCall)
+                  }
+                  if (
+                    isSessionForeground(sessionId!) &&
+                    event.toolCall.status === 'completed' &&
+                    (event.toolCall.name === 'Write' || event.toolCall.name === 'Edit')
+                  ) {
+                    void useAgentStore.getState().refreshRunChanges(assistantMsgId)
                   }
                   if (event.toolCall.status === 'completed' || event.toolCall.status === 'error') {
                     liveToolNames.delete(event.toolCall.id)
