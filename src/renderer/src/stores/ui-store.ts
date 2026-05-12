@@ -20,7 +20,7 @@ export type NavItem = 'chat' | 'channels' | 'resources' | 'skills' | 'draw' | 't
 
 export type ChatView = 'home' | 'project' | 'archive' | 'channels' | 'git' | 'session'
 
-export type RightPanelTab =
+export type LegacyRightPanelTab =
   | 'steps'
   | 'orchestration'
   | 'artifacts'
@@ -33,6 +33,23 @@ export type RightPanelTab =
   | 'team'
   | 'acp'
 export type RightPanelSection = 'execution' | 'resources' | 'collaboration' | 'monitoring'
+export type RightPanelTabKind = 'review' | 'preview' | 'browser' | 'subagent' | 'terminal'
+
+export interface RightPanelTabInstance {
+  id: string
+  kind: RightPanelTabKind
+  title: string
+  closable: boolean
+  sessionId?: string | null
+  toolUseId?: string | null
+  inlineText?: string | null
+  processId?: string
+  previewTabId?: string
+  projectId?: string | null
+  initialChangeId?: string | null
+  modified?: boolean
+  createdAt: number
+}
 
 export type PreviewSource = 'file' | 'dev-server' | 'markdown'
 export type AutoModelRoute = 'main' | 'fast'
@@ -86,6 +103,8 @@ export interface PreviewPanelState {
   projectDir?: string
   markdownContent?: string
   markdownTitle?: string
+  sessionId?: string | null
+  projectId?: string | null
   targetLine?: number
   targetColumn?: number
   targetPositionKey?: number
@@ -103,6 +122,21 @@ export interface MessageListViewState {
   messageCount: number
   loadedRangeStart: number
   loadedRangeEnd: number
+}
+
+export interface BrowserErrorInfo {
+  code: number
+  desc: string
+  url: string
+}
+
+export interface BrowserPanelSessionState {
+  url: string
+  loading: boolean
+  pageTitle: string
+  canGoBack: boolean
+  canGoForward: boolean
+  errorInfo: BrowserErrorInfo | null
 }
 
 export type SettingsTab =
@@ -128,6 +162,67 @@ export type DetailPanelContent =
   | { type: 'document'; title: string; content: string }
   | { type: 'report'; title: string; data: unknown }
 
+const RIGHT_PANEL_REVIEW_TAB_ID = 'review'
+
+function createReviewTab(initialChangeId?: string | null): RightPanelTabInstance {
+  return {
+    id: RIGHT_PANEL_REVIEW_TAB_ID,
+    kind: 'review',
+    title: 'Review',
+    closable: false,
+    initialChangeId: initialChangeId ?? null,
+    createdAt: 0
+  }
+}
+
+function ensureReviewTab(
+  tabs: RightPanelTabInstance[] | null | undefined,
+  initialChangeId?: string | null
+): RightPanelTabInstance[] {
+  const safeTabs = tabs ?? []
+  const existing = safeTabs.find((tab) => tab.id === RIGHT_PANEL_REVIEW_TAB_ID)
+  if (existing) {
+    return safeTabs.map((tab) =>
+      tab.id === RIGHT_PANEL_REVIEW_TAB_ID
+        ? {
+            ...tab,
+            initialChangeId: initialChangeId !== undefined ? initialChangeId : tab.initialChangeId
+          }
+        : tab
+    )
+  }
+  return [createReviewTab(initialChangeId), ...safeTabs]
+}
+
+function getDefaultRightPanelTabs(): RightPanelTabInstance[] {
+  return [createReviewTab()]
+}
+
+function keepGlobalRightPanelTabs(
+  tabs: RightPanelTabInstance[] | null | undefined
+): RightPanelTabInstance[] {
+  return ensureReviewTab(
+    (tabs ?? []).filter((tab) => tab.kind === 'review' || tab.kind === 'browser'),
+    null
+  )
+}
+
+function nextRightPanelActiveTab(
+  tabs: RightPanelTabInstance[] | null | undefined,
+  closedTabId: string
+): string {
+  const safeTabs = tabs ?? []
+  const index = safeTabs.findIndex((tab) => tab.id === closedTabId)
+  const nextTabs = safeTabs.filter((tab) => tab.id !== closedTabId)
+  return (
+    nextTabs[Math.min(Math.max(index, 0), nextTabs.length - 1)]?.id ?? RIGHT_PANEL_REVIEW_TAB_ID
+  )
+}
+
+function rightPanelPreviewTabId(previewTabId: string): string {
+  return `preview:${previewTabId}`
+}
+
 interface UIStore {
   mode: AppMode
   setMode: (mode: AppMode) => void
@@ -152,10 +247,22 @@ interface UIStore {
   isBottomTerminalDockOpen: (projectId?: string | null) => boolean
   bottomTerminalDockHeight: number
   setBottomTerminalDockHeight: (height: number) => void
-  rightPanelTab: RightPanelTab
-  setRightPanelTab: (tab: RightPanelTab) => void
+  rightPanelTab: LegacyRightPanelTab
+  setRightPanelTab: (tab: LegacyRightPanelTab) => void
   rightPanelSection: RightPanelSection
   setRightPanelSection: (section: RightPanelSection) => void
+  rightPanelTabs: RightPanelTabInstance[]
+  rightPanelActiveTabId: string
+  setRightPanelActiveTab: (tabId: string) => void
+  openReviewTab: (initialChangeId?: string | null) => void
+  ensureBrowserTab: (url?: string, sessionId?: string | null, projectId?: string | null) => void
+  ensureSubAgentTab: (
+    toolUseId?: string | null,
+    inlineText?: string | null,
+    title?: string | null
+  ) => void
+  ensureTerminalTab: (processId: string, title?: string | null) => void
+  closeRightPanelTab: (tabId: string) => void
   rightPanelWidth: number
   setRightPanelWidth: (width: number) => void
   isHoveringRightPanel: boolean
@@ -215,7 +322,8 @@ interface UIStore {
   closePreviewPanel: (sessionId?: string | null) => void
   setPreviewViewMode: (mode: 'preview' | 'code', sessionId?: string | null) => void
   activeScopedSessionId: string | null
-  syncSessionScopedState: (sessionId: string | null) => void
+  activeScopedProjectId: string | null
+  syncSessionScopedState: (sessionId: string | null, projectId?: string | null) => void
   messageListViewStatesBySession: Record<string, MessageListViewState | undefined>
   setMessageListViewState: (sessionId: string, state: MessageListViewState | null) => void
   getMessageListViewState: (sessionId?: string | null) => MessageListViewState | null
@@ -246,25 +354,63 @@ interface UIStore {
   openOrchestrationMember: (runId: string, memberId?: string | null) => void
   closeOrchestrationPanel: () => void
   openSubAgentsPanel: (toolUseId?: string | null) => void
+  browserStatesBySession: Record<string, BrowserPanelSessionState | undefined>
+  getBrowserState: (
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => BrowserPanelSessionState
+  patchBrowserState: (
+    sessionId: string | null | undefined,
+    patch: Partial<BrowserPanelSessionState>,
+    projectId?: string | null
+  ) => void
   browserUrl: string
-  setBrowserUrl: (url: string) => void
-  openBrowserTab: (url?: string) => void
+  setBrowserUrl: (url: string, sessionId?: string | null, projectId?: string | null) => void
+  openBrowserTab: (url?: string, sessionId?: string | null, projectId?: string | null) => void
   browserLoading: boolean
-  setBrowserLoading: (loading: boolean) => void
+  setBrowserLoading: (
+    loading: boolean,
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => void
   browserPageTitle: string
-  setBrowserPageTitle: (title: string) => void
+  setBrowserPageTitle: (title: string, sessionId?: string | null, projectId?: string | null) => void
   browserCanGoBack: boolean
-  setBrowserCanGoBack: (can: boolean) => void
+  setBrowserCanGoBack: (can: boolean, sessionId?: string | null, projectId?: string | null) => void
   browserCanGoForward: boolean
-  setBrowserCanGoForward: (can: boolean) => void
-  browserErrorInfo: { code: number; desc: string; url: string } | null
-  setBrowserErrorInfo: (info: { code: number; desc: string; url: string } | null) => void
+  setBrowserCanGoForward: (
+    can: boolean,
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => void
+  browserErrorInfo: BrowserErrorInfo | null
+  setBrowserErrorInfo: (
+    info: BrowserErrorInfo | null,
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => void
+  browserWebviewRefsBySession: Record<
+    string,
+    React.RefObject<Electron.WebviewTag | null> | null | undefined
+  >
+  getBrowserWebviewRef: (
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => React.RefObject<Electron.WebviewTag | null> | null
   browserWebviewRef: React.RefObject<Electron.WebviewTag | null> | null
-  setBrowserWebviewRef: (ref: React.RefObject<Electron.WebviewTag | null> | null) => void
+  setBrowserWebviewRef: (
+    ref: React.RefObject<Electron.WebviewTag | null> | null,
+    sessionId?: string | null,
+    projectId?: string | null
+  ) => void
   subAgentExecutionDetailOpen: boolean
   subAgentExecutionDetailToolUseId: string | null
   subAgentExecutionDetailInlineText: string | null
-  openSubAgentExecutionDetail: (toolUseId: string, inlineText?: string | null) => void
+  openSubAgentExecutionDetail: (
+    toolUseId: string,
+    inlineText?: string | null,
+    title?: string | null
+  ) => void
   closeSubAgentExecutionDetail: () => void
   selectedSubAgentToolUseId: string | null
   setSelectedSubAgentToolUseId: (toolUseId: string | null) => void
@@ -286,6 +432,129 @@ interface UIStore {
   applyChatRouteFromLocation: () => void
 }
 
+const GLOBAL_BROWSER_SESSION_KEY = '__global__'
+
+const DEFAULT_BROWSER_STATE: BrowserPanelSessionState = {
+  url: '',
+  loading: false,
+  pageTitle: '',
+  canGoBack: false,
+  canGoForward: false,
+  errorInfo: null
+}
+
+interface PanelScope {
+  sessionId: string | null
+  projectId: string | null
+}
+
+function normalizeScopeId(value?: string | null): string | null {
+  const trimmed = value?.trim()
+  return trimmed || null
+}
+
+function resolveProjectIdForSession(sessionId?: string | null): string | null {
+  const normalizedSessionId = normalizeScopeId(sessionId)
+  if (!normalizedSessionId) return useChatStore.getState().activeProjectId ?? null
+  const chatState = useChatStore.getState()
+  return chatState.sessions.find((session) => session.id === normalizedSessionId)?.projectId ?? null
+}
+
+function resolvePanelScope(
+  state: Pick<UIStore, 'activeScopedSessionId' | 'activeScopedProjectId'>,
+  sessionId?: string | null,
+  projectId?: string | null
+): PanelScope {
+  const resolvedSessionId = normalizeScopeId(
+    sessionId !== undefined
+      ? sessionId
+      : (state.activeScopedSessionId ?? useChatStore.getState().activeSessionId ?? null)
+  )
+  const resolvedProjectId = normalizeScopeId(
+    projectId !== undefined
+      ? projectId
+      : resolvedSessionId
+        ? resolveProjectIdForSession(resolvedSessionId)
+        : (state.activeScopedProjectId ?? useChatStore.getState().activeProjectId ?? null)
+  )
+  return {
+    sessionId: resolvedSessionId,
+    projectId: resolvedProjectId
+  }
+}
+
+function getBrowserSessionKey(sessionId?: string | null, projectId?: string | null): string {
+  const normalizedSessionId = normalizeScopeId(sessionId)
+  if (normalizedSessionId) return normalizedSessionId
+  const normalizedProjectId = normalizeScopeId(projectId)
+  return normalizedProjectId ? `project:${normalizedProjectId}` : GLOBAL_BROWSER_SESSION_KEY
+}
+
+function getBrowserStateFromMap(
+  states: Record<string, BrowserPanelSessionState | undefined> | null | undefined,
+  sessionId?: string | null,
+  projectId?: string | null
+): BrowserPanelSessionState {
+  return states?.[getBrowserSessionKey(sessionId, projectId)] ?? DEFAULT_BROWSER_STATE
+}
+
+function getBrowserScopeKey(scope: PanelScope): string {
+  return getBrowserSessionKey(scope.sessionId, scope.projectId)
+}
+
+function isActiveBrowserScope(
+  state: Pick<UIStore, 'activeScopedSessionId' | 'activeScopedProjectId'>,
+  scope: PanelScope
+): boolean {
+  return getBrowserScopeKey(resolvePanelScope(state)) === getBrowserScopeKey(scope)
+}
+
+function browserAliasState(
+  browserState: BrowserPanelSessionState
+): Pick<
+  UIStore,
+  | 'browserUrl'
+  | 'browserLoading'
+  | 'browserPageTitle'
+  | 'browserCanGoBack'
+  | 'browserCanGoForward'
+  | 'browserErrorInfo'
+> {
+  return {
+    browserUrl: browserState.url,
+    browserLoading: browserState.loading,
+    browserPageTitle: browserState.pageTitle,
+    browserCanGoBack: browserState.canGoBack,
+    browserCanGoForward: browserState.canGoForward,
+    browserErrorInfo: browserState.errorInfo
+  }
+}
+
+function updateBrowserStateForSession(
+  state: Pick<
+    UIStore,
+    'activeScopedSessionId' | 'activeScopedProjectId' | 'browserStatesBySession'
+  >,
+  sessionId: string | null | undefined,
+  patch: Partial<BrowserPanelSessionState>,
+  projectId?: string | null
+): Partial<UIStore> {
+  const scope = resolvePanelScope(state, sessionId, projectId)
+  const key = getBrowserScopeKey(scope)
+  const browserStatesBySession = state.browserStatesBySession ?? {}
+  const nextBrowserState = {
+    ...getBrowserStateFromMap(browserStatesBySession, scope.sessionId, scope.projectId),
+    ...patch
+  }
+  return {
+    browserStatesBySession: {
+      ...browserStatesBySession,
+      [key]: nextBrowserState
+    },
+    ...(isActiveBrowserScope(state, scope) ? browserAliasState(nextBrowserState) : {})
+  }
+}
+
 const CHAT_SURFACE_NAV_RESET = {
   settingsPageOpen: false,
   skillsPageOpen: false,
@@ -299,25 +568,146 @@ function buildFilePreviewState(
   filePath: string,
   viewMode?: 'preview' | 'code',
   sshConnectionId?: string,
+  sessionId?: string | null,
+  projectId?: string | null,
   targetLine?: number,
   targetColumn?: number
 ): PreviewPanelState {
+  const pathWithoutQuery = filePath.split(/[?#]/)[0] ?? filePath
   const ext =
-    filePath.lastIndexOf('.') >= 0 ? filePath.slice(filePath.lastIndexOf('.')).toLowerCase() : ''
-  const previewExts = new Set(['.html', '.htm'])
-  const spreadsheetExts = new Set(['.csv', '.tsv', '.xls', '.xlsx'])
-  const markdownExts = new Set(['.md', '.mdx', '.markdown'])
-  const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
-  const docxExts = new Set(['.docx'])
+    pathWithoutQuery.lastIndexOf('.') >= 0
+      ? pathWithoutQuery.slice(pathWithoutQuery.lastIndexOf('.')).toLowerCase()
+      : ''
+  const onlineOfficeFile = /^https:\/\/\S+/i.test(filePath)
+  const previewExts = new Set(['.html', '.htm', '.xhtml', '.shtml'])
+  const spreadsheetExts = new Set(['.csv', '.tsv', '.xls', '.xlsx', '.xlsm', '.xlsb', '.ods'])
+  const markdownExts = new Set(['.md', '.mdx', '.markdown', '.mdown', '.mkd', '.mkdn', '.mdwn'])
+  const imageExts = new Set([
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.jfif',
+    '.pjpeg',
+    '.pjp',
+    '.gif',
+    '.apng',
+    '.bmp',
+    '.webp',
+    '.avif',
+    '.ico',
+    '.cur',
+    '.tif',
+    '.tiff',
+    '.heic',
+    '.heif',
+    '.jxl'
+  ])
+  const videoExts = new Set([
+    '.mp4',
+    '.webm',
+    '.ogv',
+    '.mov',
+    '.m4v',
+    '.mkv',
+    '.avi',
+    '.mpeg',
+    '.mpg',
+    '.3gp',
+    '.3g2',
+    '.mts',
+    '.m2ts'
+  ])
+  const audioExts = new Set([
+    '.mp3',
+    '.wav',
+    '.wave',
+    '.ogg',
+    '.oga',
+    '.m4a',
+    '.aac',
+    '.flac',
+    '.opus',
+    '.weba',
+    '.aif',
+    '.aiff'
+  ])
+  const svgExts = new Set(['.svg'])
+  const fontExts = new Set(['.ttf', '.otf', '.woff', '.woff2'])
+  const docxExts = new Set(['.docx', '.docm', '.dotx', '.dotm'])
+  const officeOnlineExts = new Set([
+    '.doc',
+    '.docx',
+    '.docm',
+    '.dotx',
+    '.dotm',
+    '.ppt',
+    '.pptx',
+    '.pps',
+    '.ppsx',
+    '.odp',
+    '.odt',
+    '.ott',
+    '.rtf',
+    '.xls',
+    '.xlsx',
+    '.xlsm'
+  ])
   const pdfExts = new Set(['.pdf'])
+  const binaryExts = new Set([
+    '.zip',
+    '.rar',
+    '.7z',
+    '.tar',
+    '.gz',
+    '.tgz',
+    '.bz2',
+    '.xz',
+    '.zst',
+    '.jar',
+    '.war',
+    '.ear',
+    '.dmg',
+    '.iso',
+    '.img',
+    '.exe',
+    '.msi',
+    '.dll',
+    '.so',
+    '.dylib',
+    '.bin',
+    '.dat',
+    '.sqlite',
+    '.sqlite3',
+    '.db'
+  ])
   let viewerType = 'fallback'
-  if (previewExts.has(ext)) viewerType = 'html'
+  if (onlineOfficeFile && officeOnlineExts.has(ext)) viewerType = 'office-online'
+  else if (previewExts.has(ext)) viewerType = 'html'
   else if (spreadsheetExts.has(ext)) viewerType = 'spreadsheet'
   else if (markdownExts.has(ext)) viewerType = 'markdown'
+  else if (svgExts.has(ext)) viewerType = 'svg'
   else if (imageExts.has(ext)) viewerType = 'image'
+  else if (videoExts.has(ext)) viewerType = 'video'
+  else if (audioExts.has(ext)) viewerType = 'audio'
+  else if (fontExts.has(ext)) viewerType = 'font'
   else if (docxExts.has(ext)) viewerType = 'docx'
+  else if (officeOnlineExts.has(ext)) viewerType = 'office-online'
   else if (pdfExts.has(ext)) viewerType = 'pdf'
-  const previewTypes = new Set(['html', 'markdown', 'docx', 'pdf', 'image', 'spreadsheet'])
+  else if (binaryExts.has(ext)) viewerType = 'binary'
+  const previewTypes = new Set([
+    'html',
+    'markdown',
+    'svg',
+    'docx',
+    'office-online',
+    'pdf',
+    'image',
+    'video',
+    'audio',
+    'font',
+    'binary',
+    'spreadsheet'
+  ])
   const defaultMode = previewTypes.has(viewerType) ? 'preview' : 'code'
 
   return {
@@ -326,20 +716,30 @@ function buildFilePreviewState(
     viewMode: viewMode ?? (targetLine ? 'code' : defaultMode),
     viewerType,
     sshConnectionId: sshConnectionId || undefined,
+    sessionId: sessionId === undefined ? undefined : normalizeScopeId(sessionId),
+    projectId: projectId === undefined ? undefined : normalizeScopeId(projectId),
     targetLine,
     targetColumn,
     targetPositionKey: targetLine ? Date.now() : undefined
   }
 }
 
+function previewScopeKey(state: Pick<PreviewPanelState, 'sessionId' | 'projectId'>): string {
+  const sessionId = normalizeScopeId(state.sessionId)
+  if (sessionId) return `session:${sessionId}`
+  const projectId = normalizeScopeId(state.projectId)
+  return projectId ? `project:${projectId}` : 'global'
+}
+
 function previewTabId(state: PreviewPanelState): string {
+  const scopeKey = previewScopeKey(state)
   if (state.source === 'file') {
-    return `file:${state.sshConnectionId ?? 'local'}:${state.filePath}`
+    return `file:${scopeKey}:${state.sshConnectionId ?? 'local'}:${state.filePath}`
   }
   if (state.source === 'dev-server') {
-    return `dev-server:${state.projectDir ?? ''}:${state.port ?? ''}`
+    return `dev-server:${scopeKey}:${state.projectDir ?? ''}:${state.port ?? ''}`
   }
-  return `markdown:${state.markdownTitle ?? ''}`
+  return `markdown:${scopeKey}:${state.markdownTitle ?? ''}`
 }
 
 function previewTabTitle(state: PreviewPanelState): string {
@@ -353,6 +753,14 @@ function withPreviewTab(state: PreviewPanelState): PreviewPanelTab {
     ...state,
     id: previewTabId(state),
     title: previewTabTitle(state)
+  }
+}
+
+function withPreviewScope(state: PreviewPanelState, scope: PanelScope): PreviewPanelState {
+  return {
+    ...state,
+    sessionId: scope.sessionId,
+    projectId: scope.projectId
   }
 }
 
@@ -378,8 +786,27 @@ export const useUIStore = create<UIStore>()(
       setLeftSidebarOpen: (open) => set({ leftSidebarOpen: open }),
       setLeftSidebarWidth: (width) => set({ leftSidebarWidth: clampLeftSidebarWidth(width) }),
       rightPanelOpen: false,
-      toggleRightPanel: () => set((state) => ({ rightPanelOpen: !state.rightPanelOpen })),
-      setRightPanelOpen: (open) => set({ rightPanelOpen: open }),
+      toggleRightPanel: () =>
+        set((state) => {
+          const nextOpen = !state.rightPanelOpen
+          if (!nextOpen) return { rightPanelOpen: false }
+          const rightPanelTabs = ensureReviewTab(state.rightPanelTabs, null)
+          return {
+            rightPanelOpen: true,
+            rightPanelTabs,
+            rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID
+          }
+        }),
+      setRightPanelOpen: (open) =>
+        set((state) => {
+          if (!open) return { rightPanelOpen: false }
+          const rightPanelTabs = ensureReviewTab(state.rightPanelTabs, null)
+          return {
+            rightPanelOpen: true,
+            rightPanelTabs,
+            rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID
+          }
+        }),
       workingFolderSheetOpen: false,
       toggleWorkingFolderSheet: () =>
         set((state) => ({ workingFolderSheetOpen: !state.workingFolderSheetOpen })),
@@ -408,9 +835,199 @@ export const useUIStore = create<UIStore>()(
       setBottomTerminalDockHeight: (height) =>
         set({ bottomTerminalDockHeight: clampBottomTerminalDockHeight(height) }),
       rightPanelTab: 'preview',
-      setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
+      setRightPanelTab: (tab) => {
+        if (tab === 'browser') {
+          get().ensureBrowserTab()
+          return
+        }
+        if (tab === 'subagents') {
+          get().ensureSubAgentTab()
+          return
+        }
+        if (tab === 'team' || tab === 'orchestration') {
+          get().openOrchestrationPanel()
+          return
+        }
+        get().openReviewTab()
+        set({ rightPanelTab: tab })
+      },
       rightPanelSection: 'execution',
       setRightPanelSection: (section) => set({ rightPanelSection: section }),
+      rightPanelTabs: getDefaultRightPanelTabs(),
+      rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
+      setRightPanelActiveTab: (tabId) =>
+        set((state) => {
+          const rightPanelTabs = ensureReviewTab(state.rightPanelTabs)
+          const targetTab = rightPanelTabs.find((tab) => tab.id === tabId)
+          if (!targetTab) {
+            return {
+              rightPanelTabs,
+              rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
+              rightPanelOpen: true
+            }
+          }
+          return {
+            rightPanelTabs,
+            rightPanelActiveTabId: tabId,
+            rightPanelOpen: true,
+            ...(targetTab.kind === 'preview' && targetTab.previewTabId
+              ? {
+                  activePreviewPanelTabId: targetTab.previewTabId,
+                  previewPanelState: activatePreviewTab(
+                    state.previewPanelTabs,
+                    targetTab.previewTabId
+                  ),
+                  previewPanelOpen: true,
+                  detailPanelOpen: false,
+                  detailPanelContent: null
+                }
+              : {})
+          }
+        }),
+      openReviewTab: (initialChangeId) =>
+        set((state) => ({
+          rightPanelTabs: ensureReviewTab(state.rightPanelTabs, initialChangeId ?? null),
+          rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
+          rightPanelTab: 'preview',
+          rightPanelOpen: true
+        })),
+      ensureBrowserTab: (url, sessionId, projectId) =>
+        set((state) => {
+          const existing = state.rightPanelTabs.find((tab) => tab.kind === 'browser')
+          const tab: RightPanelTabInstance = existing ?? {
+            id: 'browser',
+            kind: 'browser',
+            title: 'Browser',
+            closable: true,
+            createdAt: Date.now()
+          }
+          const rightPanelTabs = existing
+            ? ensureReviewTab(state.rightPanelTabs)
+            : ensureReviewTab([...state.rightPanelTabs, tab])
+          return {
+            rightPanelTabs,
+            rightPanelActiveTabId: tab.id,
+            rightPanelTab: 'browser',
+            rightPanelOpen: true,
+            ...updateBrowserStateForSession(
+              state,
+              sessionId,
+              {
+                errorInfo: null,
+                ...(url !== undefined ? { url } : {})
+              },
+              projectId
+            )
+          }
+        }),
+      ensureSubAgentTab: (toolUseId, inlineText, title) =>
+        set((state) => {
+          const tabId = toolUseId ? `subagent:${toolUseId}` : 'subagent:overview'
+          const sessionId =
+            state.activeScopedSessionId ?? useChatStore.getState().activeSessionId ?? null
+          const existing = state.rightPanelTabs.find((tab) => tab.id === tabId)
+          const tab: RightPanelTabInstance = existing
+            ? {
+                ...existing,
+                title: title?.trim() || existing.title,
+                inlineText: inlineText?.trim() ? inlineText : existing.inlineText
+              }
+            : {
+                id: tabId,
+                kind: 'subagent',
+                title: title?.trim() || (toolUseId ? 'SubAgent' : 'SubAgents'),
+                closable: true,
+                sessionId,
+                toolUseId: toolUseId ?? null,
+                inlineText: inlineText?.trim() ? inlineText : null,
+                createdAt: Date.now()
+              }
+          const rightPanelTabs = ensureReviewTab(
+            existing
+              ? state.rightPanelTabs.map((item) => (item.id === tabId ? tab : item))
+              : [...state.rightPanelTabs, tab]
+          )
+          return {
+            selectedSubAgentToolUseId: toolUseId ?? null,
+            subAgentExecutionDetailOpen: false,
+            subAgentExecutionDetailToolUseId: toolUseId ?? null,
+            subAgentExecutionDetailInlineText: inlineText?.trim() ? inlineText : null,
+            orchestrationConsoleOpen: false,
+            rightPanelTabs,
+            rightPanelActiveTabId: tabId,
+            rightPanelTab: 'subagents',
+            rightPanelOpen: true
+          }
+        }),
+      ensureTerminalTab: (processId, title) =>
+        set((state) => {
+          const tabId = `terminal:${processId}`
+          const sessionId =
+            state.activeScopedSessionId ?? useChatStore.getState().activeSessionId ?? null
+          const existing = state.rightPanelTabs.find((tab) => tab.id === tabId)
+          const tab: RightPanelTabInstance = existing ?? {
+            id: tabId,
+            kind: 'terminal',
+            title: title?.trim() || 'Terminal',
+            closable: true,
+            sessionId,
+            processId,
+            createdAt: Date.now()
+          }
+          const rightPanelTabs = existing
+            ? ensureReviewTab(state.rightPanelTabs)
+            : ensureReviewTab([...state.rightPanelTabs, tab])
+          return {
+            rightPanelTabs,
+            rightPanelActiveTabId: tabId,
+            rightPanelTab: 'context',
+            rightPanelOpen: true
+          }
+        }),
+      closeRightPanelTab: (tabId) =>
+        set((state) => {
+          if (tabId === RIGHT_PANEL_REVIEW_TAB_ID) return {}
+          const target = state.rightPanelTabs.find((tab) => tab.id === tabId)
+          const nextPreviewTabs =
+            target?.kind === 'preview' && target.previewTabId
+              ? state.previewPanelTabs.filter((tab) => tab.id !== target.previewTabId)
+              : state.previewPanelTabs
+          const nextRightPanelTabs = ensureReviewTab(
+            state.rightPanelTabs.filter((tab) => tab.id !== tabId)
+          )
+          const rightPanelActiveTabId =
+            state.rightPanelActiveTabId === tabId
+              ? nextRightPanelActiveTab(state.rightPanelTabs, tabId)
+              : state.rightPanelActiveTabId
+          const nextActiveRightPanelTab = nextRightPanelTabs.find(
+            (tab) => tab.id === rightPanelActiveTabId
+          )
+          const nextActivePreviewTabId =
+            nextActiveRightPanelTab?.kind === 'preview'
+              ? (nextActiveRightPanelTab.previewTabId ?? null)
+              : target?.kind === 'preview' && target.previewTabId === state.activePreviewPanelTabId
+                ? null
+                : state.activePreviewPanelTabId
+          return {
+            rightPanelTabs: nextRightPanelTabs,
+            rightPanelActiveTabId,
+            ...(target?.kind === 'preview'
+              ? {
+                  previewPanelTabs: nextPreviewTabs,
+                  activePreviewPanelTabId: nextActivePreviewTabId,
+                  previewPanelState: activatePreviewTab(nextPreviewTabs, nextActivePreviewTabId),
+                  previewPanelOpen: nextPreviewTabs.length > 0 ? state.previewPanelOpen : false
+                }
+              : {}),
+            ...(target?.kind === 'subagent'
+              ? {
+                  subAgentExecutionDetailOpen: false,
+                  subAgentExecutionDetailToolUseId: null,
+                  subAgentExecutionDetailInlineText: null
+                }
+              : {})
+          }
+        }),
       rightPanelWidth: 384,
       setRightPanelWidth: (width) => set({ rightPanelWidth: width }),
       isHoveringRightPanel: false,
@@ -501,15 +1118,33 @@ export const useUIStore = create<UIStore>()(
       setPendingInsertText: (text) => set({ pendingInsertText: text }),
       detailPanelOpen: false,
       detailPanelContent: null,
-      openDetailPanel: (content) =>
+      openDetailPanel: (content) => {
+        if (content.type === 'change-review') {
+          set({ detailPanelOpen: false, detailPanelContent: content })
+          get().openReviewTab(content.initialChangeId ?? null)
+          return
+        }
+
+        if (content.type === 'terminal') {
+          set({ detailPanelOpen: false, detailPanelContent: content })
+          get().ensureTerminalTab(content.processId)
+          return
+        }
+
+        if (content.type === 'subagent') {
+          set({ detailPanelOpen: false, detailPanelContent: content })
+          get().ensureSubAgentTab(content.toolUseId ?? null, content.text ?? null)
+          return
+        }
+
         set({
           detailPanelOpen: true,
           detailPanelContent: content,
           previewPanelOpen: false,
           previewPanelState: null,
-          rightPanelTab: 'preview',
           rightPanelOpen: true
-        }),
+        })
+      },
       closeDetailPanel: () => set({ detailPanelOpen: false, detailPanelContent: null }),
       previewPanelOpen: false,
       previewPanelState: null,
@@ -517,7 +1152,9 @@ export const useUIStore = create<UIStore>()(
       activePreviewPanelTabId: null,
       openPreviewTab: (previewState, preserveExistingViewMode = false) =>
         set((state) => {
-          const nextTab = withPreviewTab(previewState)
+          const scope = resolvePanelScope(state, previewState.sessionId, previewState.projectId)
+          const scopedPreviewState = withPreviewScope(previewState, scope)
+          const nextTab = withPreviewTab(scopedPreviewState)
           const existing = state.previewPanelTabs.find((tab) => tab.id === nextTab.id)
           const nextTabs = existing
             ? state.previewPanelTabs.map((tab) =>
@@ -533,6 +1170,30 @@ export const useUIStore = create<UIStore>()(
               )
             : [...state.previewPanelTabs, nextTab]
           const activePreviewPanelTabId = nextTab.id
+          const previewRightPanelTabId = rightPanelPreviewTabId(nextTab.id)
+          const existingRightPanelTab = state.rightPanelTabs.find(
+            (tab) => tab.id === previewRightPanelTabId
+          )
+          const rightPanelTab: RightPanelTabInstance = {
+            ...(existingRightPanelTab ?? {
+              id: previewRightPanelTabId,
+              kind: 'preview' as const,
+              closable: true,
+              createdAt: Date.now()
+            }),
+            title: previewTabTitle(nextTab),
+            sessionId: scope.sessionId,
+            projectId: scope.projectId,
+            previewTabId: nextTab.id,
+            modified: existing?.modified ?? nextTab.modified ?? false
+          }
+          const rightPanelTabs = ensureReviewTab(
+            existingRightPanelTab
+              ? state.rightPanelTabs.map((tab) =>
+                  tab.id === previewRightPanelTabId ? rightPanelTab : tab
+                )
+              : [...state.rightPanelTabs, rightPanelTab]
+          )
           return {
             previewPanelOpen: true,
             previewPanelTabs: nextTabs,
@@ -540,7 +1201,8 @@ export const useUIStore = create<UIStore>()(
             previewPanelState: activatePreviewTab(nextTabs, activePreviewPanelTabId),
             detailPanelOpen: false,
             detailPanelContent: null,
-            rightPanelTab: 'preview',
+            rightPanelTabs,
+            rightPanelActiveTabId: previewRightPanelTabId,
             rightPanelOpen: true
           }
         }),
@@ -549,6 +1211,10 @@ export const useUIStore = create<UIStore>()(
           const index = state.previewPanelTabs.findIndex((tab) => tab.id === tabId)
           if (index < 0) return {}
           const nextTabs = state.previewPanelTabs.filter((tab) => tab.id !== tabId)
+          const rightPanelTabId = rightPanelPreviewTabId(tabId)
+          const nextRightPanelTabs = ensureReviewTab(
+            state.rightPanelTabs.filter((tab) => tab.id !== rightPanelTabId)
+          )
           const nextActiveId =
             state.activePreviewPanelTabId === tabId
               ? (nextTabs[Math.min(index, nextTabs.length - 1)]?.id ?? null)
@@ -557,57 +1223,88 @@ export const useUIStore = create<UIStore>()(
             previewPanelTabs: nextTabs,
             activePreviewPanelTabId: nextActiveId,
             previewPanelState: activatePreviewTab(nextTabs, nextActiveId),
-            previewPanelOpen: nextTabs.length > 0 ? state.previewPanelOpen : false
+            previewPanelOpen: nextTabs.length > 0 ? state.previewPanelOpen : false,
+            rightPanelTabs: nextRightPanelTabs,
+            rightPanelActiveTabId:
+              state.rightPanelActiveTabId === rightPanelTabId
+                ? (nextRightPanelTabs.find(
+                    (tab) => tab.id === rightPanelPreviewTabId(nextActiveId ?? '')
+                  )?.id ?? RIGHT_PANEL_REVIEW_TAB_ID)
+                : state.rightPanelActiveTabId
           }
         }),
       setActivePreviewTab: (tabId) =>
-        set((state) => ({
-          activePreviewPanelTabId: tabId,
-          previewPanelState: activatePreviewTab(state.previewPanelTabs, tabId),
-          previewPanelOpen: tabId ? true : state.previewPanelOpen,
-          detailPanelOpen: tabId ? false : state.detailPanelOpen,
-          detailPanelContent: tabId ? null : state.detailPanelContent,
-          rightPanelTab: tabId ? 'preview' : state.rightPanelTab
-        })),
+        set((state) => {
+          const rightPanelTabId = tabId ? rightPanelPreviewTabId(tabId) : null
+          return {
+            activePreviewPanelTabId: tabId,
+            previewPanelState: activatePreviewTab(state.previewPanelTabs, tabId),
+            previewPanelOpen: tabId ? true : state.previewPanelOpen,
+            detailPanelOpen: tabId ? false : state.detailPanelOpen,
+            detailPanelContent: tabId ? null : state.detailPanelContent,
+            ...(rightPanelTabId && state.rightPanelTabs.some((tab) => tab.id === rightPanelTabId)
+              ? {
+                  rightPanelActiveTabId: rightPanelTabId,
+                  rightPanelOpen: true
+                }
+              : {})
+          }
+        }),
       updatePreviewTab: (tabId, patch) =>
         set((state) => {
           const nextTabs = state.previewPanelTabs.map((tab) =>
             tab.id === tabId ? { ...tab, ...patch } : tab
           )
+          const updatedTab = nextTabs.find((tab) => tab.id === tabId)
+          const rightPanelTabId = rightPanelPreviewTabId(tabId)
           return {
             previewPanelTabs: nextTabs,
-            previewPanelState: activatePreviewTab(nextTabs, state.activePreviewPanelTabId)
+            previewPanelState: activatePreviewTab(nextTabs, state.activePreviewPanelTabId),
+            rightPanelTabs: updatedTab
+              ? state.rightPanelTabs.map((tab) =>
+                  tab.id === rightPanelTabId
+                    ? {
+                        ...tab,
+                        title: previewTabTitle(updatedTab),
+                        modified: updatedTab.modified ?? false
+                      }
+                    : tab
+                )
+              : state.rightPanelTabs
           }
         }),
-      openFilePreview: (
-        filePath,
-        viewMode,
-        sshConnectionId,
-        _sessionId,
-        targetLine,
-        targetColumn
-      ) =>
+      openFilePreview: (filePath, viewMode, sshConnectionId, sessionId, targetLine, targetColumn) =>
         get().openPreviewTab(
-          buildFilePreviewState(filePath, viewMode, sshConnectionId, targetLine, targetColumn),
+          buildFilePreviewState(
+            filePath,
+            viewMode,
+            sshConnectionId,
+            sessionId,
+            undefined,
+            targetLine,
+            targetColumn
+          ),
           viewMode === undefined && !targetLine
         ),
-      openDevServerPreview: (projectDir, port) =>
+      openDevServerPreview: (projectDir, port, sessionId) =>
         get().openPreviewTab({
           source: 'dev-server',
           filePath: '',
           viewMode: 'preview',
           viewerType: 'dev-server',
           port,
-          projectDir
+          projectDir,
+          sessionId
         }),
-      openMarkdownPreview: (title, content) =>
+      openMarkdownPreview: (title, content, sessionId) =>
         get().openPreviewTab({
           source: 'markdown',
           filePath: '',
           viewMode: 'preview',
           viewerType: 'markdown',
           markdownContent: content,
-          markdownTitle: title
+          markdownTitle: title,
+          sessionId
         }),
       closePreviewPanel: () => set({ previewPanelOpen: false }),
       setPreviewViewMode: (mode) =>
@@ -620,11 +1317,43 @@ export const useUIStore = create<UIStore>()(
             : null
         })),
       activeScopedSessionId: null,
-      syncSessionScopedState: (sessionId) =>
-        set((state) => ({
-          activeScopedSessionId: sessionId,
-          planMode: sessionId ? (state.planModesBySession[sessionId] ?? false) : false
-        })),
+      activeScopedProjectId: null,
+      syncSessionScopedState: (sessionId, projectId) =>
+        set((state) => {
+          const scope = resolvePanelScope(state, sessionId, projectId)
+          const scopeChanged =
+            state.activeScopedSessionId !== scope.sessionId ||
+            state.activeScopedProjectId !== scope.projectId
+          const browserState = getBrowserStateFromMap(
+            state.browserStatesBySession,
+            scope.sessionId,
+            scope.projectId
+          )
+          const browserWebviewRefsBySession = state.browserWebviewRefsBySession ?? {}
+          const planModesBySession = state.planModesBySession ?? {}
+          const browserWebviewRef = browserWebviewRefsBySession[getBrowserScopeKey(scope)] ?? null
+          const scopedPanelState = scopeChanged
+            ? {
+                rightPanelTabs: keepGlobalRightPanelTabs(state.rightPanelTabs),
+                rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
+                previewPanelOpen: false,
+                previewPanelState: null,
+                activePreviewPanelTabId: null,
+                subAgentExecutionDetailOpen: false,
+                subAgentExecutionDetailToolUseId: null,
+                subAgentExecutionDetailInlineText: null,
+                selectedSubAgentToolUseId: null
+              }
+            : {}
+          return {
+            activeScopedSessionId: scope.sessionId,
+            activeScopedProjectId: scope.projectId,
+            planMode: scope.sessionId ? (planModesBySession[scope.sessionId] ?? false) : false,
+            browserWebviewRef,
+            ...browserAliasState(browserState),
+            ...scopedPanelState
+          }
+        }),
       messageListViewStatesBySession: {},
       setMessageListViewState: (sessionId, state) =>
         set((current) => ({
@@ -641,23 +1370,27 @@ export const useUIStore = create<UIStore>()(
       releaseDormantSessionUiState: (keepSessionId) =>
         set((state) => {
           const keep = (key: string): boolean => key === keepSessionId
+          const messageListViewStatesBySession = state.messageListViewStatesBySession ?? {}
+          const autoModelSelectionsBySession = state.autoModelSelectionsBySession ?? {}
+          const autoModelHighConfidenceSelectionsBySession =
+            state.autoModelHighConfidenceSelectionsBySession ?? {}
+          const autoModelRoutingStatesBySession = state.autoModelRoutingStatesBySession ?? {}
+          const planModesBySession = state.planModesBySession ?? {}
           return {
             messageListViewStatesBySession: Object.fromEntries(
-              Object.entries(state.messageListViewStatesBySession).filter(([k]) => keep(k))
+              Object.entries(messageListViewStatesBySession).filter(([k]) => keep(k))
             ),
             autoModelSelectionsBySession: Object.fromEntries(
-              Object.entries(state.autoModelSelectionsBySession).filter(([k]) => keep(k))
+              Object.entries(autoModelSelectionsBySession).filter(([k]) => keep(k))
             ),
             autoModelHighConfidenceSelectionsBySession: Object.fromEntries(
-              Object.entries(state.autoModelHighConfidenceSelectionsBySession).filter(([k]) =>
-                keep(k)
-              )
+              Object.entries(autoModelHighConfidenceSelectionsBySession).filter(([k]) => keep(k))
             ),
             autoModelRoutingStatesBySession: Object.fromEntries(
-              Object.entries(state.autoModelRoutingStatesBySession).filter(([k]) => keep(k))
+              Object.entries(autoModelRoutingStatesBySession).filter(([k]) => keep(k))
             ),
             planModesBySession: Object.fromEntries(
-              Object.entries(state.planModesBySession).filter(([k]) => keep(k))
+              Object.entries(planModesBySession).filter(([k]) => keep(k))
             )
           }
         }),
@@ -730,49 +1463,66 @@ export const useUIStore = create<UIStore>()(
           selectedOrchestrationRunId: null,
           selectedOrchestrationMemberId: null
         }),
-      openSubAgentsPanel: (toolUseId) =>
-        set({
-          selectedSubAgentToolUseId: toolUseId ?? null,
-          rightPanelTab: 'subagents',
-          rightPanelSection: 'collaboration',
-          orchestrationConsoleOpen: false,
-          rightPanelOpen: true
-        }),
+      openSubAgentsPanel: (toolUseId) => get().ensureSubAgentTab(toolUseId ?? null),
+      browserStatesBySession: {},
+      getBrowserState: (sessionId, projectId) => {
+        const state = get()
+        const scope = resolvePanelScope(state, sessionId, projectId)
+        return getBrowserStateFromMap(
+          state.browserStatesBySession,
+          scope.sessionId,
+          scope.projectId
+        )
+      },
+      patchBrowserState: (sessionId, patch, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, patch, projectId)),
       browserUrl: '',
-      setBrowserUrl: (url) => set({ browserUrl: url }),
-      openBrowserTab: (url) =>
-        set({
-          rightPanelTab: 'browser',
-          rightPanelOpen: true,
-          browserErrorInfo: null,
-          ...(url !== undefined ? { browserUrl: url } : {})
-        }),
+      setBrowserUrl: (url, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { url }, projectId)),
+      openBrowserTab: (url, sessionId, projectId) =>
+        get().ensureBrowserTab(url, sessionId, projectId),
       browserLoading: false,
-      setBrowserLoading: (loading) => set({ browserLoading: loading }),
+      setBrowserLoading: (loading, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { loading }, projectId)),
       browserPageTitle: '',
-      setBrowserPageTitle: (title) => set({ browserPageTitle: title }),
+      setBrowserPageTitle: (pageTitle, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { pageTitle }, projectId)),
       browserCanGoBack: false,
-      setBrowserCanGoBack: (can) => set({ browserCanGoBack: can }),
+      setBrowserCanGoBack: (canGoBack, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { canGoBack }, projectId)),
       browserCanGoForward: false,
-      setBrowserCanGoForward: (can) => set({ browserCanGoForward: can }),
+      setBrowserCanGoForward: (canGoForward, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { canGoForward }, projectId)),
       browserErrorInfo: null,
-      setBrowserErrorInfo: (info) => set({ browserErrorInfo: info }),
+      setBrowserErrorInfo: (errorInfo, sessionId, projectId) =>
+        set((state) => updateBrowserStateForSession(state, sessionId, { errorInfo }, projectId)),
+      browserWebviewRefsBySession: {},
+      getBrowserWebviewRef: (sessionId, projectId) => {
+        const state = get()
+        const scope = resolvePanelScope(state, sessionId, projectId)
+        return state.browserWebviewRefsBySession[getBrowserScopeKey(scope)] ?? null
+      },
       browserWebviewRef: null,
-      setBrowserWebviewRef: (ref) => set({ browserWebviewRef: ref }),
+      setBrowserWebviewRef: (ref, sessionId, projectId) =>
+        set((state) => {
+          const scope = resolvePanelScope(state, sessionId, projectId)
+          const key = getBrowserScopeKey(scope)
+          const browserWebviewRefsBySession = { ...state.browserWebviewRefsBySession }
+          if (ref) {
+            browserWebviewRefsBySession[key] = ref
+          } else {
+            delete browserWebviewRefsBySession[key]
+          }
+          return {
+            browserWebviewRefsBySession,
+            ...(isActiveBrowserScope(state, scope) ? { browserWebviewRef: ref } : {})
+          }
+        }),
       subAgentExecutionDetailOpen: false,
       subAgentExecutionDetailToolUseId: null,
       subAgentExecutionDetailInlineText: null,
-      openSubAgentExecutionDetail: (toolUseId, inlineText) =>
-        set({
-          selectedSubAgentToolUseId: toolUseId,
-          subAgentExecutionDetailOpen: true,
-          subAgentExecutionDetailToolUseId: toolUseId,
-          subAgentExecutionDetailInlineText: inlineText?.trim() ? inlineText : null,
-          rightPanelTab: 'subagents',
-          rightPanelSection: 'collaboration',
-          orchestrationConsoleOpen: false,
-          rightPanelOpen: true
-        }),
+      openSubAgentExecutionDetail: (toolUseId, inlineText, title) =>
+        get().ensureSubAgentTab(toolUseId, inlineText ?? null, title ?? null),
       closeSubAgentExecutionDetail: () =>
         set({
           subAgentExecutionDetailOpen: false,
@@ -919,8 +1669,6 @@ export const useUIStore = create<UIStore>()(
         leftSidebarOpen: state.leftSidebarOpen,
         leftSidebarWidth: clampLeftSidebarWidth(state.leftSidebarWidth),
         rightPanelOpen: state.rightPanelOpen,
-        rightPanelTab: state.rightPanelTab,
-        rightPanelSection: state.rightPanelSection,
         rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth),
         workingFolderSheetOpen: state.workingFolderSheetOpen,
         workingFolderPanelWidth: clampWorkingFolderPanelWidth(state.workingFolderPanelWidth),
@@ -941,6 +1689,24 @@ export const useUIStore = create<UIStore>()(
             state.leftSidebarWidth ?? current.leftSidebarWidth
           ),
           rightPanelWidth: clampRightPanelWidth(state.rightPanelWidth ?? current.rightPanelWidth),
+          rightPanelTabs: getDefaultRightPanelTabs(),
+          rightPanelActiveTabId: RIGHT_PANEL_REVIEW_TAB_ID,
+          rightPanelTab: 'preview',
+          rightPanelSection: 'execution',
+          browserStatesBySession:
+            state.browserStatesBySession ?? current.browserStatesBySession ?? {},
+          browserWebviewRefsBySession: current.browserWebviewRefsBySession ?? {},
+          messageListViewStatesBySession:
+            state.messageListViewStatesBySession ?? current.messageListViewStatesBySession ?? {},
+          autoModelSelectionsBySession:
+            state.autoModelSelectionsBySession ?? current.autoModelSelectionsBySession ?? {},
+          autoModelHighConfidenceSelectionsBySession:
+            state.autoModelHighConfidenceSelectionsBySession ??
+            current.autoModelHighConfidenceSelectionsBySession ??
+            {},
+          autoModelRoutingStatesBySession:
+            state.autoModelRoutingStatesBySession ?? current.autoModelRoutingStatesBySession ?? {},
+          planModesBySession: state.planModesBySession ?? current.planModesBySession ?? {},
           workingFolderPanelWidth: clampWorkingFolderPanelWidth(
             state.workingFolderPanelWidth ?? current.workingFolderPanelWidth
           ),

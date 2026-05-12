@@ -95,6 +95,47 @@ function normalizeGrepSummary(decoded: unknown): SearchToolSummary | null {
   }
 }
 
+function normalizeRawGrepTextSummary(text: string): SearchToolSummary | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const matches = lines
+    .map((line) => line.match(/^(.+?)([:-])(\d+)\2(.*)$/))
+    .filter((match): match is RegExpMatchArray => !!match)
+  if (matches.length > 0) {
+    return {
+      kind: 'grep',
+      matchCount: matches.length,
+      fileCount: new Set(matches.map((match) => match[1])).size,
+      truncated: false,
+      timedOut: false
+    }
+  }
+
+  const counts = lines
+    .map((line) => line.match(/^(.*):(\d+)$/))
+    .filter((match): match is RegExpMatchArray => !!match)
+  if (counts.length === lines.length && counts.length > 0) {
+    return {
+      kind: 'grep',
+      matchCount: counts.reduce((total, match) => total + Number(match[2] || 0), 0),
+      fileCount: new Set(counts.map((match) => match[1])).size,
+      truncated: false,
+      timedOut: false
+    }
+  }
+
+  if (lines.length === 0) return null
+  return {
+    kind: 'grep',
+    matchCount: lines.length,
+    fileCount: new Set(lines).size,
+    truncated: false,
+    timedOut: false
+  }
+}
+
 export function summarizeSearchToolOutput(
   name: string,
   output: ToolResultContent | undefined
@@ -102,7 +143,7 @@ export function summarizeSearchToolOutput(
   const text = outputAsString(output)
   if (!text?.trim()) return null
   const decoded = decodeStructuredToolResult(text)
-  if (!decoded) return null
+  if (!decoded) return name === 'Grep' ? normalizeRawGrepTextSummary(text) : null
   if (name === 'Glob') return normalizeGlobSummary(decoded)
   if (name === 'Grep') return normalizeGrepSummary(decoded)
   return null
@@ -226,6 +267,26 @@ export function inputSummary(
   }
   if (name === 'Task')
     return `[${input.subagent_type ?? '?'}] ${String(input.description ?? '').slice(0, 50)}`
+  if (name === 'SubmitReport') {
+    const chars =
+      typeof input.report_chars === 'number'
+        ? input.report_chars
+        : typeof input.report === 'string'
+          ? input.report.length
+          : typeof input.report_preview === 'string'
+            ? input.report_preview.length
+            : 0
+    const lines =
+      typeof input.report_lines === 'number'
+        ? input.report_lines
+        : typeof input.report === 'string'
+          ? input.report.split('\n').length
+          : 0
+    const metrics = [lines > 0 ? `${lines} lines` : '', chars > 0 ? `${chars} chars` : '']
+      .filter(Boolean)
+      .join(' / ')
+    return metrics ? `report: ${metrics}` : 'submitting report'
+  }
   if (name === 'visualize_show_widget') {
     const title = typeof input.title === 'string' ? input.title : ''
     const widgetCode = typeof input.widget_code === 'string' ? input.widget_code.trim() : ''

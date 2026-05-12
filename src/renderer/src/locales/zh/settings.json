@@ -662,6 +662,7 @@
     "modelCategoryImage": "图像",
     "maxOutputTokens": "最大输出 Token",
     "pricing": "定价",
+    "modelConfig": "模型配置",
     "pricingUnit": "USD / 百万 Token",
     "inputPrice": "输入价格",
     "outputPrice": "输出价格",

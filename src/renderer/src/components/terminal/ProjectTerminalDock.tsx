@@ -155,18 +155,37 @@ export function ProjectTerminalDock({
     }
   }, [isResizing, setBottomTerminalDockHeight])
 
+  const projectLocalTabs = useMemo(
+    () => localTabs.filter((tab) => tab.projectId === projectId),
+    [localTabs, projectId]
+  )
+  const projectSshTabs = useMemo(
+    () => sshOpenTabs.filter((tab) => tab.type === 'terminal' && tab.projectId === projectId),
+    [projectId, sshOpenTabs]
+  )
+
   const tabs = useMemo(
     () =>
       buildUnifiedTerminalTabs({
-        localTabs,
-        sshOpenTabs,
+        localTabs: projectLocalTabs,
+        sshOpenTabs: projectSshTabs,
         sshConnections,
         sshSessions
       }),
-    [localTabs, sshOpenTabs, sshConnections, sshSessions]
+    [projectLocalTabs, projectSshTabs, sshConnections, sshSessions]
   )
 
-  const activeUnifiedTabId = getUnifiedActiveTerminalTabId(tabs, localActiveTabId, sshActiveTabId)
+  const scopedLocalActiveTabId = projectLocalTabs.some((tab) => tab.id === localActiveTabId)
+    ? localActiveTabId
+    : null
+  const scopedSshActiveTabId = projectSshTabs.some((tab) => tab.id === sshActiveTabId)
+    ? sshActiveTabId
+    : null
+  const activeUnifiedTabId = getUnifiedActiveTerminalTabId(
+    tabs,
+    scopedLocalActiveTabId,
+    scopedSshActiveTabId
+  )
   const activeTab = tabs.find((tab) => tab.id === activeUnifiedTabId) ?? null
   const currentConnection = sshConnectionId
     ? (sshConnections.find((connection) => connection.id === sshConnectionId) ?? null)
@@ -194,8 +213,8 @@ export function ProjectTerminalDock({
     if (!sshConnectionId && !workingFolder) return
 
     const hasExistingContextTerminal = sshConnectionId
-      ? sshOpenTabs.some((tab) => tab.type === 'terminal' && tab.connectionId === sshConnectionId)
-      : localTabs.some((tab) => tab.cwd === workingFolder)
+      ? projectSshTabs.some((tab) => tab.connectionId === sshConnectionId)
+      : projectLocalTabs.some((tab) => tab.cwd === workingFolder)
 
     if (!hasExistingContextTerminal) {
       setIsEnsuringTerminal(true)
@@ -203,6 +222,7 @@ export function ProjectTerminalDock({
 
     try {
       await ensureProjectTerminalReady({
+        projectId,
         projectName,
         workingFolder,
         sshConnectionId
@@ -212,7 +232,7 @@ export function ProjectTerminalDock({
         setIsEnsuringTerminal(false)
       }
     }
-  }, [localTabs, projectName, sshConnectionId, sshOpenTabs, workingFolder])
+  }, [projectId, projectLocalTabs, projectName, projectSshTabs, sshConnectionId, workingFolder])
 
   useEffect(() => {
     if (sshConnectionId && !sshLoaded) return
@@ -237,7 +257,7 @@ export function ProjectTerminalDock({
       if (sshConnectionId) {
         activateLocalTab(null)
         void (async () => {
-          const tabId = await openSshTerminal(sshConnectionId)
+          const tabId = await openSshTerminal(sshConnectionId, projectId)
           if (!tabId || !initialCommand) return
           const command = initialCommand.trim()
           if (!command) return
@@ -255,13 +275,15 @@ export function ProjectTerminalDock({
       void createLocalTab(
         workingFolder,
         getProjectTerminalBaseTitle(projectName, workingFolder),
-        initialCommand
+        initialCommand,
+        projectId
       )
     },
     [
       sshConnectionId,
       activateLocalTab,
       openSshTerminal,
+      projectId,
       workingFolder,
       activateSshTab,
       createLocalTab,

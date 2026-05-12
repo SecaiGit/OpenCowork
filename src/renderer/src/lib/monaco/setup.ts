@@ -1,5 +1,5 @@
-import { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
+import { loader, type Monaco } from '@monaco-editor/react'
+import * as localMonaco from 'monaco-editor'
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker'
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
@@ -65,7 +65,9 @@ type MonacoTypeScriptLanguage = {
 
 let initialized = false
 
-export function initializeMonaco(): void {
+loader.config({ monaco: localMonaco })
+
+export function initializeMonaco(monaco: Monaco = localMonaco): void {
   if (initialized) return
   initialized = true
 
@@ -84,8 +86,6 @@ export function initializeMonaco(): void {
       return new editorWorker()
     }
   }
-
-  loader.config({ monaco })
 
   const monacoTypeScript = (monaco.languages as unknown as { typescript: MonacoTypeScriptLanguage })
     .typescript

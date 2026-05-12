@@ -4,7 +4,7 @@ import { PLUGIN_TOOL_DEFINITIONS } from './channel/plugin-tools'
 import { isMcpTool } from './mcp/mcp-tools'
 import type { McpServerConfig, McpTool } from './mcp/types'
 
-const CHAT_MODE_CORE_TOOL_NAMES = new Set(['WebSearch', 'WebFetch'])
+const CHAT_MODE_CORE_TOOL_NAMES = new Set(['WebSearch', 'WebFetch', 'visualize_show_widget'])
 const CHAT_MODE_PLUGIN_TOOL_NAMES = new Set([
   ...APP_PLUGIN_DESCRIPTORS.flatMap((descriptor) => descriptor.toolNames),
   ...PLUGIN_TOOL_DEFINITIONS.map((tool) => tool.name)

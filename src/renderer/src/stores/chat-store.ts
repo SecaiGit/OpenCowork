@@ -466,7 +466,10 @@ interface ChatStore {
   loadWindowSessionMessages: (sessionId: string, offset: number, limit: number) => Promise<void>
   getSessionMessagesForRequest: (
     sessionId: string,
-    options?: { includeTrailingAssistantPlaceholder?: boolean }
+    options?: {
+      includeTrailingAssistantPlaceholder?: boolean
+      requestContextMaxMessages?: number | null
+    }
   ) => Promise<UnifiedMessage[]>
   ensureDefaultProject: () => Promise<Project | null>
 
@@ -506,6 +509,7 @@ interface ChatStore {
   clearSessionPromptSnapshot: (sessionId: string) => void
   clearSessionMessages: (sessionId: string) => void
   duplicateSession: (sessionId: string) => Promise<string | null>
+  forkSessionFromMessage: (sessionId: string, messageId: string) => Promise<string | null>
   togglePinSession: (sessionId: string) => void
   restoreSession: (session: Session) => void
   importSession: (session: Session, projectId?: string | null) => string
@@ -779,11 +783,19 @@ function rowToMessage(row: MessageRow): UnifiedMessage {
 
 function cloneImportedMessages(messages: UnifiedMessage[] | undefined): UnifiedMessage[] {
   const source = Array.isArray(messages) ? messages : []
-  const cloned = JSON.parse(JSON.stringify(source)) as UnifiedMessage[]
-  return cloned.map((message) => ({
-    ...message,
-    id: nanoid()
-  }))
+  return cloneMessagesForNewSession(source)
+}
+
+function cloneMessagesForNewSession(messages: UnifiedMessage[]): UnifiedMessage[] {
+  const cloned = JSON.parse(JSON.stringify(messages)) as UnifiedMessage[]
+  return cloned.map((message) => {
+    const next = {
+      ...message,
+      id: nanoid()
+    }
+    delete next._revision
+    return next
+  })
 }
 
 function trimSessionMessageWindow(session: Session): void {
@@ -966,10 +978,22 @@ function hasToolReferenceSplit(messages: UnifiedMessage[], boundary: number): bo
   return false
 }
 
-function clampRequestContext(messages: UnifiedMessage[]): UnifiedMessage[] {
-  if (messages.length <= REQUEST_CONTEXT_MAX_MESSAGES) return messages
+function normalizeRequestContextMaxMessages(value?: number | null): number | null {
+  if (value === null) return null
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return REQUEST_CONTEXT_MAX_MESSAGES
+  }
+  return Math.max(MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE, Math.floor(value))
+}
 
-  let boundary = Math.max(1, messages.length - REQUEST_CONTEXT_MAX_MESSAGES)
+function clampRequestContext(
+  messages: UnifiedMessage[],
+  maxMessagesArg?: number | null
+): UnifiedMessage[] {
+  const maxMessages = normalizeRequestContextMaxMessages(maxMessagesArg)
+  if (maxMessages === null || messages.length <= maxMessages) return messages
+
+  let boundary = Math.max(1, messages.length - maxMessages)
   for (let attempt = 0; attempt < REQUEST_CONTEXT_SAFE_BOUNDARY_SCAN; attempt += 1) {
     if (!hasToolReferenceSplit(messages, boundary)) break
     boundary = Math.max(1, boundary - 1)
@@ -980,10 +1004,11 @@ function clampRequestContext(messages: UnifiedMessage[]): UnifiedMessage[] {
 
 function mergeResidentTailWithFetchedPrefix(
   residentMessages: UnifiedMessage[],
-  fetchedMessages: UnifiedMessage[]
+  fetchedMessages: UnifiedMessage[],
+  maxMessagesArg?: number | null
 ): UnifiedMessage[] {
-  if (residentMessages.length === 0) return clampRequestContext(fetchedMessages)
-  if (fetchedMessages.length === 0) return clampRequestContext(residentMessages)
+  if (residentMessages.length === 0) return clampRequestContext(fetchedMessages, maxMessagesArg)
+  if (fetchedMessages.length === 0) return clampRequestContext(residentMessages, maxMessagesArg)
 
   const merged = [...fetchedMessages]
   const seenIds = new Set(fetchedMessages.map((message) => message.id))
@@ -993,19 +1018,33 @@ function mergeResidentTailWithFetchedPrefix(
     seenIds.add(message.id)
   }
 
-  return clampRequestContext(merged)
+  return clampRequestContext(merged, maxMessagesArg)
 }
 
-async function loadRequestContextMessages(session: Session): Promise<UnifiedMessage[]> {
+async function loadRequestContextMessages(
+  session: Session,
+  maxMessagesArg?: number | null
+): Promise<UnifiedMessage[]> {
   const knownCount = session.messageCount ?? session.messages.length
   if (knownCount <= 0) return []
+  const maxMessages = normalizeRequestContextMaxMessages(maxMessagesArg)
 
   const residentMessages = session.messages
   const residentHasFullHistory =
     session.messagesLoaded && session.loadedRangeStart === 0 && session.loadedRangeEnd >= knownCount
 
   if (residentHasFullHistory) {
-    return clampRequestContext(residentMessages)
+    return clampRequestContext(residentMessages, maxMessages)
+  }
+
+  if (maxMessages === null) {
+    const msgRows = (await ipcClient.invoke('db:messages:list-page', {
+      sessionId: session.id,
+      limit: knownCount,
+      offset: 0
+    })) as MessageRow[]
+    const fetchedMessages = msgRows.map(rowToMessage)
+    return mergeResidentTailWithFetchedPrefix(residentMessages, fetchedMessages, maxMessages)
   }
 
   const residentTailStart =
@@ -1019,18 +1058,26 @@ async function loadRequestContextMessages(session: Session): Promise<UnifiedMess
     (total, message) => total + estimateMessageWeight(message),
     0
   )
-  const weightAdjustedLimit = residentWeight > 200_000 ? 96 : REQUEST_CONTEXT_MAX_MESSAGES
-  const targetLimit = Math.max(MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE, weightAdjustedLimit)
+  const weightAdjustedLimit =
+    maxMessages === null
+      ? knownCount
+      : residentWeight > 200_000
+        ? Math.min(96, maxMessages)
+        : maxMessages
+  const targetLimit =
+    maxMessages === null
+      ? knownCount
+      : Math.max(MIN_INITIAL_SESSION_MESSAGE_PAGE_SIZE, weightAdjustedLimit)
   const tailCount = Math.min(targetLimit, knownCount)
   const tailOffset = Math.max(0, knownCount - tailCount)
 
   if (session.messagesLoaded && residentMessages.length > 0 && residentTailStart <= tailOffset) {
-    return clampRequestContext(residentMessages)
+    return clampRequestContext(residentMessages, maxMessages)
   }
 
   const fetchLimit = Math.max(0, residentTailStart - tailOffset)
   if (fetchLimit <= 0) {
-    return clampRequestContext(residentMessages)
+    return clampRequestContext(residentMessages, maxMessages)
   }
 
   const msgRows = (await ipcClient.invoke('db:messages:list-page', {
@@ -1039,7 +1086,7 @@ async function loadRequestContextMessages(session: Session): Promise<UnifiedMess
     offset: tailOffset
   })) as MessageRow[]
   const fetchedMessages = msgRows.map(rowToMessage)
-  return mergeResidentTailWithFetchedPrefix(residentMessages, fetchedMessages)
+  return mergeResidentTailWithFetchedPrefix(residentMessages, fetchedMessages, maxMessages)
 }
 
 function hasMeaningfulAssistantContent(message: UnifiedMessage): boolean {
@@ -1763,7 +1810,7 @@ export const useChatStore = create<ChatStore>()(
       const includeTrailingAssistantPlaceholder =
         options?.includeTrailingAssistantPlaceholder ?? true
 
-      let messages = await loadRequestContextMessages(session)
+      let messages = await loadRequestContextMessages(session, options?.requestContextMaxMessages)
       const sanitized = sanitizeToolBlocksForResend(messages)
       messages = sanitized.messages
 
@@ -2589,10 +2636,7 @@ export const useChatStore = create<ChatStore>()(
       if (!source) return null
       const newId = nanoid()
       const now = Date.now()
-      const clonedMessages: UnifiedMessage[] =
-        typeof structuredClone === 'function'
-          ? structuredClone(source.messages)
-          : JSON.parse(JSON.stringify(source.messages))
+      const clonedMessages = cloneMessagesForNewSession(source.messages)
       const newSession: Session = {
         id: newId,
         title: `${source.title} (copy)`,
@@ -2620,6 +2664,54 @@ export const useChatStore = create<ChatStore>()(
           state.activeProjectId = source.projectId
         }
       })
+      dbCreateSession(newSession)
+      clonedMessages.forEach((msg, i) => dbAddMessage(newId, msg, i))
+      useTaskStore.getState().clearTasks()
+      usePlanStore.getState().setActivePlan(null)
+      useUIStore.getState().syncSessionScopedState(newId)
+      return newId
+    },
+
+    forkSessionFromMessage: async (sessionId, messageId) => {
+      await get().loadSessionMessages(sessionId)
+      const source = get().sessions.find((s) => s.id === sessionId)
+      if (!source) return null
+
+      const messageIndex = source.messages.findIndex((message) => message.id === messageId)
+      if (messageIndex < 0) return null
+
+      const newId = nanoid()
+      const now = Date.now()
+      const clonedMessages = cloneMessagesForNewSession(source.messages.slice(0, messageIndex + 1))
+      const newSession: Session = {
+        id: newId,
+        title: source.title,
+        icon: source.icon,
+        mode: source.mode,
+        messages: clonedMessages,
+        messageCount: clonedMessages.length,
+        messagesLoaded: true,
+        loadedRangeStart: 0,
+        loadedRangeEnd: clonedMessages.length,
+        lastKnownMessageCount: clonedMessages.length,
+        createdAt: now,
+        updatedAt: now,
+        projectId: source.projectId,
+        workingFolder: source.workingFolder,
+        sshConnectionId: source.sshConnectionId,
+        providerId: source.providerId,
+        modelId: source.modelId
+      }
+
+      set((state) => {
+        state.sessions.push(newSession)
+        syncSessionsById(state)
+        state.activeSessionId = newId
+        if (source.projectId) {
+          state.activeProjectId = source.projectId
+        }
+      })
+
       dbCreateSession(newSession)
       clonedMessages.forEach((msg, i) => dbAddMessage(newId, msg, i))
       useTaskStore.getState().clearTasks()
@@ -2702,15 +2794,19 @@ export const useChatStore = create<ChatStore>()(
 
     replaceSessionMessages: (sessionId, messages) => {
       const now = Date.now()
+      const revisedMessages = messages.map((message) => ({
+        ...message,
+        _revision: (message._revision ?? 0) + 1
+      }))
       set((state) => {
         const session = state.sessions.find((s) => s.id === sessionId)
         if (session) {
-          session.messages = messages
-          session.messageCount = messages.length
+          session.messages = revisedMessages
+          session.messageCount = revisedMessages.length
           session.messagesLoaded = true
           session.loadedRangeStart = 0
-          session.loadedRangeEnd = messages.length
-          session.lastKnownMessageCount = messages.length
+          session.loadedRangeEnd = revisedMessages.length
+          session.lastKnownMessageCount = revisedMessages.length
           session.updatedAt = now
         }
       })
@@ -2727,7 +2823,7 @@ export const useChatStore = create<ChatStore>()(
       ipcClient
         .invoke('db:messages:replace', {
           sessionId,
-          messages: messages.map((msg, i) => ({
+          messages: revisedMessages.map((msg, i) => ({
             id: msg.id,
             role: msg.role,
             content: JSON.stringify(sanitizeMessageContentForPersistence(msg.content)),

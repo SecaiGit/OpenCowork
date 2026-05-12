@@ -1,5 +1,3 @@
-import * as monaco from 'monaco-editor'
-
 export type EditorWorkspace =
   | {
       kind: 'local'
@@ -71,26 +69,32 @@ export function createModelUri(options: CreateModelUriOptions): string {
   }
 
   if (workspace.kind === 'local') {
-    return monaco.Uri.file(filePath).toString()
+    return createFileUri(filePath)
   }
 
   if (!remoteLanguageServiceEnabled) {
     return createInMemoryUri(filePath, workspace.connectionId)
   }
 
-  return monaco.Uri.from({
-    scheme: 'ssh',
-    authority: workspace.connectionId,
-    path: normalizeRemotePath(filePath)
-  }).toString()
+  return createUri('ssh', workspace.connectionId, normalizeRemotePath(filePath))
 }
 
 function createInMemoryUri(filePath: string, authority?: string): string {
-  return monaco.Uri.from({
-    scheme: 'inmemory',
-    authority: authority || 'opencowork',
-    path: `/model/${encodeURIComponent(filePath)}`
-  }).toString()
+  return `inmemory://${authority || 'opencowork'}/model/${encodeURIComponent(filePath)}`
+}
+
+function createFileUri(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  const absolutePath = /^[A-Za-z]:\//.test(normalized)
+    ? `/${normalized}`
+    : normalized.startsWith('/')
+      ? normalized
+      : `/${normalized}`
+  return `file://${encodeURI(absolutePath)}`
+}
+
+function createUri(scheme: string, authority: string, path: string): string {
+  return `${scheme}://${authority}${encodeURI(path)}`
 }
 
 function normalizeRemotePath(filePath: string): string {

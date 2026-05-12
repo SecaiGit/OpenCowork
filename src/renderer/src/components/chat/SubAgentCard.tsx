@@ -265,7 +265,7 @@ function SubAgentCardInner({
     .join(' · ')
 
   const handleOpenPanel = (): void => {
-    useUIStore.getState().openSubAgentExecutionDetail(toolUseId, histText || undefined)
+    useUIStore.getState().openSubAgentExecutionDetail(toolUseId, histText || undefined, displayName)
   }
 
   const card = (

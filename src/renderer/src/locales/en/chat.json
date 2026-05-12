@@ -632,6 +632,9 @@
     }
   },
   "messageActions": {
+    "fork": "Fork",
+    "forked": "Forked into a new conversation",
+    "forkFailed": "Fork failed",
     "translate": "Translate",
     "readAloud": "Read aloud",
     "share": "Share",

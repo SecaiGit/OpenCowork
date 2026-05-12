@@ -1199,7 +1199,9 @@ export const routinAiPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 10000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -1219,7 +1221,9 @@ export const routinAiPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 8000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'medium'
       }
     },
     {
@@ -1263,7 +1267,9 @@ export const routinAiPreset: BuiltinProviderPreset = {
         bodyParams: {
           thinking: { type: 'enabled', budget_tokens: 10000 }
         },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -1283,7 +1289,9 @@ export const routinAiPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 10000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -1303,7 +1311,9 @@ export const routinAiPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 8000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'medium'
       }
     },
     // ── Qwen3 ──

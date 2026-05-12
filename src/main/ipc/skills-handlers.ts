@@ -4,6 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { promisify } from 'util'
+import { getDefaultApiUserAgent } from '../lib/api-user-agent'
 
 const execFileAsync = promisify(execFile)
 
@@ -857,7 +858,8 @@ export function registerSkillsHandlers(): void {
     const res = await fetch(`${SKILLS_MARKET_API_BASE_URL}/skills/search?${params.toString()}`, {
       headers: {
         ...(args.apiKey ? { Authorization: `Bearer ${args.apiKey}` } : {}),
-        Accept: 'application/json'
+        Accept: 'application/json',
+        'User-Agent': getDefaultApiUserAgent()
       }
     })
 
@@ -929,7 +931,7 @@ export function registerSkillsHandlers(): void {
     const response = await fetch(downloadUrl, {
       headers: {
         Accept: 'application/zip, text/markdown;q=0.9, */*;q=0.8',
-        'User-Agent': 'OpenCowork'
+        'User-Agent': getDefaultApiUserAgent()
       }
     })
 

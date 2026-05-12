@@ -9,11 +9,21 @@ const MIME_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
+  '.jfif': 'image/jpeg',
+  '.pjpeg': 'image/jpeg',
+  '.pjp': 'image/jpeg',
   '.gif': 'image/gif',
+  '.apng': 'image/apng',
   '.bmp': 'image/bmp',
   '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
+  '.avif': 'image/avif',
+  '.ico': 'image/x-icon',
+  '.cur': 'image/x-icon',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.jxl': 'image/jxl'
 }
 
 function getMimeType(filePath: string): string {
@@ -140,10 +150,10 @@ export function ImageViewer({ filePath, sshConnectionId }: ViewerProps): React.J
     }
   }, [isPanning])
 
-  const zoomIn = () => setScale((current) => clampScale(current + 0.25))
-  const zoomOut = () => setScale((current) => clampScale(current - 0.25))
-  const rotate = () => setRotation((current) => (current + 90) % 360)
-  const resetView = () => {
+  const zoomIn = (): void => setScale((current) => clampScale(current + 0.25))
+  const zoomOut = (): void => setScale((current) => clampScale(current - 0.25))
+  const rotate = (): void => setRotation((current) => (current + 90) % 360)
+  const resetView = (): void => {
     setScale(1)
     setRotation(0)
     setOffset({ x: 0, y: 0 })
@@ -294,6 +304,7 @@ export function ImageViewer({ filePath, sshConnectionId }: ViewerProps): React.J
             src={src}
             alt={filePath.split(/[\\/]/).pop() || ''}
             className="max-w-none transition-transform duration-200 will-change-transform"
+            onError={() => setError('This image format is not supported by the embedded preview.')}
             style={{
               transform: `scale(${scale}) rotate(${rotation}deg)`
             }}

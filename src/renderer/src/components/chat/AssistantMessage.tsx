@@ -3,7 +3,6 @@ import { useState, useCallback, useMemo, useEffect, useId, type ReactNode } from
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import Markdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import mermaid from 'mermaid'
 import {
   applyMermaidTheme,
@@ -28,7 +27,8 @@ import {
   Languages,
   Pencil,
   Volume2,
-  Share2
+  Share2,
+  GitFork
 } from 'lucide-react'
 import { FadeIn, ScaleIn } from '@renderer/components/animate-ui'
 import { ImageGeneratingLoader } from './ImageGeneratingLoader'
@@ -104,6 +104,8 @@ import { useTranslateStore } from '@renderer/stores/translate-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { useStreamingRenderPool } from '@renderer/hooks/use-typewriter'
 import {
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS,
   openMarkdownHref,
   resolveLocalFilePath,
   openLocalFilePath
@@ -171,9 +173,56 @@ function resolveToolCallStatus(
   liveToolCall: ToolCallState | undefined,
   result?: { isError?: boolean }
 ): ToolCallStatus | 'completed' {
+  if (result) return result.isError ? 'error' : 'completed'
   if (liveToolCall?.status) return liveToolCall.status
   if (!result && isStreaming) return 'streaming'
-  return result?.isError ? 'error' : 'completed'
+  return 'completed'
+}
+
+function resolvePendingToolCallStatus(
+  isRunningFallback: boolean | undefined,
+  liveToolCall: ToolCallState | undefined,
+  result?: { isError?: boolean; content?: ToolResultContent }
+): ToolCallStatus | 'completed' {
+  if (result) return result.isError ? 'error' : 'completed'
+  if (liveToolCall?.status) return liveToolCall.status
+  return isRunningFallback ? 'running' : 'canceled'
+}
+
+function getWidgetRenderCode(input?: Record<string, unknown>): string {
+  if (!input) return ''
+  if (typeof input.widget_code === 'string') return input.widget_code
+  if (typeof input.widget_code_preview === 'string') return input.widget_code_preview
+  return ''
+}
+
+function mergeWidgetToolInput(
+  blockInput: Record<string, unknown>,
+  liveInput?: Record<string, unknown>
+): Record<string, unknown> {
+  if (!liveInput || Object.keys(liveInput).length === 0) return blockInput
+  if (!blockInput || Object.keys(blockInput).length === 0) return liveInput
+
+  const merged: Record<string, unknown> = { ...blockInput, ...liveInput }
+  const blockCode = getWidgetRenderCode(blockInput)
+  const liveCode = getWidgetRenderCode(liveInput)
+
+  if (blockCode && (!liveCode || blockCode.length > liveCode.length)) {
+    if (typeof blockInput.widget_code === 'string') {
+      merged.widget_code = blockInput.widget_code
+    } else if (typeof blockInput.widget_code_preview === 'string') {
+      merged.widget_code_preview = blockInput.widget_code_preview
+    }
+  }
+
+  if (
+    typeof blockInput.widget_code_chars === 'number' &&
+    typeof liveInput.widget_code_chars === 'number'
+  ) {
+    merged.widget_code_chars = Math.max(blockInput.widget_code_chars, liveInput.widget_code_chars)
+  }
+
+  return merged
 }
 
 interface ToolCallRenderState {
@@ -205,7 +254,7 @@ function buildToolCallRenderState(
     toolUseId: block.id,
     name: block.name,
     input: effectiveInput,
-    output: liveToolCall?.output ?? result?.content,
+    output: result?.content ?? liveToolCall?.output,
     status: resolveToolCallStatus(options.isStreaming, liveToolCall, result),
     error: liveToolCall?.error,
     startedAt: liveToolCall?.startedAt,
@@ -505,12 +554,14 @@ function ActionIconButton({
   label,
   icon,
   onClick,
-  danger = false
+  danger = false,
+  disabled = false
 }: {
   label: string
   icon: ReactNode
   onClick: () => void
   danger?: boolean
+  disabled?: boolean
 }): React.JSX.Element {
   return (
     <Tooltip>
@@ -519,7 +570,8 @@ function ActionIconButton({
           type="button"
           aria-label={label}
           onClick={onClick}
-          className={`flex size-7 items-center justify-center rounded-md border border-border/50 bg-background/90 text-muted-foreground transition-colors hover:bg-accent ${danger ? 'hover:text-destructive' : 'hover:text-accent-foreground'}`}
+          disabled={disabled}
+          className={`flex size-7 items-center justify-center rounded-md border border-border/50 bg-background/90 text-muted-foreground transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50 ${danger ? 'hover:text-destructive' : 'hover:text-accent-foreground'}`}
         >
           {icon}
         </button>
@@ -735,7 +787,6 @@ function CodeBlock({
 // Hoisted once so react-markdown sees a stable `components` reference on every render;
 // without this the Markdown AST was being fully rebuilt every time even when `text` was
 // unchanged, because React was diffing on the components prop identity.
-const MARKDOWN_REMARK_PLUGINS = [remarkGfm]
 
 // isStreaming used to be captured via closure inside the inline `components` object,
 // which forced us to recreate the whole object every render. We now pass it through a
@@ -947,7 +998,11 @@ const MarkdownContent = React.memo(function MarkdownContent({
 }): React.JSX.Element {
   return (
     <IsStreamingContext.Provider value={isStreaming}>
-      <Markdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+      <Markdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+        components={MARKDOWN_COMPONENTS}
+      >
         {text}
       </Markdown>
     </IsStreamingContext.Provider>
@@ -1105,8 +1160,6 @@ function resolveRunChangeSetForMessage(
 
   let bestMatch: { changeSet: AgentRunChangeSet; matchCount: number } | null = null
   for (const changeSet of uniqueChangeSets.values()) {
-    if (sessionId && changeSet.sessionId !== sessionId) continue
-
     let matchCount = 0
     for (const change of changeSet.changes) {
       if (change.toolUseId && toolUseIdSet.has(change.toolUseId)) {
@@ -1114,6 +1167,14 @@ function resolveRunChangeSetForMessage(
       }
     }
     if (matchCount === 0) continue
+    if (
+      sessionId &&
+      changeSet.sessionId &&
+      changeSet.sessionId !== sessionId &&
+      !changeSet.changes.some((change) => change.sessionId === sessionId)
+    ) {
+      continue
+    }
 
     if (
       !bestMatch ||
@@ -1161,9 +1222,12 @@ export function AssistantMessage({
     ? (requestDebugInfo ?? (msgId ? getLastDebugInfo(msgId) : undefined))
     : undefined
   const openTranslatePage = useUIStore((s) => s.openTranslatePage)
+  const navigateToSession = useUIStore((s) => s.navigateToSession)
   const setTranslateSourceText = useTranslateStore((s) => s.setSourceText)
   const openImageEditor = useImageEditStore((s) => s.openEditor)
+  const forkSessionFromMessage = useChatStore((s) => s.forkSessionFromMessage)
   const [collapsed, setCollapsed] = useState(false)
+  const [forking, setForking] = useState(false)
   const sessionModelBinding = useChatStore(
     useShallow((state) => {
       const sessionIndex = sessionId ? state.sessionsById[sessionId] : undefined
@@ -1507,17 +1571,12 @@ export function AssistantMessage({
             <AskUserQuestionCard
               toolUseId={block.id}
               input={block.input}
-              output={liveTc?.output ?? result?.content}
-              status={
-                liveTc?.status ??
-                (result?.isError
-                  ? 'error'
-                  : result?.content
-                    ? 'completed'
-                    : isStreaming || isLastAssistantMessage
-                      ? 'running'
-                      : 'canceled')
-              }
+              output={result?.content ?? liveTc?.output}
+              status={resolvePendingToolCallStatus(
+                isStreaming || isLastAssistantMessage,
+                liveTc,
+                result
+              )}
               isLive={!!isStreaming}
             />
           </ScaleIn>
@@ -1529,17 +1588,12 @@ export function AssistantMessage({
         return (
           <ScaleIn key={key} className={liveScaleInClassName}>
             <PlanReviewCard
-              output={liveTc?.output ?? result?.content}
-              status={
-                liveTc?.status ??
-                (result?.isError
-                  ? 'error'
-                  : result?.content
-                    ? 'completed'
-                    : isStreaming || isLastAssistantMessage
-                      ? 'running'
-                      : 'canceled')
-              }
+              output={result?.content ?? liveTc?.output}
+              status={resolvePendingToolCallStatus(
+                isStreaming || isLastAssistantMessage,
+                liveTc,
+                result
+              )}
               isLive={!!isStreaming}
               sessionId={sessionId}
             />
@@ -1549,20 +1603,16 @@ export function AssistantMessage({
       if (block.name === 'visualize_show_widget') {
         const result = toolResults?.get(block.id)
         const liveTc = effectiveLiveToolCallMap?.get(block.id)
+        const widgetInput = mergeWidgetToolInput(block.input, liveTc?.input)
         return (
           <ScaleIn key={key} className={liveScaleInClassName}>
             <WidgetOutputBlock
-              input={liveTc?.input ?? block.input}
-              status={
-                liveTc?.status ??
-                (result?.isError
-                  ? 'error'
-                  : result?.content
-                    ? 'completed'
-                    : isStreaming || isLastAssistantMessage
-                      ? 'running'
-                      : 'canceled')
-              }
+              input={widgetInput}
+              status={resolvePendingToolCallStatus(
+                isStreaming || isLastAssistantMessage,
+                liveTc,
+                result
+              )}
             />
           </ScaleIn>
         )
@@ -1614,7 +1664,7 @@ export function AssistantMessage({
             <FileChangeCard
               name={block.name}
               input={block.input}
-              output={liveTc?.output ?? result?.content}
+              output={result?.content ?? liveTc?.output}
               status={statusValue}
               error={liveTc?.error}
               startedAt={liveTc?.startedAt}
@@ -1633,7 +1683,7 @@ export function AssistantMessage({
             <ImagePluginToolCard
               toolUseId={block.id}
               input={liveTc?.input ?? block.input}
-              output={liveTc?.output ?? result?.content}
+              output={result?.content ?? liveTc?.output}
               status={statusValue}
               error={liveTc?.error}
             />
@@ -1970,6 +2020,27 @@ export function AssistantMessage({
     }
   }, [plainText, t])
 
+  const handleFork = useCallback(async (): Promise<void> => {
+    if (!sessionId || !msgId || forking) return
+
+    setForking(true)
+    try {
+      const forkedSessionId = await forkSessionFromMessage(sessionId, msgId)
+      if (!forkedSessionId) {
+        toast.error(t('messageActions.forkFailed'))
+        return
+      }
+
+      navigateToSession(forkedSessionId)
+      toast.success(t('messageActions.forked'))
+    } catch (error) {
+      console.error('[AssistantMessage] Failed to fork session:', error)
+      toast.error(t('messageActions.forkFailed'))
+    } finally {
+      setForking(false)
+    }
+  }, [forkSessionFromMessage, forking, msgId, navigateToSession, sessionId, t])
+
   const handleDeleteAndRegenerate = useCallback((): void => {
     if (!showRetry || !onRetry || !msgId) return
     onRetry(msgId)
@@ -2113,6 +2184,7 @@ export function AssistantMessage({
         )}
         {!isStreaming &&
           (plainText ||
+            (isLiveMode && sessionId && msgId) ||
             (msgId && onDelete) ||
             (devMode && debugInfo) ||
             (showContinue && onContinue) ||
@@ -2127,6 +2199,14 @@ export function AssistantMessage({
                   onClick={handleCopy}
                 />
               )}
+              {isLiveMode && sessionId && msgId ? (
+                <ActionIconButton
+                  label={t('messageActions.fork')}
+                  icon={<GitFork className="size-3.5" />}
+                  onClick={() => void handleFork()}
+                  disabled={forking}
+                />
+              ) : null}
               {showContinue && onContinue ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -2174,6 +2254,12 @@ export function AssistantMessage({
                     <Copy className="size-4" />
                     {t('action.copy', { ns: 'common' })}
                   </DropdownMenuItem>
+                  {isLiveMode && sessionId && msgId ? (
+                    <DropdownMenuItem onSelect={() => void handleFork()} disabled={forking}>
+                      <GitFork className="size-4" />
+                      {t('messageActions.fork')}
+                    </DropdownMenuItem>
+                  ) : null}
                   <DropdownMenuItem onSelect={handleTranslate} disabled={!plainText.trim()}>
                     <Languages className="size-4" />
                     {t('messageActions.translate')}

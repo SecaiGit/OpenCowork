@@ -90,7 +90,8 @@ import {
   subscribePendingSessionMessages,
   updatePendingSessionMessageDraft,
   type SendMessageOptions,
-  type PendingSessionMessageItem
+  type PendingSessionMessageItem,
+  type ManualCompressionResult
 } from '@renderer/hooks/use-chat-actions'
 import {
   AlertDialog,
@@ -123,7 +124,16 @@ import { resolveProjectMemoryTextFile } from '@renderer/lib/agent/memory-files'
 import { isProjectSession, workspaceContextAvailable } from '@renderer/lib/session-scope'
 import { InlineStepsPanel } from '@renderer/components/cowork/StepsPanel'
 
-function ContextRing(): React.JSX.Element | null {
+interface ContextRingProps {
+  onCompressContext?: () => void | Promise<void>
+  isCompressing?: boolean
+}
+
+function ContextRing({
+  onCompressContext,
+  isCompressing = false
+}: ContextRingProps): React.JSX.Element | null {
+  const { t } = useTranslation('chat')
   const activeSessionProviderId = useChatStore((s) => {
     const idx = s.activeSessionId ? s.sessionsById[s.activeSessionId] : undefined
     const activeSession = idx !== undefined ? s.sessions[idx] : undefined
@@ -208,6 +218,13 @@ function ContextRing(): React.JSX.Element | null {
   const remaining = Math.max(ctxGaugeLimit - ctxUsed, 0)
   const strokeColor =
     pct > 80 ? 'stroke-red-500' : pct > 50 ? 'stroke-amber-500' : 'stroke-emerald-500'
+  const canCompress = Boolean(onCompressContext) && !isCompressing
+  const handleDoubleClick = (event: React.MouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (!canCompress) return
+    onCompressContext?.()
+  }
 
   // SVG circular progress
   const size = 26
@@ -219,7 +236,22 @@ function ContextRing(): React.JSX.Element | null {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center justify-center cursor-default">
+        <button
+          type="button"
+          aria-disabled={!canCompress}
+          aria-label={t('input.doubleClickCompressContext', {
+            defaultValue: '双击压缩上下文'
+          })}
+          className={cn(
+            'flex items-center justify-center rounded-full outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            canCompress ? 'cursor-pointer' : 'cursor-default',
+            isCompressing && 'opacity-70'
+          )}
+          onDoubleClick={handleDoubleClick}
+          onMouseDown={(event) => {
+            event.preventDefault()
+          }}
+        >
           <div className="relative flex size-[26px] shrink-0 items-center justify-center">
             <svg width={size} height={size} className="-rotate-90">
               <circle
@@ -246,7 +278,7 @@ function ContextRing(): React.JSX.Element | null {
               {pct.toFixed(0)}%
             </span>
           </div>
-        </div>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="top">
         <div className="text-xs space-y-0.5">
@@ -255,6 +287,13 @@ function ContextRing(): React.JSX.Element | null {
             {formatTokens(ctxUsed)} / {formatTokens(ctxGaugeLimit)} ({pct.toFixed(1)}%)
           </p>
           <p className="text-muted-foreground">{formatTokens(remaining)} remaining</p>
+          {onCompressContext && (
+            <p className="text-muted-foreground">
+              {isCompressing
+                ? t('input.compressingContext', { defaultValue: '正在压缩上下文...' })
+                : t('input.doubleClickCompressContext', { defaultValue: '双击压缩上下文' })}
+            </p>
+          )}
         </div>
       </TooltipContent>
     </Tooltip>
@@ -331,6 +370,7 @@ const MIN_MESSAGE_LIST_HEIGHT = 120
 const EDITOR_MIN_HEIGHT = 60
 const FALLBACK_MAX_VIEWPORT_RATIO = 0.6
 const MAX_SLASH_COMMAND_RESULTS = 8
+type ContextCompressionStatus = 'idle' | 'compressing' | ManualCompressionResult
 
 function getSlashCommandQuery(text: string): string | null {
   const normalized = text.trimStart()
@@ -404,6 +444,7 @@ interface InputAreaProps {
   workingFolder?: string
   hideWorkingFolderIndicator?: boolean
   hideWorkingFolderPicker?: boolean
+  onCompressContext?: () => ManualCompressionResult | void | Promise<ManualCompressionResult | void>
   disabled?: boolean
 }
 
@@ -416,6 +457,7 @@ export function InputArea({
   workingFolder,
   hideWorkingFolderIndicator = false,
   hideWorkingFolderPicker = false,
+  onCompressContext,
   disabled = false
 }: InputAreaProps): React.JSX.Element {
   const { t } = useTranslation('chat')
@@ -448,6 +490,8 @@ export function InputArea({
   const [attachedImages, setAttachedImages] = React.useState<ImageAttachment[]>([])
   const [pendingImageReads, setPendingImageReads] = React.useState(0)
   const [isOptimizing, setIsOptimizing] = React.useState(false)
+  const [contextCompressionStatus, setContextCompressionStatus] =
+    React.useState<ContextCompressionStatus>('idle')
   const [, setOptimizingText] = React.useState('')
   const [optimizationOptions, setOptimizationOptions] = React.useState<
     Array<{ title: string; focus: string; content: string }>
@@ -464,6 +508,7 @@ export function InputArea({
   const queueFileInputRef = React.useRef<HTMLInputElement>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
   const draftSaveTimerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined)
+  const contextCompressionStatusTimerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined)
   const [inputHeight, setInputHeight] = React.useState<number | null>(() =>
     isSessionComposer ? defaultSessionInputHeight : null
   )
@@ -480,6 +525,7 @@ export function InputArea({
   const textRef = React.useRef(text)
   const documentRef = React.useRef(documentNodes)
   const selectedFilesRef = React.useRef(selectedFiles)
+  const isContextCompressing = contextCompressionStatus === 'compressing'
 
   const getMaxInputHeight = React.useCallback(() => {
     const container = containerRef.current
@@ -520,6 +566,10 @@ export function InputArea({
       return current ?? defaultSessionInputHeight
     })
   }, [defaultSessionInputHeight, isSessionComposer])
+
+  React.useEffect(() => {
+    return () => clearTimeout(contextCompressionStatusTimerRef.current)
+  }, [])
 
   const getMinInputHeight = React.useCallback(() => {
     const container = containerRef.current
@@ -1972,6 +2022,44 @@ export function InputArea({
     setShowOptimizationDialog(false)
   }, [])
 
+  const handleCompressContext = React.useCallback(() => {
+    if (!onCompressContext || isContextCompressing) return
+
+    clearTimeout(contextCompressionStatusTimerRef.current)
+    setContextCompressionStatus('compressing')
+    void Promise.resolve()
+      .then(() => onCompressContext())
+      .then((result) => {
+        setContextCompressionStatus(result ?? 'compressed')
+      })
+      .catch((error) => {
+        console.error('[InputArea] Context compression failed', error)
+        setContextCompressionStatus('failed')
+      })
+      .finally(() => {
+        contextCompressionStatusTimerRef.current = setTimeout(() => {
+          setContextCompressionStatus('idle')
+        }, 3200)
+      })
+  }, [isContextCompressing, onCompressContext])
+
+  const contextCompressionStatusLabel = React.useMemo(() => {
+    switch (contextCompressionStatus) {
+      case 'compressing':
+        return t('input.compressingContext', { defaultValue: '正在压缩上下文...' })
+      case 'compressed':
+        return t('input.contextCompressed', { defaultValue: '上下文已压缩' })
+      case 'skipped':
+        return t('input.contextCompressionSkipped', { defaultValue: '无需压缩' })
+      case 'blocked':
+        return t('input.contextCompressionBlocked', { defaultValue: '暂时无法压缩' })
+      case 'failed':
+        return t('input.contextCompressionFailed', { defaultValue: '压缩失败' })
+      default:
+        return ''
+    }
+  }, [contextCompressionStatus, t])
+
   const composerVariant = 'session'
   const composerIconControlClass = 'composer-control rounded-xl'
   const composerTextControlClass = 'composer-control rounded-xl text-[11px] shadow-none'
@@ -2837,7 +2925,26 @@ export function InputArea({
               </div>
 
               <div className="flex shrink-0 items-center gap-1.5">
-                <ContextRing />
+                <ContextRing
+                  onCompressContext={onCompressContext ? handleCompressContext : undefined}
+                  isCompressing={isContextCompressing}
+                />
+
+                {contextCompressionStatus !== 'idle' && (
+                  <span
+                    className={cn(
+                      'composer-status-pill inline-flex max-w-[150px] items-center gap-1 rounded-full px-2 py-1 text-[10px]',
+                      contextCompressionStatus === 'compressed' && 'text-emerald-500',
+                      contextCompressionStatus === 'failed' && 'text-red-500',
+                      (contextCompressionStatus === 'blocked' ||
+                        contextCompressionStatus === 'skipped') &&
+                        'text-amber-500'
+                    )}
+                  >
+                    {isContextCompressing && <Spinner className="size-3" />}
+                    <span className="truncate">{contextCompressionStatusLabel}</span>
+                  </span>
+                )}
 
                 {debouncedTokens > 0 && (
                   <span className="select-none tabular-nums text-[10px] text-muted-foreground/60">

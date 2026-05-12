@@ -9,10 +9,85 @@ import type {
 } from './types'
 import { ipcStreamRequest, maskHeaders } from '../ipc/api-stream'
 import { registerProvider } from './provider'
+import { normalizeMessagesForAnthropicToolReplay } from '../../../../shared/anthropic-tool-replay'
 import { sanitizeMessagesForToolReplay } from '../tools/tool-input-sanitizer'
 
 function buildAnthropicCacheControl(): { type: 'ephemeral' } {
   return { type: 'ephemeral' }
+}
+
+const MAX_ANTHROPIC_CACHE_CONTROL_BLOCKS = 4
+
+interface AnthropicCacheControlBudget {
+  readonly remaining: number
+  use(): { type: 'ephemeral' } | undefined
+}
+
+function createAnthropicCacheControlBudget(enabled: boolean): AnthropicCacheControlBudget {
+  let remaining = enabled ? MAX_ANTHROPIC_CACHE_CONTROL_BLOCKS : 0
+
+  return {
+    get remaining() {
+      return remaining
+    },
+    use() {
+      if (remaining <= 0) return undefined
+      remaining -= 1
+      return buildAnthropicCacheControl()
+    }
+  }
+}
+
+function consumeAnthropicCacheControl(
+  budget: AnthropicCacheControlBudget
+): { cache_control: { type: 'ephemeral' } } | Record<string, never> {
+  const cacheControl = budget.use()
+  return cacheControl ? { cache_control: cacheControl } : {}
+}
+
+function isAnthropicCacheableContentBlock(block: ContentBlock): boolean {
+  switch (block.type) {
+    case 'text':
+      return Boolean(block.text.trim())
+    case 'tool_result':
+    case 'image':
+      return true
+    default:
+      return false
+  }
+}
+
+function collectAnthropicMessageCacheTargets(
+  messages: UnifiedMessage[],
+  budget: AnthropicCacheControlBudget
+): Set<string> {
+  const targets = new Set<string>()
+  let remaining = budget.remaining
+  if (remaining <= 0) return targets
+
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0 && remaining > 0;
+    messageIndex -= 1
+  ) {
+    const content = messages[messageIndex].content
+    if (typeof content === 'string') {
+      if (content.trim()) {
+        targets.add(`message:${messageIndex}`)
+        remaining -= 1
+      }
+      continue
+    }
+
+    for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      if (!isAnthropicCacheableContentBlock(content[blockIndex])) continue
+      targets.add(`block:${messageIndex}:${blockIndex}`)
+      remaining -= 1
+      break
+    }
+  }
+
+  return targets
 }
 
 const MIN_ANTHROPIC_THINKING_BUDGET = 1024
@@ -192,11 +267,6 @@ function extractAnthropicCacheCreationUsage(
 function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> | undefined): void {
   if (!usage) return
 
-  const inputTokens = readTokenCount(usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens)
-  if (inputTokens !== undefined) {
-    target.inputTokens = inputTokens
-  }
-
   const outputTokens = readTokenCount(
     usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens
   )
@@ -204,7 +274,8 @@ function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> 
     target.outputTokens = outputTokens
   }
 
-  Object.assign(target, extractAnthropicCacheCreationUsage(usage))
+  const cacheCreationUsage = extractAnthropicCacheCreationUsage(usage)
+  Object.assign(target, cacheCreationUsage)
 
   const inputTokenDetails =
     usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
@@ -223,6 +294,23 @@ function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> 
   )
   if (cacheReadTokens !== undefined && cacheReadTokens > 0) {
     target.cacheReadTokens = cacheReadTokens
+  }
+
+  const uncachedInputTokens = readTokenCount(
+    usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens
+  )
+  const cacheCreationTokens =
+    cacheCreationUsage.cacheCreationTokens ??
+    (cacheCreationUsage.cacheCreation5mTokens ?? 0) +
+      (cacheCreationUsage.cacheCreation1hTokens ?? 0)
+  const cachedInputTokens = (cacheCreationTokens ?? 0) + (cacheReadTokens ?? 0)
+  if (uncachedInputTokens !== undefined || cachedInputTokens > 0) {
+    const totalInputTokens = (uncachedInputTokens ?? 0) + cachedInputTokens
+    target.inputTokens = totalInputTokens
+    target.contextTokens = totalInputTokens
+    if (cachedInputTokens > 0) {
+      target.billableInputTokens = uncachedInputTokens ?? 0
+    }
   }
 
   const reasoningTokens = readTokenCount(
@@ -250,28 +338,32 @@ class AnthropicProvider implements APIProvider {
     const systemPromptCacheEnabled = config.enableSystemPromptCache !== false
     const thinkingBodyParams = buildAnthropicThinkingBodyParams(config)
     const disabledThinkingBodyParams = buildAnthropicDisabledThinkingBodyParams(config)
+    const cacheBudget = createAnthropicCacheControlBudget(
+      promptCacheEnabled || systemPromptCacheEnabled
+    )
+    const system = config.systemPrompt
+      ? [
+          {
+            type: 'text',
+            text: config.systemPrompt,
+            ...(systemPromptCacheEnabled && config.systemPrompt.trim()
+              ? consumeAnthropicCacheControl(cacheBudget)
+              : {})
+          }
+        ]
+      : undefined
+    const formattedTools =
+      tools.length > 0 ? this.formatTools(tools, promptCacheEnabled, cacheBudget) : undefined
     const body: Record<string, unknown> = {
       model: config.model,
       max_tokens: resolveAnthropicMaxTokens(config),
-      ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {}),
-      ...(config.systemPrompt
-        ? {
-            system: [
-              {
-                type: 'text',
-                text: config.systemPrompt,
-                ...(systemPromptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
-              }
-            ]
-          }
-        : {}),
+      ...(system ? { system } : {}),
       messages: this.formatMessages(
         this.normalizeMessagesForAnthropic(sanitizeMessagesForToolReplay(messages)),
-        promptCacheEnabled
+        promptCacheEnabled,
+        cacheBudget
       ),
-      ...(tools.length > 0
-        ? { tools: this.formatTools(tools, promptCacheEnabled), tool_choice: { type: 'auto' } }
-        : {}),
+      ...(tools.length > 0 ? { tools: formattedTools, tool_choice: { type: 'auto' } } : {}),
       stream: true
     }
 
@@ -543,150 +635,116 @@ class AnthropicProvider implements APIProvider {
     }
   }
 
-  formatMessages(messages: UnifiedMessage[], promptCacheEnabled = false): unknown[] {
-    return messages
-      .filter((m) => m.role !== 'system')
-      .map((m) => {
-        if (typeof m.content === 'string') {
-          if (!promptCacheEnabled || !m.content.trim()) {
-            return { role: m.role, content: m.content }
-          }
+  formatMessages(
+    messages: UnifiedMessage[],
+    promptCacheEnabled = false,
+    cacheBudget = createAnthropicCacheControlBudget(false)
+  ): unknown[] {
+    const filteredMessages = messages.filter((m) => m.role !== 'system')
+    const cacheTargets = promptCacheEnabled
+      ? collectAnthropicMessageCacheTargets(filteredMessages, cacheBudget)
+      : new Set<string>()
 
-          return {
-            role: m.role,
-            content: [
-              {
-                type: 'text',
-                text: m.content,
-                cache_control: buildAnthropicCacheControl()
-              }
-            ]
-          }
+    return filteredMessages.map((m, messageIndex) => {
+      if (typeof m.content === 'string') {
+        if (!cacheTargets.has(`message:${messageIndex}`)) {
+          return { role: m.role, content: m.content }
         }
 
-        const blocks = m.content as ContentBlock[]
         return {
-          role: m.role === 'tool' ? 'user' : m.role,
-          content: blocks.map((b) => {
-            switch (b.type) {
-              case 'thinking':
-                return {
-                  type: 'thinking',
-                  thinking: b.thinking,
-                  ...(b.encryptedContent &&
-                  (b.encryptedContentProvider === 'anthropic' || !b.encryptedContentProvider)
-                    ? { signature: b.encryptedContent }
-                    : {})
-                }
-              case 'text':
-                return {
-                  type: 'text',
-                  text: b.text,
-                  ...(promptCacheEnabled && b.text.trim()
-                    ? { cache_control: buildAnthropicCacheControl() }
-                    : {})
-                }
-              case 'tool_use':
-                return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
-              case 'tool_result': {
-                let formattedContent: unknown = b.content
-                if (Array.isArray(b.content)) {
-                  formattedContent = b.content.map((cb) => {
-                    if (cb.type === 'image') {
-                      return {
-                        type: 'image',
-                        source: {
-                          type: cb.source.type,
-                          media_type: cb.source.mediaType,
-                          data: cb.source.data
-                        }
+          role: m.role,
+          content: [
+            {
+              type: 'text',
+              text: m.content,
+              ...consumeAnthropicCacheControl(cacheBudget)
+            }
+          ]
+        }
+      }
+
+      const blocks = m.content as ContentBlock[]
+      return {
+        role: m.role === 'tool' ? 'user' : m.role,
+        content: blocks.map((b, blockIndex) => {
+          const shouldCache = cacheTargets.has(`block:${messageIndex}:${blockIndex}`)
+          switch (b.type) {
+            case 'thinking':
+              return {
+                type: 'thinking',
+                thinking: b.thinking,
+                ...(b.encryptedContent &&
+                (b.encryptedContentProvider === 'anthropic' || !b.encryptedContentProvider)
+                  ? { signature: b.encryptedContent }
+                  : {})
+              }
+            case 'text':
+              return {
+                type: 'text',
+                text: b.text,
+                ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+              }
+            case 'tool_use':
+              return { type: 'tool_use', id: b.id, name: b.name, input: b.input }
+            case 'tool_result': {
+              let formattedContent: unknown = b.content
+              if (Array.isArray(b.content)) {
+                formattedContent = b.content.map((cb) => {
+                  if (cb.type === 'image') {
+                    return {
+                      type: 'image',
+                      source: {
+                        type: cb.source.type,
+                        media_type: cb.source.mediaType,
+                        data: cb.source.data
                       }
                     }
-                    return cb
-                  })
-                }
-                return {
-                  type: 'tool_result',
-                  tool_use_id: b.toolUseId,
-                  content: formattedContent,
-                  ...(b.isError ? { is_error: true } : {}),
-                  ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
-                }
+                  }
+                  return cb
+                })
               }
-              case 'image':
-                return {
-                  type: 'image',
-                  source: {
-                    type: b.source.type,
-                    media_type: b.source.mediaType,
-                    data: b.source.data,
-                    ...(b.source.url ? { url: b.source.url } : {})
-                  },
-                  ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
-                }
-              default:
-                return { type: 'text', text: '[unsupported block]' }
+              return {
+                type: 'tool_result',
+                tool_use_id: b.toolUseId,
+                content: formattedContent,
+                ...(b.isError ? { is_error: true } : {}),
+                ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+              }
             }
-          })
-        }
-      })
+            case 'image':
+              return {
+                type: 'image',
+                source: {
+                  type: b.source.type,
+                  media_type: b.source.mediaType,
+                  data: b.source.data,
+                  ...(b.source.url ? { url: b.source.url } : {})
+                },
+                ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+              }
+            default:
+              return { type: 'text', text: '[unsupported block]' }
+          }
+        })
+      }
+    })
   }
 
   private normalizeMessagesForAnthropic(messages: UnifiedMessage[]): UnifiedMessage[] {
-    const normalized: UnifiedMessage[] = []
-    const validToolUseIds = new Set<string>()
-
-    for (let index = 0; index < messages.length; index += 1) {
-      const message = messages[index]
-      if (message.role === 'system' || typeof message.content === 'string') {
-        normalized.push(message)
-        continue
-      }
-
-      const blocks = message.content as ContentBlock[]
-      const replayableToolUseIds = new Set(
-        blocks
-          .filter(
-            (block): block is Extract<ContentBlock, { type: 'tool_use' }> =>
-              block.type === 'tool_use'
-          )
-          .map((block) => block.id)
-      )
-
-      const pairedToolUseIds = new Set<string>()
-      if (replayableToolUseIds.size > 0) {
-        const nextMessage = messages[index + 1]
-        if (nextMessage?.role === 'user' && Array.isArray(nextMessage.content)) {
-          for (const block of nextMessage.content as ContentBlock[]) {
-            if (block.type !== 'tool_result' || !replayableToolUseIds.has(block.toolUseId)) continue
-            pairedToolUseIds.add(block.toolUseId)
-            validToolUseIds.add(block.toolUseId)
-          }
-        }
-      }
-
-      const sanitizedBlocks = blocks.filter((block) => {
-        if (block.type === 'tool_use') {
-          return pairedToolUseIds.has(block.id)
-        }
-        if (block.type !== 'tool_result') return true
-        return validToolUseIds.has(block.toolUseId)
-      })
-
-      if (sanitizedBlocks.length === 0) continue
-      normalized.push({ ...message, content: sanitizedBlocks })
-    }
-
-    return normalized
+    return normalizeMessagesForAnthropicToolReplay(messages)
   }
 
-  formatTools(tools: ToolDefinition[], promptCacheEnabled = false): unknown[] {
+  formatTools(
+    tools: ToolDefinition[],
+    promptCacheEnabled = false,
+    cacheBudget = createAnthropicCacheControlBudget(false)
+  ): unknown[] {
     return tools.map((t, index) => ({
       name: t.name,
       description: t.description,
       input_schema: this.normalizeToolSchema(t.inputSchema),
       ...(promptCacheEnabled && index === tools.length - 1
-        ? { cache_control: buildAnthropicCacheControl() }
+        ? consumeAnthropicCacheControl(cacheBudget)
         : {})
     }))
   }

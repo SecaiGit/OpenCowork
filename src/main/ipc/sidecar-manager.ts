@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import { safeSendToWindow } from '../window-ipc'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -64,6 +64,85 @@ export function getSidecarManager(): SidecarBridgeManager {
   return sidecarInstance
 }
 
+function normalizeRendererRequestRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed ? trimmed : undefined
+}
+
+function isUsableRendererWindow(window: BrowserWindow | null | undefined): window is BrowserWindow {
+  return !!window && !window.isDestroyed() && !window.webContents.isDestroyed() && !window.webContents.isCrashed()
+}
+
+function pickFallbackRendererWindow(): BrowserWindow | null {
+  const focusedWindow = BrowserWindow.getFocusedWindow()
+  const candidateWindows = focusedWindow
+    ? [focusedWindow, ...BrowserWindow.getAllWindows().filter((win) => win !== focusedWindow)]
+    : BrowserWindow.getAllWindows()
+
+  return (
+    candidateWindows.find((win) => isUsableRendererWindow(win)) ?? null
+  )
+}
+
+function resolveRendererTargetWindow(
+  params: unknown,
+  runWindowIds: Map<string, number>,
+  sessionWindowIds: Map<string, number>
+): BrowserWindow | null {
+  const record = normalizeRendererRequestRecord(params)
+  const agentRunId = readNonEmptyString(record.agentRunId)
+  const runId = readNonEmptyString(record.runId)
+  const sessionId = readNonEmptyString(record.sessionId)
+  const mappedWindowIds = [
+    agentRunId ? runWindowIds.get(agentRunId) : undefined,
+    runId ? runWindowIds.get(runId) : undefined,
+    sessionId ? sessionWindowIds.get(sessionId) : undefined
+  ]
+
+  for (const windowId of mappedWindowIds) {
+    if (typeof windowId !== 'number') continue
+    const mappedWindow = BrowserWindow.fromId(windowId)
+    if (isUsableRendererWindow(mappedWindow)) {
+      return mappedWindow
+    }
+  }
+
+  if (agentRunId) runWindowIds.delete(agentRunId)
+  if (runId) runWindowIds.delete(runId)
+  if (sessionId) sessionWindowIds.delete(sessionId)
+  return pickFallbackRendererWindow()
+}
+
+function rememberRendererOrigin(
+  event: IpcMainInvokeEvent,
+  params: unknown,
+  runWindowIds: Map<string, number>,
+  sessionWindowIds: Map<string, number>,
+  resolvedRunId?: string
+): void {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender)
+  if (!isUsableRendererWindow(sourceWindow)) return
+
+  const record = normalizeRendererRequestRecord(params)
+  const requestedRunId = readNonEmptyString(record.runId)
+  const sessionId = readNonEmptyString(record.sessionId)
+
+  if (requestedRunId) {
+    runWindowIds.set(requestedRunId, sourceWindow.id)
+  }
+  if (resolvedRunId) {
+    runWindowIds.set(resolvedRunId, sourceWindow.id)
+  }
+  if (sessionId) {
+    sessionWindowIds.set(sessionId, sourceWindow.id)
+  }
+}
+
 /**
  * Register IPC handlers for the sidecar bridge.
  * Renderer sends requests to sidecar via main process.
@@ -74,9 +153,14 @@ export function registerSidecarHandlers(): void {
   const pendingApprovalRequests = new Map<string, PendingRendererApprovalRequest>()
   const pendingRendererToolRequests = new Map<string, PendingRendererToolRequest>()
   const pendingProviderStreamRequests = new Map<string, PendingRendererToolRequest>()
+  const runWindowIds = new Map<string, number>()
+  const sessionWindowIds = new Map<string, number>()
 
   // New protocol: typed AgentStreamEnvelope on 'agent:stream'
   manager.setEventHandler((envelope) => {
+    if (envelope.events.some((event) => event.type === 'loop_end' || event.type === 'error')) {
+      runWindowIds.delete(envelope.runId)
+    }
     for (const win of BrowserWindow.getAllWindows()) {
       safeSendToWindow(win, 'agent:stream', envelope)
     }
@@ -86,15 +170,7 @@ export function registerSidecarHandlers(): void {
     switch (method) {
       case 'approval/request': {
         const requestId = `sidecar-approval-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-        const focusedWindow = BrowserWindow.getFocusedWindow()
-        const candidateWindows = focusedWindow
-          ? [focusedWindow, ...BrowserWindow.getAllWindows().filter((win) => win !== focusedWindow)]
-          : BrowserWindow.getAllWindows()
-
-        const targetWindow = candidateWindows.find(
-          (win) =>
-            !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed()
-        )
+        const targetWindow = resolveRendererTargetWindow(params, runWindowIds, sessionWindowIds)
 
         if (!targetWindow) {
           return { approved: false, reason: 'No renderer available for approval request' }
@@ -190,15 +266,7 @@ export function registerSidecarHandlers(): void {
       }
       case 'renderer/provider-stream-start': {
         const requestId = `sidecar-provider-stream-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-        const focusedWindow = BrowserWindow.getFocusedWindow()
-        const candidateWindows = focusedWindow
-          ? [focusedWindow, ...BrowserWindow.getAllWindows().filter((win) => win !== focusedWindow)]
-          : BrowserWindow.getAllWindows()
-
-        const targetWindow = candidateWindows.find(
-          (win) =>
-            !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed()
-        )
+        const targetWindow = resolveRendererTargetWindow(params, runWindowIds, sessionWindowIds)
 
         if (!targetWindow) {
           throw new Error('No renderer available for provider stream request')
@@ -227,15 +295,7 @@ export function registerSidecarHandlers(): void {
       }
       case 'renderer/tool-request': {
         const requestId = `sidecar-renderer-tool-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-        const focusedWindow = BrowserWindow.getFocusedWindow()
-        const candidateWindows = focusedWindow
-          ? [focusedWindow, ...BrowserWindow.getAllWindows().filter((win) => win !== focusedWindow)]
-          : BrowserWindow.getAllWindows()
-
-        const targetWindow = candidateWindows.find(
-          (win) =>
-            !win.isDestroyed() && !win.webContents.isDestroyed() && !win.webContents.isCrashed()
-        )
+        const targetWindow = resolveRendererTargetWindow(params, runWindowIds, sessionWindowIds)
 
         if (!targetWindow) {
           throw new Error('No renderer available for tool request')
@@ -298,12 +358,17 @@ export function registerSidecarHandlers(): void {
     }
   })
 
-  ipcMain.handle('agent:run', async (_event, params: unknown) => {
+  ipcMain.handle('agent:run', async (event, params: unknown) => {
     console.log('[Sidecar] agent:run requested')
+    rememberRendererOrigin(event, params, runWindowIds, sessionWindowIds)
     const ready = await manager.ensureStarted()
     if (!ready) throw new Error('SIDECAR_UNAVAILABLE')
     try {
-      const result = await manager.request('agent/run', params, 60_000)
+      const result = (await manager.request('agent/run', params, 60_000)) as {
+        started: boolean
+        runId: string
+      }
+      rememberRendererOrigin(event, params, runWindowIds, sessionWindowIds, result.runId)
       console.log('[Sidecar] agent:run request accepted')
       return result
     } catch (error) {
@@ -318,7 +383,14 @@ export function registerSidecarHandlers(): void {
     if (!manager.isRunning) {
       return { cancelled: false }
     }
-    return await manager.request('agent/cancel', params, 10_000)
+    const result = (await manager.request('agent/cancel', params, 10_000)) as {
+      cancelled: boolean
+      runId?: string
+    }
+    if (result.cancelled && result.runId) {
+      runWindowIds.delete(result.runId)
+    }
+    return result
   })
 
   ipcMain.handle('agent:append-messages', async (_event, params: unknown) => {

@@ -662,6 +662,7 @@
     "modelCategoryImage": "Image",
     "maxOutputTokens": "Max Output Tokens",
     "pricing": "Pricing",
+    "modelConfig": "Model config",
     "pricingUnit": "USD / 1M tokens",
     "inputPrice": "Input price",
     "outputPrice": "Output price",

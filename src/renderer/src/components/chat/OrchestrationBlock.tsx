@@ -15,6 +15,7 @@ function getTaskCountLabel(run: OrchestrationRun): string {
 
 export function OrchestrationBlock({ run }: { run: OrchestrationRun }): React.JSX.Element {
   const openOrchestrationMember = useUIStore((s) => s.openOrchestrationMember)
+  const openSubAgentExecutionDetail = useUIStore((s) => s.openSubAgentExecutionDetail)
 
   return (
     <div
@@ -34,7 +35,17 @@ export function OrchestrationBlock({ run }: { run: OrchestrationRun }): React.JS
 
       <OrchestrationMemberStrip
         members={run.members}
-        onOpenMember={(memberId) => openOrchestrationMember(run.id, memberId)}
+        onOpenMember={(member) => {
+          if (member.toolUseId) {
+            openSubAgentExecutionDetail(
+              member.toolUseId,
+              member.report || member.summary || undefined,
+              member.name
+            )
+            return
+          }
+          openOrchestrationMember(run.id, member.id)
+        }}
       />
     </div>
   )

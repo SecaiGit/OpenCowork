@@ -72,11 +72,18 @@ function resolveModelContextLength(config: ProviderConfig): number | undefined {
 function buildTokenUsage(data: any, config: ProviderConfig): TokenUsage {
   const inputTokens = data.usage?.prompt_tokens ?? 0
   const outputTokens = data.usage?.completion_tokens ?? 0
+  const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0
   const contextLength = resolveModelContextLength(config)
 
   return {
     inputTokens,
     outputTokens,
+    ...(cachedTokens > 0
+      ? {
+          billableInputTokens: Math.max(0, inputTokens - cachedTokens),
+          cacheReadTokens: cachedTokens
+        }
+      : {}),
     contextTokens: inputTokens,
     ...(contextLength ? { contextLength } : {}),
     ...(data.usage?.completion_tokens_details?.reasoning_tokens

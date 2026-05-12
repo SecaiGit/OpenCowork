@@ -12,7 +12,9 @@ export default defineConfig(
       '**/dist',
       '**/out',
       '**/.claude/**',
+      '**/build',
       'build/**',
+      '**/.next/**',
       'docs/**',
       'src/components/animate-ui/**',
       'src/renderer/src/components/animate-ui/**'

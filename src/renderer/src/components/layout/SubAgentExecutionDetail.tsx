@@ -5,15 +5,12 @@ import {
   CheckCircle2,
   Clock3,
   Loader2,
-  MessageSquareText,
   ScrollText,
   TriangleAlert,
   Wrench,
   X,
   icons
 } from 'lucide-react'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { Badge } from '@renderer/components/ui/badge'
 import { Button } from '@renderer/components/ui/button'
 import { TranscriptMessageList } from '@renderer/components/chat/TranscriptMessageList'
@@ -24,6 +21,8 @@ import { cn } from '@renderer/lib/utils'
 import { subAgentRegistry } from '@renderer/lib/agent/sub-agents/registry'
 import { parseSubAgentMeta } from '@renderer/lib/agent/sub-agents/create-tool'
 import { decodeStructuredToolResult } from '@renderer/lib/tools/tool-result-format'
+
+const EMPTY_SESSION_MESSAGES: UnifiedMessage[] = []
 
 function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -187,21 +186,61 @@ function getPromptText(input: Record<string, unknown> | null): string {
     .join('\n\n')
 }
 
+function buildFallbackTranscript({
+  toolUseId,
+  description,
+  prompt,
+  report
+}: {
+  toolUseId: string | null | undefined
+  description: string
+  prompt: string
+  report: string
+}): UnifiedMessage[] {
+  const idBase = toolUseId || 'subagent-fallback'
+  const now = Date.now()
+  const messages: UnifiedMessage[] = []
+  const taskText = [description.trim(), prompt.trim()].filter(Boolean).join('\n\n')
+
+  if (taskText) {
+    messages.push({
+      id: `${idBase}:fallback-user`,
+      role: 'user',
+      content: taskText,
+      createdAt: now - 1
+    })
+  }
+
+  if (report.trim()) {
+    messages.push({
+      id: `${idBase}:fallback-assistant`,
+      role: 'assistant',
+      content: report.trim(),
+      createdAt: now
+    })
+  }
+
+  return messages
+}
+
 export function SubAgentExecutionDetail({
   toolUseId,
   inlineText,
+  sessionId,
   embedded = false,
   onClose
 }: {
   toolUseId?: string | null
   inlineText?: string
+  sessionId?: string | null
   embedded?: boolean
   onClose?: () => void
 }): React.JSX.Element {
   const { t } = useTranslation('layout')
   const activeSessionId = useChatStore((s) => s.activeSessionId)
+  const resolvedSessionId = sessionId ?? activeSessionId
   const sessionMessages = useChatStore((s) =>
-    activeSessionId ? s.getSessionMessages(activeSessionId) : []
+    resolvedSessionId ? s.getSessionMessages(resolvedSessionId) : EMPTY_SESSION_MESSAGES
   )
   const activeSubAgents = useAgentStore((s) => s.activeSubAgents)
   const completedSubAgents = useAgentStore((s) => s.completedSubAgents)
@@ -212,12 +251,12 @@ export function SubAgentExecutionDetail({
     () =>
       findTargetAgent(
         toolUseId,
-        activeSessionId,
+        resolvedSessionId,
         activeSubAgents,
         completedSubAgents,
         subAgentHistory
       ),
-    [toolUseId, activeSessionId, activeSubAgents, completedSubAgents, subAgentHistory]
+    [toolUseId, resolvedSessionId, activeSubAgents, completedSubAgents, subAgentHistory]
   )
 
   const fallbackReportText = React.useMemo(() => {
@@ -250,9 +289,19 @@ export function SubAgentExecutionDetail({
     : 'SubAgent'
   const fallbackDescription = fallbackInput?.description ? String(fallbackInput.description) : ''
   const fallbackPrompt = getPromptText(fallbackInput)
+  const fallbackTranscript = React.useMemo(
+    () =>
+      buildFallbackTranscript({
+        toolUseId,
+        description: fallbackDescription,
+        prompt: fallbackPrompt,
+        report: fallbackDetailText
+      }),
+    [toolUseId, fallbackDescription, fallbackPrompt, fallbackDetailText]
+  )
 
   if (!agent) {
-    if (fallbackDetailText) {
+    if (fallbackTranscript.length > 0) {
       return (
         <div
           className={cn(
@@ -323,11 +372,11 @@ export function SubAgentExecutionDetail({
 
               <section className="rounded-xl border border-border/60 bg-background/70 p-3.5">
                 <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/65">
-                  <MessageSquareText className="size-3.5" />
-                  <span>{t('subAgentsPanel.report', { defaultValue: '最终结果' })}</span>
+                  <ScrollText className="size-3.5" />
+                  <span>{t('subAgentsPanel.execution', { defaultValue: '执行过程' })}</span>
                 </div>
-                <div className="prose prose-sm max-w-none prose-headings:text-foreground prose-p:text-foreground/90 prose-li:text-foreground/90 prose-strong:text-foreground dark:prose-invert">
-                  <Markdown remarkPlugins={[remarkGfm]}>{fallbackDetailText}</Markdown>
+                <div className="min-w-0">
+                  <TranscriptMessageList messages={fallbackTranscript} />
                 </div>
               </section>
             </div>
@@ -353,13 +402,6 @@ export function SubAgentExecutionDetail({
   const failedToolText = failedTool?.error?.trim()
     ? `${failedTool.name}: ${failedTool.error.trim()}`
     : ''
-  const summaryText =
-    agent.report.trim() ||
-    agent.streamingText.trim() ||
-    fallbackReportText.trim() ||
-    inlineText?.trim() ||
-    failureText ||
-    ''
   const icon = getAgentIcon(displayName)
   const isFailed = agent.success === false || !!agent.errorMessage
 
@@ -513,28 +555,6 @@ export function SubAgentExecutionDetail({
                 streamingMessageId={agent.currentAssistantMessageId}
               />
             </div>
-          </section>
-
-          <section className="rounded-xl border border-border/60 bg-background/70 p-3.5">
-            <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/65">
-              <MessageSquareText className="size-3.5" />
-              <span>{t('subAgentsPanel.report', { defaultValue: '最终结果' })}</span>
-            </div>
-            {summaryText ? (
-              <div className="prose prose-sm max-w-none prose-headings:text-foreground prose-p:text-foreground/90 prose-li:text-foreground/90 prose-strong:text-foreground dark:prose-invert">
-                <Markdown remarkPlugins={[remarkGfm]}>{summaryText}</Markdown>
-              </div>
-            ) : (
-              <div className="text-sm text-muted-foreground/70">
-                {agent.reportStatus === 'retrying'
-                  ? t('subAgentsPanel.reportStatusRetrying', { defaultValue: '补救中' })
-                  : agent.reportStatus === 'missing'
-                    ? t('subAgentsPanel.reportMissing', { defaultValue: '未捕获到最终结果。' })
-                    : t('subAgentsPanel.reportPending', {
-                        defaultValue: '当前执行尚未产出最终结果。'
-                      })}
-              </div>
-            )}
           </section>
         </div>
       </div>

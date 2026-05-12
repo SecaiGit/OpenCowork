@@ -1,5 +1,5 @@
 import { IPC } from '../ipc/channels'
-import { encodeStructuredToolResult } from './tool-result-format'
+import { encodeBashToolResult } from './bash-output'
 import type { ToolContext } from './tool-types'
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 600_000
@@ -42,7 +42,7 @@ export function createSshCommandExecutor(ctx: ToolContext): CommandExecutor | nu
 
       if (result.error) {
         return {
-          output: encodeStructuredToolResult({
+          output: encodeBashToolResult({
             exitCode: 1,
             stderr: result.error,
             summary: { executionEngine: 'ssh' }
@@ -51,7 +51,7 @@ export function createSshCommandExecutor(ctx: ToolContext): CommandExecutor | nu
       }
 
       return {
-        output: encodeStructuredToolResult({
+        output: encodeBashToolResult({
           ...result,
           summary: {
             ...(typeof result === 'object' && result && 'summary' in result

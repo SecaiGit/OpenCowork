@@ -10,7 +10,12 @@ import {
   requestFallbackReport,
   runSharedAgentRuntime
 } from '../shared-runtime'
-import { createSubmitReportTool, SUBMIT_REPORT_TOOL_NAME } from './submit-report-tool'
+import { registerInlineToolHandlers } from '../../ipc/inline-tool-handler-registry'
+import {
+  clearSubmittedReportForRun,
+  createSubmitReportTool,
+  SUBMIT_REPORT_TOOL_NAME
+} from './submit-report-tool'
 import { resolveSubAgentMaxTurns } from './limits'
 
 const READ_ONLY_SET = new Set([
@@ -58,7 +63,11 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
   // tools indefinitely after the task is logically done, or stop emitting
   // tool calls without ever producing visible text — both leave the parent
   // agent with no usable result.
-  const submitReportTool = createSubmitReportTool()
+  const sidecarRunId = `subagent-${nanoid()}`
+  const submitReportTool = createSubmitReportTool(sidecarRunId)
+  const unregisterSubmitReportHandler = registerInlineToolHandlers(sidecarRunId, {
+    [submitReportTool.name]: submitReportTool.handler
+  })
   const innerTools =
     resolvedInnerTools.length > 0 ? [...resolvedInnerTools, submitReportTool.definition] : []
 
@@ -141,6 +150,23 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
     }
   }
 
+  const readReportFromInput = (input: Record<string, unknown> | undefined): string | null => {
+    const report = typeof input?.report === 'string' ? input.report.trim() : ''
+    return report ? report : null
+  }
+
+  const readSubmittedReportFromToolCalls = (
+    toolCalls: Array<{ name: string; input: Record<string, unknown> }>
+  ): string | null => {
+    for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+      const toolCall = toolCalls[index]
+      if (toolCall.name !== SUBMIT_REPORT_TOOL_NAME) continue
+      const report = readReportFromInput(toolCall.input)
+      if (report) return report
+    }
+    return null
+  }
+
   try {
     if (innerTools.length === 0) {
       const result = buildResult(
@@ -159,6 +185,7 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
     }
 
     const runtime = await runSharedAgentRuntime({
+      runId: sidecarRunId,
       initialMessages: [promptMessage],
       loopConfig,
       toolContext: loopToolContext,
@@ -291,7 +318,8 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
               if (
                 event.type === 'tool_call_result' &&
                 event.toolCall.name === SUBMIT_REPORT_TOOL_NAME &&
-                submitReportTool.getReport() !== null
+                (submitReportTool.getReport() !== null ||
+                  readReportFromInput(event.toolCall.input) !== null)
               ) {
                 return { stop: true, reason: 'completed' }
               }
@@ -323,7 +351,8 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
 
     // Primary path: the model called SubmitReport and gave us an explicit
     // report payload — always prefer this over scraped assistant text.
-    const submittedReport = submitReportTool.getReport()
+    const submittedReport =
+      submitReportTool.getReport() ?? readSubmittedReportFromToolCalls(runtime.toolCalls)
     let effectiveRuntime = runtime
     if (submittedReport && submittedReport.trim()) {
       effectiveRuntime = { ...runtime, finalOutput: submittedReport.trim() }
@@ -365,6 +394,8 @@ export async function runSubAgent(config: SubAgentRunConfig): Promise<SubAgentRe
     onEvent?.({ type: 'sub_agent_end', subAgentName: definition.name, toolUseId, result })
     return result
   } finally {
+    unregisterSubmitReportHandler()
+    clearSubmittedReportForRun(sidecarRunId)
     innerAbort.abort()
     toolContext.signal.removeEventListener('abort', onParentAbort)
   }

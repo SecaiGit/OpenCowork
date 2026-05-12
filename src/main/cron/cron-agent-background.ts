@@ -28,14 +28,20 @@ import {
   resolveResponsesWebsocketConfig,
   type ResponsesWebsocketMode
 } from '../../shared/openai-responses-websocket'
+import { normalizeMessagesForAnthropicToolReplay } from '../../shared/anthropic-tool-replay'
 import {
   summarizeOpenAITextAndImages,
   supportsOpenAIImageParts
 } from '../../shared/openai-message-support'
+import { compactShellOutputPayload, compactShellText } from '../../shared/shell-output-compactor'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
+import { applyDefaultApiUserAgent } from '../lib/api-user-agent'
 
 const DEFAULT_AGENT = 'CronAgent'
 const DEFAULT_BASH_TIMEOUT_MS = 600_000
+const BASH_RESULT_PREVIEW_CHARS = 5_000
+const BASH_RESULT_PREVIEW_LINES = 120
+const BASH_IMPORTANT_LINE_LIMIT = 80
 // One initial attempt plus at least five retries for retryable upstream failures.
 const MAX_PROVIDER_RETRIES = 6
 const BASE_RETRY_DELAY_MS = 1_500
@@ -109,8 +115,11 @@ const SUPPORTED_BACKGROUND_TOOLS = new Set([
   'Bash',
   'Notify',
   'PluginSendMessage',
-  'PluginReplyMessage'
+  'PluginReplyMessage',
+  'SubmitReport'
 ])
+
+const SUBMIT_REPORT_TOOL_NAME = 'SubmitReport'
 
 type ProviderType =
   | 'anthropic'
@@ -446,6 +455,53 @@ function encodeStructuredToolResult(value: unknown): string {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function compactCronShellPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return compactShellOutputPayload(payload, {
+    stdoutMaxChars: BASH_RESULT_PREVIEW_CHARS,
+    stderrMaxChars: BASH_RESULT_PREVIEW_CHARS,
+    streamMaxLines: BASH_RESULT_PREVIEW_LINES,
+    importantLineLimit: BASH_IMPORTANT_LINE_LIMIT
+  })
+}
+
+function encodeShellToolResult(value: Record<string, unknown>): string {
+  return encodeStructuredToolResult(compactCronShellPayload(value))
+}
+
+function compactCronShellToolResultContent(output: ToolResultContent): ToolResultContent {
+  if (typeof output === 'string') {
+    try {
+      const parsed = JSON.parse(output) as unknown
+      if (isRecord(parsed)) {
+        return encodeStructuredToolResult(compactCronShellPayload(parsed))
+      }
+    } catch {
+      // Plain-text shell output still needs a hard cap before it enters context.
+    }
+
+    const preview = compactShellText(output, {
+      stdoutMaxChars: BASH_RESULT_PREVIEW_CHARS,
+      streamMaxLines: BASH_RESULT_PREVIEW_LINES,
+      importantLineLimit: BASH_IMPORTANT_LINE_LIMIT
+    })
+    return preview.truncated ? preview.text : output
+  }
+
+  return output.map((block) => {
+    if (block.type !== 'text') return block
+    const preview = compactShellText(block.text, {
+      stdoutMaxChars: BASH_RESULT_PREVIEW_CHARS,
+      streamMaxLines: BASH_RESULT_PREVIEW_LINES,
+      importantLineLimit: BASH_IMPORTANT_LINE_LIMIT
+    })
+    return preview.truncated ? { ...block, text: preview.text } : block
+  })
+}
+
 function encodeToolError(message: string): string {
   return encodeStructuredToolResult({ success: false, error: message })
 }
@@ -470,6 +526,9 @@ function extractStructuredToolError(output: ToolResultContent): string | undefin
 }
 
 type SearchLimitReason = 'max_results' | 'max_output_bytes' | 'timeout' | 'max_depth' | null
+type GrepMatchKind = 'match' | 'context'
+type GrepOutputMode = 'matches' | 'files_with_matches' | 'count'
+type GrepPathStyle = 'relative' | 'absolute'
 
 type SearchMeta = {
   truncated: boolean
@@ -479,6 +538,12 @@ type SearchMeta = {
 }
 
 const CRON_SEARCH_MAX_RESULTS = 20
+const CRON_SEARCH_MAX_RESULTS_CAP = 200
+const CRON_GREP_MAX_CONTEXT = 20
+const CRON_GREP_DEFAULT_MAX_LINE_LENGTH = 160
+const CRON_GREP_MAX_LINE_LENGTH = 1000
+const CRON_GREP_DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024
+const CRON_GREP_MAX_OUTPUT_BYTES = 64 * 1024
 
 function shouldUseCompactSearchPayload(meta: SearchMeta, error?: string): boolean {
   return !error && !meta.truncated && !meta.timedOut && (meta.warnings?.length ?? 0) === 0
@@ -515,27 +580,79 @@ function formatGlobToolResult(args: {
 }
 
 function formatGrepToolResult(args: {
-  matches: Array<{ file: string; line: number; text: string }>
+  matches: Array<{
+    file: string
+    line?: number
+    text?: string
+    kind?: GrepMatchKind
+    count?: number
+  }>
   truncated?: boolean
   timedOut?: boolean
   limitReason?: SearchLimitReason
   warnings?: string[]
   error?: string
+  outputMode?: GrepOutputMode
+  maxResults?: number
+  maxOutputBytes?: number
 }): string {
-  const matches = args.matches.slice(0, CRON_SEARCH_MAX_RESULTS)
-  const truncated = args.truncated === true || args.matches.length > matches.length
+  const maxResults = Math.min(
+    args.maxResults ?? CRON_SEARCH_MAX_RESULTS,
+    CRON_SEARCH_MAX_RESULTS_CAP
+  )
+  const maxOutputBytes = Math.min(
+    args.maxOutputBytes ?? CRON_GREP_DEFAULT_MAX_OUTPUT_BYTES,
+    CRON_GREP_MAX_OUTPUT_BYTES
+  )
+  const outputMode = args.outputMode ?? 'matches'
+  const matches: typeof args.matches = []
+  const outputLines: string[] = []
+  let totalBytes = 0
+  let outputLimitReason: SearchLimitReason = null
+
+  for (const item of args.matches) {
+    if (matches.length >= maxResults) {
+      outputLimitReason = 'max_results'
+      break
+    }
+
+    const line =
+      outputMode === 'files_with_matches'
+        ? item.file
+        : outputMode === 'count'
+          ? `${item.file}:${item.count ?? 0}`
+          : typeof item.line !== 'number'
+            ? item.file
+            : `${item.file}${item.kind === 'context' ? '-' : ':'}${item.line}${
+                item.kind === 'context' ? '-' : ':'
+              }${item.text ?? ''}`
+    const nextBytes = Buffer.byteLength(line, 'utf8') + 1
+    if (totalBytes + nextBytes > maxOutputBytes) {
+      outputLimitReason = 'max_output_bytes'
+      break
+    }
+
+    matches.push(item)
+    outputLines.push(line)
+    totalBytes += nextBytes
+  }
+
+  const truncated =
+    args.truncated === true || args.matches.length > matches.length || outputLimitReason !== null
   const meta: SearchMeta = {
     truncated,
     timedOut: args.timedOut === true,
-    limitReason: args.limitReason ?? (truncated ? 'max_results' : null),
+    limitReason: args.limitReason ?? outputLimitReason ?? (truncated ? 'max_results' : null),
     warnings: args.warnings ?? []
   }
+  const output = outputLines.join('\n')
 
-  if (shouldUseCompactSearchPayload(meta, args.error)) {
-    return encodeStructuredToolResult(matches)
+  if (output && shouldUseCompactSearchPayload(meta, args.error)) {
+    return output
   }
 
   return encodeStructuredToolResult({
+    output,
     matches,
     truncated: meta.truncated,
     timedOut: meta.timedOut,
@@ -567,6 +684,335 @@ function buildCronSearchIgnore(pattern: string): string[] {
 
 function buildCronSearchWarnings(messages: Array<string | false | null | undefined>): string[] {
   return messages.filter((item): item is string => typeof item === 'string' && item.length > 0)
+}
+
+type CronGrepOptions = {
+  pattern: string
+  include: string
+  exclude?: string
+  caseSensitive: boolean
+  smartCase: boolean
+  literal: boolean
+  word: boolean
+  line: boolean
+  invertMatch: boolean
+  beforeContext: number
+  afterContext: number
+  maxResults: number
+  maxLineLength: number
+  maxOutputBytes: number
+  maxDepth: number | null
+  hidden: boolean
+  respectGitignore: boolean
+  followSymlinks: boolean
+  outputMode: GrepOutputMode
+  pathStyle: GrepPathStyle
+}
+
+type CronGrepResultItem = {
+  file: string
+  line?: number
+  text?: string
+  kind?: GrepMatchKind
+  count?: number
+}
+
+function clampCronGrepNumber(value: unknown, fallback: number, max: number): number {
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.floor(Number(value))
+  if (normalized <= 0) return fallback
+  return Math.min(normalized, max)
+}
+
+function clampCronGrepOptionalNumber(value: unknown, max: number): number | null {
+  if (!Number.isFinite(value)) return null
+  const normalized = Math.floor(Number(value))
+  if (normalized <= 0) return null
+  return Math.min(normalized, max)
+}
+
+function clampCronGrepContext(value: unknown): number {
+  if (!Number.isFinite(value)) return 0
+  const normalized = Math.floor(Number(value))
+  if (normalized <= 0) return 0
+  return Math.min(normalized, CRON_GREP_MAX_CONTEXT)
+}
+
+function normalizeCronBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeCronOutputMode(value: unknown): GrepOutputMode {
+  return value === 'files_with_matches' || value === 'count' ? value : 'matches'
+}
+
+function normalizeCronPathStyle(value: unknown): GrepPathStyle {
+  return value === 'absolute' ? 'absolute' : 'relative'
+}
+
+function normalizeCronGrepOptions(input: Record<string, unknown>): CronGrepOptions {
+  const pattern = String(input.pattern ?? '')
+  const smartCase = normalizeCronBoolean(input.smartCase, false)
+  const hasExplicitCaseSensitive = typeof input.caseSensitive === 'boolean'
+  const caseSensitive = hasExplicitCaseSensitive
+    ? Boolean(input.caseSensitive)
+    : smartCase
+      ? /[A-Z]/.test(pattern)
+      : false
+  const context = clampCronGrepContext(input.context)
+  const include =
+    typeof input.include === 'string' && input.include.trim() ? input.include.trim() : '**/*'
+  const exclude =
+    typeof input.exclude === 'string' && input.exclude.trim() ? input.exclude.trim() : undefined
+
+  return {
+    pattern,
+    include,
+    exclude,
+    caseSensitive,
+    smartCase,
+    literal: normalizeCronBoolean(input.literal, false),
+    word: normalizeCronBoolean(input.word, false),
+    line: normalizeCronBoolean(input.line, false),
+    invertMatch: normalizeCronBoolean(input.invertMatch, false),
+    beforeContext:
+      input.beforeContext === undefined ? context : clampCronGrepContext(input.beforeContext),
+    afterContext:
+      input.afterContext === undefined ? context : clampCronGrepContext(input.afterContext),
+    maxResults: clampCronGrepNumber(
+      input.maxResults,
+      CRON_SEARCH_MAX_RESULTS,
+      CRON_SEARCH_MAX_RESULTS_CAP
+    ),
+    maxLineLength: clampCronGrepNumber(
+      input.maxLineLength,
+      CRON_GREP_DEFAULT_MAX_LINE_LENGTH,
+      CRON_GREP_MAX_LINE_LENGTH
+    ),
+    maxOutputBytes: clampCronGrepNumber(
+      input.maxOutputBytes,
+      CRON_GREP_DEFAULT_MAX_OUTPUT_BYTES,
+      CRON_GREP_MAX_OUTPUT_BYTES
+    ),
+    maxDepth: clampCronGrepOptionalNumber(input.maxDepth, 50),
+    hidden: normalizeCronBoolean(input.hidden, true),
+    respectGitignore: normalizeCronBoolean(input.respectGitignore, true),
+    followSymlinks: normalizeCronBoolean(input.followSymlinks, false),
+    outputMode: normalizeCronOutputMode(input.outputMode),
+    pathStyle: normalizeCronPathStyle(input.pathStyle)
+  }
+}
+
+function normalizeCronGrepText(text: string, maxLineLength: number): string {
+  const normalized = text.trim()
+  if (normalized.length <= maxLineLength) return normalized
+  return `${normalized.slice(0, Math.max(0, maxLineLength - 3))}...`
+}
+
+function buildCronGrepRegex(options: CronGrepOptions): RegExp {
+  let source = options.literal ? escapeRegexForLiteral(options.pattern) : options.pattern
+  if (options.word) source = `\\b(?:${source})\\b`
+  if (options.line) source = `^(?:${source})$`
+  return new RegExp(source, options.caseSensitive ? '' : 'i')
+}
+
+function formatCronGrepPath(
+  searchRoot: string,
+  filePath: string,
+  pathStyle: GrepPathStyle
+): string {
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(searchRoot, filePath)
+  if (pathStyle === 'absolute') return absolutePath
+  return path.relative(searchRoot, absolutePath) || path.basename(absolutePath)
+}
+
+function formatCronRemoteGrepPath(
+  searchRoot: string,
+  filePath: string,
+  pathStyle: GrepPathStyle
+): string {
+  const normalizedPath = filePath.replace(/^\.\//, '')
+  const absolutePath = path.posix.isAbsolute(normalizedPath)
+    ? normalizedPath
+    : path.posix.join(searchRoot, normalizedPath)
+  if (pathStyle === 'absolute') return absolutePath
+  return path.posix.relative(searchRoot, absolutePath) || path.posix.basename(absolutePath)
+}
+
+function parseCronGlobList(value?: string): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function appendCronRipgrepSearchFlags(rgArgs: string[], options: CronGrepOptions): void {
+  if (options.outputMode === 'matches') {
+    rgArgs.push('--json')
+    if (options.beforeContext > 0) rgArgs.push('--before-context', String(options.beforeContext))
+    if (options.afterContext > 0) rgArgs.push('--after-context', String(options.afterContext))
+  } else if (options.outputMode === 'files_with_matches') {
+    rgArgs.push('--files-with-matches')
+  } else {
+    rgArgs.push('--count')
+  }
+
+  if (options.smartCase) rgArgs.push('--smart-case')
+  else if (!options.caseSensitive) rgArgs.push('--ignore-case')
+  if (options.literal) rgArgs.push('--fixed-strings')
+  if (options.word) rgArgs.push('--word-regexp')
+  if (options.line) rgArgs.push('--line-regexp')
+  if (options.invertMatch) rgArgs.push('--invert-match')
+  if (options.hidden) rgArgs.push('--hidden')
+  if (!options.respectGitignore) rgArgs.push('--no-ignore')
+  if (options.followSymlinks) rgArgs.push('--follow')
+  if (options.maxDepth !== null) rgArgs.push('--max-depth', String(options.maxDepth))
+}
+
+async function runCronLocalRipgrepSearch(
+  searchRoot: string,
+  options: CronGrepOptions
+): Promise<{
+  matches: CronGrepResultItem[]
+  truncated: boolean
+  timedOut: boolean
+  limitReason: SearchLimitReason
+} | null> {
+  const rgArgs = ['--line-number', '--color', 'never', '--no-messages', '--max-filesize', '10M']
+  appendCronRipgrepSearchFlags(rgArgs, options)
+
+  for (const ignoredDir of ['.git', 'node_modules', 'out', 'dist']) {
+    rgArgs.push('--glob', `!${ignoredDir}/**`)
+    rgArgs.push('--glob', `!**/${ignoredDir}/**`)
+  }
+  for (const includePattern of parseCronGlobList(options.include)) {
+    rgArgs.push('--glob', includePattern)
+  }
+  for (const excludePattern of parseCronGlobList(options.exclude)) {
+    rgArgs.push('--glob', `!${excludePattern}`)
+  }
+  rgArgs.push('--', options.pattern, '.')
+
+  return await new Promise((resolve) => {
+    const child = spawn('rg', rgArgs, { cwd: searchRoot, windowsHide: true })
+    const matches: CronGrepResultItem[] = []
+    let stdoutBuffer = ''
+    let timedOut = false
+    let settled = false
+
+    const finish = (
+      value: {
+        matches: CronGrepResultItem[]
+        truncated: boolean
+        timedOut: boolean
+        limitReason: SearchLimitReason
+      } | null
+    ): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+
+    const appendMatch = (item: CronGrepResultItem): void => {
+      if (matches.length >= options.maxResults) {
+        child.kill()
+        return
+      }
+      matches.push(item)
+      if (matches.length >= options.maxResults) child.kill()
+    }
+
+    const processLine = (rawLine: string): void => {
+      if (!rawLine.trim()) return
+
+      if (options.outputMode === 'files_with_matches') {
+        appendMatch({
+          file: formatCronGrepPath(searchRoot, rawLine.trimEnd(), options.pathStyle)
+        })
+        return
+      }
+
+      if (options.outputMode === 'count') {
+        const countMatch = rawLine.trimEnd().match(/^(.*):(\d+)$/)
+        if (!countMatch) return
+        const count = Number(countMatch[2])
+        if (count <= 0) return
+        appendMatch({
+          file: formatCronGrepPath(searchRoot, countMatch[1], options.pathStyle),
+          count
+        })
+        return
+      }
+
+      try {
+        const parsed = JSON.parse(rawLine) as {
+          type?: string
+          data?: {
+            path?: { text?: string }
+            lines?: { text?: string }
+            line_number?: number
+          }
+        }
+        if (parsed.type !== 'match' && parsed.type !== 'context') return
+        const rawPath = parsed.data?.path?.text
+        const lineNumber = parsed.data?.line_number
+        if (typeof rawPath !== 'string' || typeof lineNumber !== 'number') return
+        appendMatch({
+          file: formatCronGrepPath(searchRoot, rawPath, options.pathStyle),
+          line: lineNumber,
+          text: normalizeCronGrepText(parsed.data?.lines?.text ?? '', options.maxLineLength),
+          kind: parsed.type as GrepMatchKind
+        })
+      } catch {
+        finish(null)
+      }
+    }
+
+    const flushStdout = (flush = false): void => {
+      let newlineIndex = stdoutBuffer.indexOf('\n')
+      while (newlineIndex !== -1 || (flush && stdoutBuffer.length > 0)) {
+        const endIndex = newlineIndex === -1 ? stdoutBuffer.length : newlineIndex
+        const line = stdoutBuffer.slice(0, endIndex)
+        stdoutBuffer = stdoutBuffer.slice(Math.min(endIndex + 1, stdoutBuffer.length))
+        processLine(line)
+        if (settled) return
+        newlineIndex = stdoutBuffer.indexOf('\n')
+      }
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true
+      child.kill()
+    }, 60_000)
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString('utf8')
+      flushStdout()
+    })
+
+    child.on('error', () => {
+      finish(null)
+    })
+
+    child.on('close', (code) => {
+      flushStdout(true)
+      if (settled) return
+
+      const truncated = timedOut || matches.length >= options.maxResults
+      if (code === 0 || code === 1 || truncated) {
+        finish({
+          matches,
+          truncated,
+          timedOut,
+          limitReason: timedOut ? 'timeout' : truncated ? 'max_results' : null
+        })
+        return
+      }
+
+      finish(null)
+    })
+  })
 }
 
 const BINARY_EXTENSIONS = new Set([
@@ -1569,6 +2015,80 @@ function buildAnthropicCacheControl(): { type: 'ephemeral' } {
   return { type: 'ephemeral' }
 }
 
+const MAX_ANTHROPIC_CACHE_CONTROL_BLOCKS = 4
+
+interface AnthropicCacheControlBudget {
+  readonly remaining: number
+  use(): { type: 'ephemeral' } | undefined
+}
+
+function createAnthropicCacheControlBudget(enabled: boolean): AnthropicCacheControlBudget {
+  let remaining = enabled ? MAX_ANTHROPIC_CACHE_CONTROL_BLOCKS : 0
+
+  return {
+    get remaining() {
+      return remaining
+    },
+    use() {
+      if (remaining <= 0) return undefined
+      remaining -= 1
+      return buildAnthropicCacheControl()
+    }
+  }
+}
+
+function consumeAnthropicCacheControl(
+  budget: AnthropicCacheControlBudget
+): { cache_control: { type: 'ephemeral' } } | Record<string, never> {
+  const cacheControl = budget.use()
+  return cacheControl ? { cache_control: cacheControl } : {}
+}
+
+function isAnthropicCacheableContentBlock(block: ContentBlock): boolean {
+  switch (block.type) {
+    case 'text':
+      return Boolean(block.text.trim())
+    case 'tool_result':
+    case 'image':
+      return true
+    default:
+      return false
+  }
+}
+
+function collectAnthropicMessageCacheTargets(
+  messages: UnifiedMessage[],
+  budget: AnthropicCacheControlBudget
+): Set<string> {
+  const targets = new Set<string>()
+  let remaining = budget.remaining
+  if (remaining <= 0) return targets
+
+  for (
+    let messageIndex = messages.length - 1;
+    messageIndex >= 0 && remaining > 0;
+    messageIndex -= 1
+  ) {
+    const content = messages[messageIndex].content
+    if (typeof content === 'string') {
+      if (content.trim()) {
+        targets.add(`message:${messageIndex}`)
+        remaining -= 1
+      }
+      continue
+    }
+
+    for (let blockIndex = content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      if (!isAnthropicCacheableContentBlock(content[blockIndex])) continue
+      targets.add(`block:${messageIndex}:${blockIndex}`)
+      remaining -= 1
+      break
+    }
+  }
+
+  return targets
+}
+
 const MIN_ANTHROPIC_THINKING_BUDGET = 1024
 
 function readNonNegativeNumber(value: unknown): number | undefined {
@@ -1635,11 +2155,6 @@ function extractAnthropicCacheCreationUsage(
 function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> | undefined): void {
   if (!usage) return
 
-  const inputTokens = readTokenCount(usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens)
-  if (inputTokens !== undefined) {
-    target.inputTokens = inputTokens
-  }
-
   const outputTokens = readTokenCount(
     usage.output_tokens ?? usage.completion_tokens ?? usage.outputTokens
   )
@@ -1647,7 +2162,8 @@ function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> 
     target.outputTokens = outputTokens
   }
 
-  Object.assign(target, extractAnthropicCacheCreationUsage(usage))
+  const cacheCreationUsage = extractAnthropicCacheCreationUsage(usage)
+  Object.assign(target, cacheCreationUsage)
 
   const inputTokenDetails =
     usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
@@ -1666,6 +2182,23 @@ function mergeAnthropicUsage(target: TokenUsage, usage: Record<string, unknown> 
   )
   if (cacheReadTokens !== undefined && cacheReadTokens > 0) {
     target.cacheReadTokens = cacheReadTokens
+  }
+
+  const uncachedInputTokens = readTokenCount(
+    usage.input_tokens ?? usage.prompt_tokens ?? usage.inputTokens
+  )
+  const cacheCreationTokens =
+    cacheCreationUsage.cacheCreationTokens ??
+    (cacheCreationUsage.cacheCreation5mTokens ?? 0) +
+      (cacheCreationUsage.cacheCreation1hTokens ?? 0)
+  const cachedInputTokens = (cacheCreationTokens ?? 0) + (cacheReadTokens ?? 0)
+  if (uncachedInputTokens !== undefined || cachedInputTokens > 0) {
+    const totalInputTokens = (uncachedInputTokens ?? 0) + cachedInputTokens
+    target.inputTokens = totalInputTokens
+    target.contextTokens = totalInputTokens
+    if (cachedInputTokens > 0) {
+      target.billableInputTokens = uncachedInputTokens ?? 0
+    }
   }
 
   const reasoningTokens = readTokenCount(
@@ -1751,91 +2284,103 @@ function normalizeAnthropicThinkingRequestBody(body: Record<string, unknown>): v
 
 function formatAnthropicMessages(
   messages: UnifiedMessage[],
-  promptCacheEnabled = false
+  promptCacheEnabled = false,
+  cacheBudget = createAnthropicCacheControlBudget(false)
 ): unknown[] {
-  return normalizeMessagesForReplay(messages)
-    .filter((message) => message.role !== 'system')
-    .map((message) => {
-      if (typeof message.content === 'string') {
-        if (!promptCacheEnabled || !message.content.trim()) {
-          return { role: message.role, content: message.content }
-        }
+  const filteredMessages = normalizeMessagesForAnthropicToolReplay(messages).filter(
+    (message) => message.role !== 'system'
+  )
+  const cacheTargets = promptCacheEnabled
+    ? collectAnthropicMessageCacheTargets(filteredMessages, cacheBudget)
+    : new Set<string>()
 
-        return {
-          role: message.role,
-          content: [
-            {
-              type: 'text',
-              text: message.content,
-              cache_control: buildAnthropicCacheControl()
-            }
-          ]
-        }
+  return filteredMessages.map((message, messageIndex) => {
+    if (typeof message.content === 'string') {
+      if (!cacheTargets.has(`message:${messageIndex}`)) {
+        return { role: message.role, content: message.content }
       }
-      const blocks = message.content as ContentBlock[]
+
       return {
         role: message.role,
-        content: blocks.map((block) => {
-          switch (block.type) {
-            case 'thinking':
-              return {
-                type: 'thinking',
-                thinking: block.thinking,
-                ...(block.encryptedContent &&
-                (block.encryptedContentProvider === 'anthropic' || !block.encryptedContentProvider)
-                  ? { signature: block.encryptedContent }
-                  : {})
-              }
-            case 'text':
-              return {
-                type: 'text',
-                text: block.text,
-                ...(promptCacheEnabled && block.text.trim()
-                  ? { cache_control: buildAnthropicCacheControl() }
-                  : {})
-              }
-            case 'tool_use':
-              return { type: 'tool_use', id: block.id, name: block.name, input: block.input }
-            case 'tool_result':
-              return {
-                type: 'tool_result',
-                tool_use_id: block.toolUseId,
-                content: block.content,
-                ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
-              }
-            case 'image':
-              return {
-                type: 'image',
-                source: block.source,
-                ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
-              }
+        content: [
+          {
+            type: 'text',
+            text: message.content,
+            ...consumeAnthropicCacheControl(cacheBudget)
           }
-        })
+        ]
       }
-    })
+    }
+    const blocks = message.content as ContentBlock[]
+    return {
+      role: message.role,
+      content: blocks.map((block, blockIndex) => {
+        const shouldCache = cacheTargets.has(`block:${messageIndex}:${blockIndex}`)
+        switch (block.type) {
+          case 'thinking':
+            return {
+              type: 'thinking',
+              thinking: block.thinking,
+              ...(block.encryptedContent &&
+              (block.encryptedContentProvider === 'anthropic' || !block.encryptedContentProvider)
+                ? { signature: block.encryptedContent }
+                : {})
+            }
+          case 'text':
+            return {
+              type: 'text',
+              text: block.text,
+              ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+            }
+          case 'tool_use':
+            return { type: 'tool_use', id: block.id, name: block.name, input: block.input }
+          case 'tool_result':
+            return {
+              type: 'tool_result',
+              tool_use_id: block.toolUseId,
+              content: block.content,
+              ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+            }
+          case 'image':
+            return {
+              type: 'image',
+              source: block.source,
+              ...(shouldCache ? consumeAnthropicCacheControl(cacheBudget) : {})
+            }
+        }
+      })
+    }
+  })
 }
 
-function formatAnthropicTools(tools: ToolDefinition[], promptCacheEnabled = false): unknown[] {
+function formatAnthropicTools(
+  tools: ToolDefinition[],
+  promptCacheEnabled = false,
+  cacheBudget = createAnthropicCacheControlBudget(false)
+): unknown[] {
   return tools.map((tool, index) => ({
     name: tool.name,
     description: tool.description,
     input_schema: normalizeToolSchema(tool.inputSchema),
     ...(promptCacheEnabled && index === tools.length - 1
-      ? { cache_control: buildAnthropicCacheControl() }
+      ? consumeAnthropicCacheControl(cacheBudget)
       : {})
   }))
 }
 
 function formatAnthropicSystemPrompt(
   systemPrompt?: string,
-  systemPromptCacheEnabled = false
+  systemPromptCacheEnabled = false,
+  cacheBudget = createAnthropicCacheControlBudget(false)
 ): Array<{ type: 'text'; text: string }> | undefined {
   if (!systemPrompt) return undefined
   return [
     {
       type: 'text',
       text: systemPrompt,
-      ...(systemPromptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {})
+      ...(systemPromptCacheEnabled && systemPrompt.trim()
+        ? consumeAnthropicCacheControl(cacheBudget)
+        : {})
     }
   ]
 }
@@ -1930,6 +2475,7 @@ function buildForwardHeaders(
     if (REQUEST_BODY_MANAGED_HEADERS.has(key.toLowerCase())) continue
     forwarded[key] = stringValue
   }
+  applyDefaultApiUserAgent(forwarded)
   if (bodyBuffer) forwarded['Content-Length'] = String(bodyBuffer.byteLength)
   return forwarded
 }
@@ -2052,6 +2598,7 @@ async function* sendOpenAIChat(
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   if (config.serviceTier) headers.service_tier = config.serviceTier
   applyHeaderOverrides(headers, config)
+  applyDefaultApiUserAgent(headers)
   const bodyStr = JSON.stringify(body)
   yield {
     type: 'request_debug',
@@ -2102,6 +2649,7 @@ async function* sendOpenAIChat(
       usage?: {
         prompt_tokens?: number
         completion_tokens?: number
+        prompt_tokens_details?: { cached_tokens?: number }
         completion_tokens_details?: { reasoning_tokens?: number }
       }
     } | null = null
@@ -2123,6 +2671,7 @@ async function* sendOpenAIChat(
         usage?: {
           prompt_tokens?: number
           completion_tokens?: number
+          prompt_tokens_details?: { cached_tokens?: number }
           completion_tokens_details?: { reasoning_tokens?: number }
         }
       }
@@ -2131,6 +2680,38 @@ async function* sendOpenAIChat(
     }
     if (!data) continue
     const choice = data.choices?.[0]
+    if (!choice) {
+      if (data.usage) {
+        outputTokens = data.usage.completion_tokens ?? outputTokens
+        const requestCompletedAt = Date.now()
+        yield {
+          type: 'message_end',
+          usage: {
+            inputTokens: data.usage.prompt_tokens ?? 0,
+            outputTokens: data.usage.completion_tokens ?? 0,
+            ...(data.usage.prompt_tokens_details?.cached_tokens
+              ? {
+                  billableInputTokens: Math.max(
+                    0,
+                    (data.usage.prompt_tokens ?? 0) - data.usage.prompt_tokens_details.cached_tokens
+                  ),
+                  cacheReadTokens: data.usage.prompt_tokens_details.cached_tokens
+                }
+              : {}),
+            contextTokens: data.usage.prompt_tokens ?? 0,
+            ...(data.usage.completion_tokens_details?.reasoning_tokens
+              ? { reasoningTokens: data.usage.completion_tokens_details.reasoning_tokens }
+              : {})
+          },
+          timing: {
+            totalMs: requestCompletedAt - requestStartedAt,
+            ttftMs: firstTokenAt ? firstTokenAt - requestStartedAt : undefined,
+            tps: computeTps(outputTokens, firstTokenAt, requestCompletedAt)
+          }
+        }
+      }
+      continue
+    }
     const delta = choice?.delta
     if (!delta) continue
     if (delta.content) {
@@ -2215,6 +2796,17 @@ async function* sendOpenAIChat(
               usage: {
                 inputTokens: data.usage.prompt_tokens ?? 0,
                 outputTokens: data.usage.completion_tokens ?? 0,
+                ...(data.usage.prompt_tokens_details?.cached_tokens
+                  ? {
+                      billableInputTokens: Math.max(
+                        0,
+                        (data.usage.prompt_tokens ?? 0) -
+                          data.usage.prompt_tokens_details.cached_tokens
+                      ),
+                      cacheReadTokens: data.usage.prompt_tokens_details.cached_tokens
+                    }
+                  : {}),
+                contextTokens: data.usage.prompt_tokens ?? 0,
                 ...(data.usage.completion_tokens_details?.reasoning_tokens
                   ? { reasoningTokens: data.usage.completion_tokens_details.reasoning_tokens }
                   : {})
@@ -2280,17 +2872,25 @@ async function* sendAnthropic(
 
   const baseUrl = (config.baseUrl || 'https://api.anthropic.com').trim().replace(/\/+$/, '')
   const url = `${baseUrl}/v1/messages`
-  const system = formatAnthropicSystemPrompt(config.systemPrompt, systemPromptCacheEnabled)
+  const cacheBudget = createAnthropicCacheControlBudget(
+    promptCacheEnabled || systemPromptCacheEnabled
+  )
+  const system = formatAnthropicSystemPrompt(
+    config.systemPrompt,
+    systemPromptCacheEnabled,
+    cacheBudget
+  )
+  const formattedTools =
+    tools.length > 0 ? formatAnthropicTools(tools, promptCacheEnabled, cacheBudget) : undefined
   const body: Record<string, unknown> = {
     model: config.model,
-    ...(promptCacheEnabled ? { cache_control: buildAnthropicCacheControl() } : {}),
     ...(system ? { system } : {}),
-    messages: formatAnthropicMessages(messages, promptCacheEnabled),
+    messages: formatAnthropicMessages(messages, promptCacheEnabled, cacheBudget),
     max_tokens: resolveAnthropicMaxTokens(),
     stream: true
   }
   if (tools.length > 0) {
-    body.tools = formatAnthropicTools(tools, promptCacheEnabled)
+    body.tools = formattedTools
   }
 
   if (thinkingBodyParams && config.thinkingConfig) {
@@ -2351,6 +2951,7 @@ async function* sendAnthropic(
   }
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   applyHeaderOverrides(headers, config)
+  applyDefaultApiUserAgent(headers)
   const bodyStr = JSON.stringify(body)
   yield {
     type: 'request_debug',
@@ -2672,7 +3273,8 @@ async function* sendOpenAIResponses(
   if (config.userAgent) headers['User-Agent'] = config.userAgent
   if (config.serviceTier) headers.service_tier = config.serviceTier
   applyHeaderOverrides(headers, config)
-  const bodyStr = JSON.stringify(body)
+  applyDefaultApiUserAgent(headers)
+  const fullBodyStr = JSON.stringify(body)
   let emittedThinkingDelta = false
   const emittedThinkingEncrypted = new Set<string>()
   const tryBuildThinkingDeltaEvent = (thinking: unknown): StreamEvent | null => {
@@ -2945,14 +3547,16 @@ async function* sendOpenAIResponses(
     }
   }
 
-  const streamHttpResponse = async function* (): AsyncIterable<StreamEvent> {
+  const streamHttpResponse = async function* (
+    requestBody = fullBodyStr
+  ): AsyncIterable<StreamEvent> {
     yield {
       type: 'request_debug',
       debugInfo: buildRequestDebugInfo(config, {
         url,
         method: 'POST',
         headers,
-        body: bodyStr,
+        body: requestBody,
         transport: 'http'
       })
     }
@@ -2961,7 +3565,7 @@ async function* sendOpenAIResponses(
       {
         method: 'POST',
         headers,
-        body: bodyStr,
+        body: requestBody,
         signal
       },
       config.allowInsecureTls ?? true,
@@ -3035,7 +3639,7 @@ async function* sendOpenAIResponses(
     sessionKey: connectionKey,
     websocketUrl,
     headers,
-    httpBody: bodyStr,
+    httpBody: fullBodyStr,
     useSystemProxy: config.useSystemProxy ?? false,
     allowInsecureTls: config.allowInsecureTls ?? true,
     signal,
@@ -3524,6 +4128,9 @@ async function* runAgentLoop(
         toolError = toolErr instanceof Error ? toolErr.message : String(toolErr)
         output = encodeToolError(toolError)
       }
+      if (toolCall.name === 'Bash') {
+        output = compactCronShellToolResultContent(output)
+      }
       const completedAt = Date.now()
       const resultError = toolError ?? extractStructuredToolError(output)
       yield {
@@ -3615,21 +4222,24 @@ function safeParseJSON(str: string): Record<string, unknown> {
 
 function parseToolInputSnapshot(rawArgs: string, toolName: string): Record<string, unknown> | null {
   const isWriteTool = toolName === 'Write'
+  const isWidgetTool = toolName === 'visualize_show_widget'
   const looseWriteInput = isWriteTool ? parseWriteInputLoosely(rawArgs) : null
+  const looseWidgetInput = isWidgetTool ? parseWidgetInputLoosely(rawArgs) : null
+  const looseInput = looseWidgetInput ?? looseWriteInput
   try {
     const parsed = parsePartialJSON(rawArgs, Allow.ALL)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const normalized = normalizeParsedToolInput(parsed as Record<string, unknown>)
-      if (looseWriteInput && Object.keys(looseWriteInput).length > 0) {
-        return { ...looseWriteInput, ...normalized }
+      if (looseInput && Object.keys(looseInput).length > 0) {
+        return { ...looseInput, ...normalized }
       }
       return normalized
     }
   } catch {
     // ignore
   }
-  if (looseWriteInput && Object.keys(looseWriteInput).length > 0) {
-    return looseWriteInput
+  if (looseInput && Object.keys(looseInput).length > 0) {
+    return looseInput
   }
   return null
 }
@@ -3668,6 +4278,15 @@ function parseWriteInputLoosely(rawArgs: string): Record<string, unknown> | null
   const input: Record<string, unknown> = {}
   if (filePath !== null) input.file_path = filePath
   if (content !== null) input.content = content
+  return Object.keys(input).length > 0 ? input : null
+}
+
+function parseWidgetInputLoosely(rawArgs: string): Record<string, unknown> | null {
+  const title = readLooseJsonStringField(rawArgs, 'title')
+  const widgetCode = readLooseJsonStringField(rawArgs, 'widget_code')
+  const input: Record<string, unknown> = {}
+  if (title !== null) input.title = title
+  if (widgetCode !== null) input.widget_code = widgetCode
   return Object.keys(input).length > 0 ? input : null
 }
 
@@ -4274,7 +4893,37 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         properties: {
           pattern: { type: 'string', description: 'Regex pattern to search for' },
           path: { type: 'string', description: 'Directory to search in' },
-          include: { type: 'string', description: 'File pattern filter, e.g. *.ts' }
+          include: {
+            type: 'string',
+            description: 'Comma-separated file globs to include, e.g. *.ts'
+          },
+          exclude: { type: 'string', description: 'Comma-separated file globs to exclude' },
+          caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching' },
+          smartCase: { type: 'boolean', description: 'Case-sensitive when pattern has uppercase' },
+          literal: { type: 'boolean', description: 'Treat pattern as a literal string' },
+          word: { type: 'boolean', description: 'Match whole words only' },
+          line: { type: 'boolean', description: 'Match whole lines only' },
+          invertMatch: { type: 'boolean', description: 'Return non-matching lines' },
+          context: { type: 'number', description: 'Context lines before and after each match' },
+          beforeContext: { type: 'number', description: 'Context lines before each match' },
+          afterContext: { type: 'number', description: 'Context lines after each match' },
+          maxResults: { type: 'number', description: 'Maximum result rows to return' },
+          maxOutputBytes: { type: 'number', description: 'Maximum encoded result size' },
+          maxLineLength: { type: 'number', description: 'Maximum text length per result line' },
+          maxDepth: { type: 'number', description: 'Maximum directory depth to search' },
+          hidden: { type: 'boolean', description: 'Include hidden files and directories' },
+          respectGitignore: { type: 'boolean', description: 'Respect .gitignore when supported' },
+          followSymlinks: { type: 'boolean', description: 'Follow symbolic links' },
+          outputMode: {
+            type: 'string',
+            enum: ['matches', 'files_with_matches', 'count'],
+            description: 'matches, files_with_matches, or count'
+          },
+          pathStyle: {
+            type: 'string',
+            enum: ['relative', 'absolute'],
+            description: 'Return relative or absolute paths'
+          }
         },
         required: ['pattern']
       }
@@ -4285,67 +4934,281 @@ function buildToolHandlers(): Record<string, ToolHandler> {
         ctx.workingFolder,
         !!ctx.sshConnectionId
       )
-      const pattern = String(input.pattern ?? '')
-      const include =
-        typeof input.include === 'string' && input.include.trim() ? input.include.trim() : '**/*'
+      const options = normalizeCronGrepOptions(input)
 
       let regex: RegExp
       try {
-        regex = new RegExp(pattern, 'i')
+        regex = buildCronGrepRegex(options)
       } catch (error) {
         return formatGrepToolResult({
           matches: [],
-          error: `Invalid regex pattern: ${normalizeCronSearchError(error)}`
+          error: `Invalid regex pattern: ${normalizeCronSearchError(error)}`,
+          outputMode: options.outputMode,
+          maxResults: options.maxResults,
+          maxOutputBytes: options.maxOutputBytes
         })
       }
 
       try {
         if (ctx.sshConnectionId) {
+          const hasRg =
+            (await sshExecForCron(ctx.sshConnectionId, 'command -v rg >/dev/null 2>&1', 10_000))
+              .exitCode === 0
+          if (hasRg) {
+            let cmd = `cd ${shellEscape(searchRoot)} && rg --line-number --color never --no-messages --max-filesize 10M`
+            if (options.outputMode === 'matches') {
+              cmd += ' --json'
+              if (options.beforeContext > 0) cmd += ` --before-context ${options.beforeContext}`
+              if (options.afterContext > 0) cmd += ` --after-context ${options.afterContext}`
+            } else if (options.outputMode === 'files_with_matches') {
+              cmd += ' --files-with-matches'
+            } else {
+              cmd += ' --count'
+            }
+            if (options.smartCase) cmd += ' --smart-case'
+            else if (!options.caseSensitive) cmd += ' --ignore-case'
+            if (options.literal) cmd += ' --fixed-strings'
+            if (options.word) cmd += ' --word-regexp'
+            if (options.line) cmd += ' --line-regexp'
+            if (options.invertMatch) cmd += ' --invert-match'
+            if (options.hidden) cmd += ' --hidden'
+            if (!options.respectGitignore) cmd += ' --no-ignore'
+            if (options.followSymlinks) cmd += ' --follow'
+            if (options.maxDepth !== null) cmd += ` --max-depth ${options.maxDepth}`
+            for (const includePattern of parseCronGlobList(options.include)) {
+              cmd += ` --glob ${shellEscape(includePattern)}`
+            }
+            for (const excludePattern of parseCronGlobList(options.exclude)) {
+              cmd += ` --glob ${shellEscape(`!${excludePattern}`)}`
+            }
+            const remoteLimit =
+              options.outputMode === 'matches'
+                ? Math.max(
+                    options.maxResults *
+                      Math.max(8, options.beforeContext + options.afterContext + 4),
+                    options.maxResults + 100
+                  )
+                : options.maxResults
+            cmd += ` ${shellEscape(options.pattern)} . 2>/dev/null | head -${remoteLimit}`
+
+            const result = await sshExecForCron(ctx.sshConnectionId, cmd, 60_000)
+            if (result.exitCode !== 0 && result.exitCode !== 1) {
+              return formatGrepToolResult({
+                matches: [],
+                error: result.stderr || `Remote grep failed: ${options.pattern}`,
+                outputMode: options.outputMode,
+                maxResults: options.maxResults,
+                maxOutputBytes: options.maxOutputBytes
+              })
+            }
+
+            const matches: Array<{
+              file: string
+              line?: number
+              text?: string
+              kind?: GrepMatchKind
+              count?: number
+            }> = []
+            for (const rawLine of result.stdout.split(/\r?\n/).filter(Boolean)) {
+              if (options.outputMode === 'files_with_matches') {
+                matches.push({
+                  file: formatCronRemoteGrepPath(searchRoot, rawLine.trim(), options.pathStyle)
+                })
+                continue
+              }
+              if (options.outputMode === 'count') {
+                const countMatch = rawLine.match(/^(.*?):(\d+)$/)
+                if (!countMatch) continue
+                const count = Number(countMatch[2])
+                if (count > 0) {
+                  matches.push({
+                    file: formatCronRemoteGrepPath(searchRoot, countMatch[1], options.pathStyle),
+                    count
+                  })
+                }
+                continue
+              }
+              try {
+                const parsed = JSON.parse(rawLine) as {
+                  type?: string
+                  data?: {
+                    path?: { text?: string }
+                    lines?: { text?: string }
+                    line_number?: number
+                  }
+                }
+                if (parsed.type !== 'match' && parsed.type !== 'context') continue
+                const rawPath = parsed.data?.path?.text
+                const lineNumber = parsed.data?.line_number
+                if (typeof rawPath !== 'string' || typeof lineNumber !== 'number') continue
+                matches.push({
+                  file: formatCronRemoteGrepPath(searchRoot, rawPath, options.pathStyle),
+                  line: lineNumber,
+                  text: normalizeCronGrepText(
+                    parsed.data?.lines?.text ?? '',
+                    options.maxLineLength
+                  ),
+                  kind: parsed.type as GrepMatchKind
+                })
+              } catch {
+                continue
+              }
+            }
+            const truncated = matches.length >= options.maxResults
+            return formatGrepToolResult({
+              matches,
+              truncated,
+              limitReason: truncated ? 'max_results' : null,
+              warnings: truncated
+                ? buildCronSearchWarnings([
+                    `Cron grep reached the ${options.maxResults} match limit`
+                  ])
+                : [],
+              outputMode: options.outputMode,
+              maxResults: options.maxResults,
+              maxOutputBytes: options.maxOutputBytes
+            })
+          }
+
+          const fallbackWarnings = buildCronSearchWarnings([
+            options.respectGitignore
+              ? 'Cron SSH grep fallback does not support gitignore semantics'
+              : null,
+            options.smartCase ? 'Cron SSH grep fallback does not support smartCase' : null,
+            options.maxDepth !== null ? 'Cron SSH grep fallback does not support maxDepth' : null,
+            !options.hidden ? 'Cron SSH grep fallback does not support hidden=false' : null
+          ])
+          const grepHelp = await sshExecForCron(ctx.sshConnectionId, 'grep --help 2>&1', 10_000)
+          const grepHelpText = `${grepHelp.stdout}\n${grepHelp.stderr}`
+          if (!grepHelpText.includes('--include') || !grepHelpText.includes('--exclude-dir')) {
+            return formatGrepToolResult({
+              matches: [],
+              error:
+                'Remote grep fallback requires ripgrep or GNU grep-style --include/--exclude-dir support',
+              warnings: buildCronSearchWarnings([
+                ...fallbackWarnings,
+                'Install ripgrep on the remote host for full Cron SSH Grep support'
+              ]),
+              outputMode: options.outputMode,
+              maxResults: options.maxResults,
+              maxOutputBytes: options.maxOutputBytes
+            })
+          }
+          const fallbackIncludeArgs = parseCronGlobList(options.include)
+            .map((includePattern) => ` --include=${shellEscape(includePattern)}`)
+            .join('')
+          const fallbackExcludeArgs = parseCronGlobList(options.exclude)
+            .map((excludePattern) => ` --exclude=${shellEscape(excludePattern)}`)
+            .join('')
           const result = await sshExecForCron(
             ctx.sshConnectionId,
-            `cd ${shellEscape(searchRoot)} && grep -RIn --include=${shellEscape(include)} ${shellEscape(pattern)} . 2>/dev/null | head -${CRON_SEARCH_MAX_RESULTS}`,
+            `cd ${shellEscape(searchRoot)} && grep -Rsn${options.caseSensitive ? '' : ' -i'}${options.literal ? ' -F' : ''}${options.word ? ' -w' : ''}${options.line ? ' -x' : ''}${options.invertMatch ? ' -v' : ''}${options.outputMode === 'files_with_matches' ? ' -l' : ''}${options.outputMode === 'count' ? ' -c' : ''}${options.beforeContext > 0 ? ` -B ${options.beforeContext}` : ''}${options.afterContext > 0 ? ` -A ${options.afterContext}` : ''}${fallbackIncludeArgs}${fallbackExcludeArgs} ${shellEscape(options.pattern)} . 2>/dev/null | head -${options.maxResults}`,
             60_000
           )
           if (result.exitCode !== 0 && result.exitCode !== 1) {
             return formatGrepToolResult({
               matches: [],
-              error: result.stderr || `Remote grep failed: ${pattern}`
+              error: result.stderr || `Remote grep failed: ${options.pattern}`,
+              warnings: fallbackWarnings,
+              outputMode: options.outputMode,
+              maxResults: options.maxResults,
+              maxOutputBytes: options.maxOutputBytes
             })
           }
-          const matches = result.stdout
-            .split(/\r?\n/)
-            .filter(Boolean)
-            .map((line) => {
-              const match = line.match(/^(.+?):(\d+):(.*)$/)
-              if (!match) return null
-              return {
-                file: path.posix.join(searchRoot, match[1].replace(/^\.\//, '')),
-                line: Number(match[2]),
-                text: match[3]
-              }
+          const matches: Array<{
+            file: string
+            line?: number
+            text?: string
+            kind?: GrepMatchKind
+            count?: number
+          }> = []
+          for (const line of result.stdout.split(/\r?\n/).filter(Boolean)) {
+            if (options.outputMode === 'files_with_matches') {
+              matches.push({
+                file: formatCronRemoteGrepPath(searchRoot, line, options.pathStyle)
+              })
+              continue
+            }
+            if (options.outputMode === 'count') {
+              const countMatch = line.match(/^(.+?):(\d+)$/)
+              if (!countMatch) continue
+              const count = Number(countMatch[2])
+              if (count <= 0) continue
+              matches.push({
+                file: formatCronRemoteGrepPath(searchRoot, countMatch[1], options.pathStyle),
+                count
+              })
+              continue
+            }
+            const match = line.match(/^(.+?):(\d+):(.*)$/)
+            if (!match) continue
+            matches.push({
+              file: formatCronRemoteGrepPath(searchRoot, match[1], options.pathStyle),
+              line: Number(match[2]),
+              text: normalizeCronGrepText(match[3], options.maxLineLength),
+              kind: 'match'
             })
-            .filter((item): item is { file: string; line: number; text: string } => !!item)
-          const truncated = matches.length >= CRON_SEARCH_MAX_RESULTS
+          }
+          const truncated = matches.length >= options.maxResults
           return formatGrepToolResult({
             matches,
             truncated,
             limitReason: truncated ? 'max_results' : null,
-            warnings: truncated
-              ? buildCronSearchWarnings([
-                  `Cron grep reached the ${CRON_SEARCH_MAX_RESULTS} match limit`
-                ])
-              : []
+            warnings: buildCronSearchWarnings([
+              ...fallbackWarnings,
+              truncated ? `Cron grep reached the ${options.maxResults} match limit` : null
+            ]),
+            outputMode: options.outputMode,
+            maxResults: options.maxResults,
+            maxOutputBytes: options.maxOutputBytes
           })
         }
-        const files = await glob(include, {
+
+        const ripgrepResult = await runCronLocalRipgrepSearch(searchRoot, options)
+        if (ripgrepResult) {
+          return formatGrepToolResult({
+            matches: ripgrepResult.matches,
+            truncated: ripgrepResult.truncated,
+            timedOut: ripgrepResult.timedOut,
+            limitReason: ripgrepResult.limitReason,
+            warnings: ripgrepResult.truncated
+              ? buildCronSearchWarnings([
+                  ripgrepResult.timedOut
+                    ? 'Cron grep timed out'
+                    : `Cron grep reached the ${options.maxResults} match limit`
+                ])
+              : [],
+            outputMode: options.outputMode,
+            maxResults: options.maxResults,
+            maxOutputBytes: options.maxOutputBytes
+          })
+        }
+
+        const includePatterns = parseCronGlobList(options.include)
+        const files = await glob(includePatterns.length > 0 ? includePatterns : '**/*', {
           cwd: searchRoot,
           nodir: true,
           absolute: true,
           dot: true,
-          ignore: buildCronSearchIgnore(include)
+          ignore: [
+            ...buildCronSearchIgnore(options.include),
+            ...parseCronGlobList(options.exclude)
+          ],
+          follow: options.followSymlinks
         })
-        const results: Array<{ file: string; line: number; text: string }> = []
+        const results: Array<{
+          file: string
+          line?: number
+          text?: string
+          kind?: GrepMatchKind
+          count?: number
+        }> = []
         for (const file of files) {
+          if (!options.hidden && file.split(/[\\/]+/).some((part) => part.startsWith('.'))) continue
+          if (options.maxDepth !== null) {
+            const depth = path.relative(searchRoot, file).split(/[\\/]+/).length - 1
+            if (depth > options.maxDepth) continue
+          }
           if (!(await isNonEmptyTextFile(file))) continue
 
           let content = ''
@@ -4355,27 +5218,93 @@ function buildToolHandlers(): Record<string, ToolHandler> {
             continue
           }
           const lines = content.split(/\r?\n/)
+          let matchedCount = 0
+          let afterContextRemaining = 0
+          const beforeBuffer: Array<{ line: number; text: string }> = []
+          const emittedContext = new Set<number>()
           for (let index = 0; index < lines.length; index += 1) {
             const line = lines[index]
-            if (!regex.test(line)) continue
-            results.push({ file, line: index + 1, text: line })
-            if (results.length >= CRON_SEARCH_MAX_RESULTS) {
+            let matches = regex.test(line)
+            if (options.invertMatch) matches = !matches
+            if (matches) {
+              matchedCount += 1
+              if (options.outputMode === 'files_with_matches') {
+                results.push({ file: formatCronGrepPath(searchRoot, file, options.pathStyle) })
+                break
+              }
+              if (options.outputMode === 'matches') {
+                for (const contextLine of beforeBuffer) {
+                  if (!emittedContext.has(contextLine.line)) {
+                    emittedContext.add(contextLine.line)
+                    results.push({
+                      file: formatCronGrepPath(searchRoot, file, options.pathStyle),
+                      line: contextLine.line,
+                      text: normalizeCronGrepText(contextLine.text, options.maxLineLength),
+                      kind: 'context'
+                    })
+                  }
+                }
+                results.push({
+                  file: formatCronGrepPath(searchRoot, file, options.pathStyle),
+                  line: index + 1,
+                  text: normalizeCronGrepText(line, options.maxLineLength),
+                  kind: 'match'
+                })
+                afterContextRemaining = options.afterContext
+              }
+            } else if (afterContextRemaining > 0 && options.outputMode === 'matches') {
+              results.push({
+                file: formatCronGrepPath(searchRoot, file, options.pathStyle),
+                line: index + 1,
+                text: normalizeCronGrepText(line, options.maxLineLength),
+                kind: 'context'
+              })
+              afterContextRemaining -= 1
+            }
+            if (options.beforeContext > 0) {
+              beforeBuffer.push({ line: index + 1, text: line })
+              if (beforeBuffer.length > options.beforeContext) beforeBuffer.shift()
+            }
+            if (results.length >= options.maxResults) {
               return formatGrepToolResult({
                 matches: results,
                 truncated: true,
                 limitReason: 'max_results',
                 warnings: buildCronSearchWarnings([
-                  `Cron grep reached the ${CRON_SEARCH_MAX_RESULTS} match limit`
-                ])
+                  `Cron grep reached the ${options.maxResults} match limit`,
+                  options.respectGitignore
+                    ? 'Cron local grep applies default ignores but not full .gitignore semantics'
+                    : null
+                ]),
+                outputMode: options.outputMode,
+                maxResults: options.maxResults,
+                maxOutputBytes: options.maxOutputBytes
               })
             }
           }
+          if (options.outputMode === 'count' && matchedCount > 0) {
+            results.push({
+              file: formatCronGrepPath(searchRoot, file, options.pathStyle),
+              count: matchedCount
+            })
+          }
         }
-        return formatGrepToolResult({ matches: results })
+        return formatGrepToolResult({
+          matches: results,
+          warnings: options.respectGitignore
+            ? ['Cron local grep applies default ignores but not full .gitignore semantics']
+            : [],
+          outputMode: options.outputMode,
+          maxResults: options.maxResults,
+          maxOutputBytes: options.maxOutputBytes
+        })
       } catch (error) {
         return formatGrepToolResult({
           matches: [],
-          error: normalizeCronSearchError(error)
+          error: normalizeCronSearchError(error),
+          outputMode: options.outputMode,
+          maxResults: options.maxResults,
+          maxOutputBytes: options.maxOutputBytes
         })
       }
     }
@@ -4397,13 +5326,13 @@ function buildToolHandlers(): Record<string, ToolHandler> {
     },
     execute: async (input, ctx) => {
       const command = String(input.command ?? '').trim()
-      if (!command) return encodeStructuredToolResult({ exitCode: 1, stderr: 'Missing command' })
+      if (!command) return encodeShellToolResult({ exitCode: 1, stderr: 'Missing command' })
       const timeout = Number(input.timeout ?? DEFAULT_BASH_TIMEOUT_MS)
       if (ctx.sshConnectionId) {
         const remoteCommand = ctx.workingFolder
           ? `cd ${shellEscape(ctx.workingFolder)} && ${command}`
           : command
-        return encodeStructuredToolResult(
+        return encodeShellToolResult(
           await sshExecForCron(ctx.sshConnectionId, remoteCommand, timeout)
         )
       }
@@ -4434,7 +5363,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
             // ignore
           }
           resolve(
-            encodeStructuredToolResult({
+            encodeShellToolResult({
               exitCode: 124,
               stdout,
               stderr: `${stderr}\n[Timed out]`.trim()
@@ -4451,15 +5380,13 @@ function buildToolHandlers(): Record<string, ToolHandler> {
           if (settled) return
           settled = true
           clearTimeout(timer)
-          resolve(
-            encodeStructuredToolResult({ exitCode: 1, stdout, stderr: err.message || stderr })
-          )
+          resolve(encodeShellToolResult({ exitCode: 1, stdout, stderr: err.message || stderr }))
         })
         child.on('exit', (code) => {
           if (settled) return
           settled = true
           clearTimeout(timer)
-          resolve(encodeStructuredToolResult({ exitCode: code ?? 0, stdout, stderr }))
+          resolve(encodeShellToolResult({ exitCode: code ?? 0, stdout, stderr }))
         })
         ctx.signal.addEventListener(
           'abort',
@@ -4473,7 +5400,7 @@ function buildToolHandlers(): Record<string, ToolHandler> {
               // ignore
             }
             resolve(
-              encodeStructuredToolResult({
+              encodeShellToolResult({
                 exitCode: 130,
                 stdout,
                 stderr: `${stderr}\n[Aborted]`.trim()
@@ -4631,6 +5558,27 @@ function buildToolHandlers(): Record<string, ToolHandler> {
     }
   }
 
+  const submitReportHandler: ToolHandler = {
+    definition: {
+      name: SUBMIT_REPORT_TOOL_NAME,
+      description: 'Submit the final report and end this sub-agent session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          report: { type: 'string', description: 'The complete final report body' }
+        },
+        required: ['report']
+      }
+    },
+    execute: async (input) => {
+      const report = typeof input.report === 'string' ? input.report.trim() : ''
+      if (!report) {
+        return encodeToolError('SubmitReport rejected: report is required')
+      }
+      return 'Report submitted. This sub-agent session will now terminate.'
+    }
+  }
+
   return {
     Read: readHandler,
     Write: writeHandler,
@@ -4641,7 +5589,8 @@ function buildToolHandlers(): Record<string, ToolHandler> {
     Bash: bashHandler,
     Notify: notifyHandler,
     PluginSendMessage: pluginSendMessageHandler,
-    PluginReplyMessage: pluginReplyMessageHandler
+    PluginReplyMessage: pluginReplyMessageHandler,
+    [SUBMIT_REPORT_TOOL_NAME]: submitReportHandler
   }
 }
 

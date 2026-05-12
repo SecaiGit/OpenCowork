@@ -13,12 +13,14 @@ export function getProjectTerminalBaseTitle(
 }
 
 interface EnsureProjectTerminalReadyOptions {
+  projectId?: string | null
   projectName?: string | null
   workingFolder?: string | null
   sshConnectionId?: string | null
 }
 
 export async function ensureProjectTerminalReady({
+  projectId,
   projectName,
   workingFolder,
   sshConnectionId
@@ -29,9 +31,14 @@ export async function ensureProjectTerminalReady({
       await sshStore.loadAll()
     }
 
-    const existingSshTab = useSshStore
-      .getState()
-      .openTabs.find((tab) => tab.type === 'terminal' && tab.connectionId === sshConnectionId)
+    const normalizedProjectId = projectId ?? null
+    const existingSshTab =
+      sshStore.openTabs.find(
+        (tab) =>
+          tab.type === 'terminal' &&
+          tab.connectionId === sshConnectionId &&
+          (tab.projectId ?? null) === normalizedProjectId
+      ) ?? null
 
     useTerminalStore.getState().setActiveTab(null)
 
@@ -40,7 +47,7 @@ export async function ensureProjectTerminalReady({
       return existingSshTab.id
     }
 
-    return await useSshStore.getState().openTerminalTab(sshConnectionId)
+    return await useSshStore.getState().openTerminalTab(sshConnectionId, projectId)
   }
 
   if (!workingFolder) return null
@@ -48,7 +55,7 @@ export async function ensureProjectTerminalReady({
   const terminalStore = useTerminalStore.getState()
   terminalStore.init()
 
-  const existingLocalTab = terminalStore.findTabByCwd(workingFolder)
+  const existingLocalTab = terminalStore.findTabByCwd(workingFolder, projectId)
   useSshStore.getState().setActiveTab(null)
 
   if (existingLocalTab) {
@@ -58,5 +65,10 @@ export async function ensureProjectTerminalReady({
 
   return await useTerminalStore
     .getState()
-    .createTab(workingFolder, getProjectTerminalBaseTitle(projectName, workingFolder))
+    .createTab(
+      workingFolder,
+      getProjectTerminalBaseTitle(projectName, workingFolder),
+      undefined,
+      projectId
+    )
 }

@@ -9,7 +9,6 @@ import { TitleBar } from './TitleBar'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { RightPanel } from './RightPanel'
 import { SubAgentExecutionDetail } from './SubAgentExecutionDetail'
-import { RIGHT_PANEL_TAB_ORDER } from './right-panel-defs'
 import { SettingsDialog } from '@renderer/components/settings/SettingsDialog'
 import { ChatHomePage } from '@renderer/components/chat/ChatHomePage'
 import { ProjectHomePage } from '@renderer/components/chat/ProjectHomePage'
@@ -499,9 +498,14 @@ export function Layout({ updateInfo, onOpenUpdateDialog }: LayoutProps): React.J
           ui.setRightPanelOpen(true)
           return
         }
-        const tabs = [...RIGHT_PANEL_TAB_ORDER]
-        const idx = tabs.indexOf(ui.rightPanelTab)
-        ui.setRightPanelTab(tabs[((idx >= 0 ? idx : 0) + 1) % tabs.length])
+        const tabs = ui.rightPanelTabs
+        if (tabs.length === 0) {
+          ui.openReviewTab()
+          return
+        }
+        const idx = tabs.findIndex((tab) => tab.id === ui.rightPanelActiveTabId)
+        const next = tabs[((idx >= 0 ? idx : 0) + 1) % tabs.length]
+        if (next) ui.setRightPanelActiveTab(next.id)
         return
       }
       // Ctrl+Shift+D: Toggle dark/light theme

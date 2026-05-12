@@ -3,6 +3,44 @@ import type { ToolHandler } from '../../tools/tool-types'
 
 export const SUBMIT_REPORT_TOOL_NAME = 'SubmitReport'
 
+const submittedReportsByRunId = new Map<string, string>()
+
+function readSubmittedReport(input: Record<string, unknown>): string {
+  const raw = (input as { report?: unknown }).report
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+export function submitReportForRun(
+  runId: string | undefined,
+  input: Record<string, unknown>
+): { success: boolean; report?: string; error?: string } {
+  const report = readSubmittedReport(input)
+  if (!report) {
+    return {
+      success: false,
+      error:
+        'SubmitReport rejected: the `report` argument was empty. ' +
+        'Call SubmitReport again with the full report body — do not call any other tools first.'
+    }
+  }
+
+  if (runId && !submittedReportsByRunId.has(runId)) {
+    submittedReportsByRunId.set(runId, report)
+  }
+
+  return { success: true, report }
+}
+
+export function getSubmittedReportForRun(runId: string | undefined): string | null {
+  if (!runId) return null
+  return submittedReportsByRunId.get(runId) ?? null
+}
+
+export function clearSubmittedReportForRun(runId: string | undefined): void {
+  if (!runId) return
+  submittedReportsByRunId.delete(runId)
+}
+
 /**
  * Build a per-run {@link ToolHandler} + {@link ToolDefinition} pair that lets a
  * sub-agent terminate its own loop by writing its final report.
@@ -18,7 +56,7 @@ export const SUBMIT_REPORT_TOOL_NAME = 'SubmitReport'
  * the model to just stop emitting tool calls — which some models do unreliably,
  * leading to runaway loops after a report is already written.
  */
-export function createSubmitReportTool(): {
+export function createSubmitReportTool(runId?: string): {
   name: string
   definition: ToolDefinition
   handler: ToolHandler
@@ -55,18 +93,14 @@ export function createSubmitReportTool(): {
   const handler: ToolHandler = {
     definition,
     execute: async (input) => {
-      const raw = (input as { report?: unknown }).report
-      const report = typeof raw === 'string' ? raw.trim() : ''
-      if (!report) {
-        return (
-          'SubmitReport rejected: the `report` argument was empty. ' +
-          'Call SubmitReport again with the full report body — do not call any other tools first.'
-        )
+      const result = submitReportForRun(runId, input)
+      if (!result.success) {
+        return result.error ?? 'SubmitReport rejected: invalid report payload.'
       }
       // First valid submission wins; later calls are ignored but still ack'd
       // so the loop can terminate cleanly on the next iteration boundary.
       if (submitted === null) {
-        submitted = report
+        submitted = result.report ?? null
       }
       return 'Report submitted. This sub-agent session will now terminate.'
     }
@@ -76,6 +110,6 @@ export function createSubmitReportTool(): {
     name: SUBMIT_REPORT_TOOL_NAME,
     definition,
     handler,
-    getReport: () => submitted
+    getReport: () => submitted ?? getSubmittedReportForRun(runId)
   }
 }

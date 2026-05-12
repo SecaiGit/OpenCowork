@@ -176,6 +176,7 @@ function PaneStatus({ status }: { status?: SftpConnectionState['status'] }): Rea
 }
 
 function LegacySshFileExplorer({
+  sessionId,
   connectionId,
   rootPath = '/'
 }: LegacySshFileExplorerProps): React.JSX.Element {
@@ -251,7 +252,7 @@ function LegacySshFileExplorer({
                     if (entry.type === 'directory') {
                       setCurrentPath(entry.path)
                     } else {
-                      openFilePreview(entry.path, undefined, connectionId)
+                      openFilePreview(entry.path, undefined, connectionId, sessionId)
                     }
                   }}
                 >

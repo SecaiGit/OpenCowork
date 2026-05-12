@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
 import { Layout } from './components/layout/Layout'
 import { DetachedSessionPage } from './components/layout/DetachedSessionPage'
@@ -33,7 +32,11 @@ import { registerAllTools, updateWebSearchToolRegistration } from './lib/tools'
 import { updateAppPluginToolRegistration } from './lib/app-plugin'
 import { registerAllProviders } from './lib/api'
 import { registerAllViewers } from './lib/preview/register-viewers'
-import { createMarkdownComponents } from './lib/preview/viewers/markdown-components'
+import {
+  createMarkdownComponents,
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS
+} from './lib/preview/viewers/markdown-components'
 import { initChannelEventListener } from './stores/channel-store'
 import { usePluginAutoReply } from './hooks/use-plugin-auto-reply'
 import { toast } from 'sonner'
@@ -42,6 +45,9 @@ import { cronEvents } from './lib/tools/cron-events'
 import { useCronStore, type CronAgentLogEntry } from './stores/cron-store'
 import { ipcClient } from './lib/ipc/ipc-client'
 import { IPC } from './lib/ipc/channels'
+import { attachRendererToolBridge } from './lib/ipc/renderer-tool-bridge'
+import { attachRendererProviderBridge } from './lib/ipc/renderer-provider-bridge'
+import { agentStream } from './lib/ipc/agent-stream-receiver'
 import { getTeamRuntimeSnapshot } from './lib/agent/teams/runtime-client'
 import { stopTeamInboxPoller } from './lib/agent/teams/inbox-poller'
 import { runTeammate } from './lib/agent/teams/teammate-runner'
@@ -68,6 +74,9 @@ registerAllProviders()
 registerAllViewers()
 initProviderStore()
 initAppPluginStore()
+attachRendererToolBridge()
+attachRendererProviderBridge()
+agentStream.attach()
 
 // Register tools (async because SubAgents are loaded from .md files via IPC)
 registerAllTools().catch((err) => console.error('[App] Failed to register tools:', err))
@@ -946,7 +955,8 @@ function App(): React.JSX.Element {
               {availableUpdate?.releaseNotes ? (
                 <div className="prose prose-sm dark:prose-invert max-w-none">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
+                    remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                    rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
                     components={createMarkdownComponents()}
                   >
                     {availableUpdate.releaseNotes}

@@ -33,21 +33,15 @@ const transcriptStaticAnalysisCache = new WeakMap<UnifiedMessage[], TranscriptSt
 const HIDDEN_MESSAGE_LIST_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate'])
 
 // --- Signature-based fast cache for transcriptStaticAnalysis ---
-// The WeakMap above is keyed by array reference, which misses on every Immer
-// state update (new array produced each time). This two-level cache avoids the
-// full O(n) rebuild during streaming when only message content changes.
-//
-// Structural signature (length + firstId + lastId) — changes only when messages
-// are added or removed. When stable, we reuse renderableMessageIds,
-// lastRealUserMessageId, lastAssistantMessageId, tailToolExecutionState, and
-// toolResultsLookup, and only rebuild the cheap parts (messageLookup + binding hash).
+// The WeakMap above is keyed by array reference, which misses on every Immer state update.
+// This signature keeps the fast path, but also invalidates when message contents are revised.
 let _lastStructuralSignature = ''
 let _lastAnalysisResult: TranscriptStaticAnalysis | null = null
 
 function buildStructuralSignature(messages: UnifiedMessage[]): string {
   const len = messages.length
   if (len === 0) return '0'
-  return `${len}:${messages[0].id}:${messages[len - 1].id}`
+  return messages.map((message) => `${message.id}:${message._revision ?? 0}`).join('|')
 }
 
 type ToolResultsInnerMap = Map<string, { content: ToolResultContent; isError?: boolean }>

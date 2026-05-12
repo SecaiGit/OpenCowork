@@ -6,7 +6,6 @@ import {
   Wrench,
   Brain,
   Settings2,
-  Zap,
   MonitorSmartphone,
   Loader2
 } from 'lucide-react'
@@ -35,7 +34,12 @@ import {
   AutoModelIcon
 } from '@renderer/components/settings/provider-icons'
 import { cn } from '@renderer/lib/utils'
-import type { AIModelConfig, AIProvider, ReasoningEffortLevel } from '@renderer/lib/api/types'
+import type {
+  AIModelConfig,
+  AIProvider,
+  ReasoningEffortLevel,
+  ThinkingConfig
+} from '@renderer/lib/api/types'
 import { isResponsesImageGenerationEnabled } from '@renderer/lib/api/responses-image-generation'
 import {
   clampCompressionThreshold,
@@ -50,6 +54,116 @@ function formatContextLength(length?: number): string | null {
     return `${(length / 1_000_000).toFixed(length % 1_000_000 === 0 ? 0 : 1)}M`
   if (length >= 1_000) return `${Math.round(length / 1_000)}K`
   return String(length)
+}
+
+const MIN_ANTHROPIC_THINKING_BUDGET = 1024
+const DEFAULT_ANTHROPIC_THINKING_BUDGET = 10000
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function formatTokenCount(value?: number): string {
+  const formatted = formatContextLength(value)
+  return formatted ? `${formatted} tokens` : '-'
+}
+
+function formatPrice(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  return `$${value.toFixed(2)}/M tokens`
+}
+
+function readAnthropicThinkingBudget(model?: AIModelConfig): number | null {
+  const thinking = model?.thinkingConfig?.bodyParams.thinking
+  if (!isRecord(thinking)) return null
+  const value = thinking.budget_tokens
+  const numeric =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : null
+}
+
+function clampThinkingBudget(value: number, maxOutputTokens?: number): number {
+  const upperBound = Math.max(
+    MIN_ANTHROPIC_THINKING_BUDGET,
+    Math.floor((maxOutputTokens ?? 64_000) - 1)
+  )
+  return Math.min(upperBound, Math.max(MIN_ANTHROPIC_THINKING_BUDGET, Math.floor(value)))
+}
+
+function buildAnthropicThinkingConfigWithBudget(
+  config: ThinkingConfig | undefined,
+  budget: number
+): ThinkingConfig {
+  const nextConfig: ThinkingConfig = {
+    ...(config ?? { bodyParams: {} }),
+    bodyParams: { ...(config?.bodyParams ?? {}) }
+  }
+  const rawThinking = nextConfig.bodyParams.thinking
+  nextConfig.bodyParams.thinking = {
+    ...(isRecord(rawThinking) ? rawThinking : {}),
+    type: 'enabled',
+    budget_tokens: budget
+  }
+  delete nextConfig.bodyParams.enable_thinking
+  return nextConfig
+}
+
+function SettingSection({
+  accent,
+  title,
+  children,
+  className
+}: {
+  accent: string
+  title: string
+  children: React.ReactNode
+  className?: string
+}): React.JSX.Element {
+  return (
+    <section className={cn('space-y-2.5', className)}>
+      <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+        <span className={cn('h-4 w-0.5 rounded-full', accent)} />
+        <span>{title}</span>
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function PillToggle({
+  enabled,
+  onClick,
+  label,
+  description,
+  activeClassName = 'bg-violet-500 border-violet-500'
+}: {
+  enabled: boolean
+  onClick: () => void
+  label: string
+  description?: string
+  activeClassName?: string
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      className={cn(
+        'flex w-full items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
+        enabled ? 'bg-muted/50 text-foreground' : 'text-foreground/75 hover:bg-muted/45'
+      )}
+      onClick={onClick}
+    >
+      <span className="flex min-w-0 flex-col text-left">
+        <span className="font-medium">{label}</span>
+        {description && <span className="text-[10px] text-muted-foreground">{description}</span>}
+      </span>
+      <span
+        className={cn(
+          'ml-3 size-4 shrink-0 rounded-full border-2 transition-colors',
+          enabled ? activeClassName : 'border-muted-foreground/30'
+        )}
+      />
+    </button>
+  )
 }
 
 function ModelCapabilityTags({
@@ -207,12 +321,23 @@ function ModelSettingsPopover({
     [effortKey]
   )
 
-  const hasAnySetting =
+  const hasConfigControls =
     supportsThinking ||
     supportsFastMode ||
     supportsResponsesWebsocket ||
     supportsResponsesImageGeneration ||
     supportsContextCompression
+
+  const supportsAnthropicThinkingBudget =
+    supportsThinking && requestType === 'anthropic' && !!model?.thinkingConfig
+  const thinkingBudgetMax = Math.max(
+    MIN_ANTHROPIC_THINKING_BUDGET,
+    Math.floor((model?.maxOutputTokens ?? 64_000) - 1)
+  )
+  const thinkingBudget = clampThinkingBudget(
+    readAnthropicThinkingBudget(model) ?? DEFAULT_ANTHROPIC_THINKING_BUDGET,
+    model?.maxOutputTokens
+  )
 
   const contextCompressionPercent = Math.round(
     resolveCompressionThreshold(model, {
@@ -230,6 +355,23 @@ function ModelSettingsPopover({
       providerStore.updateModel(targetProviderId, model.id, {
         contextCompressionThreshold: normalized
       })
+    },
+    [model, providerId]
+  )
+
+  const updateAnthropicThinkingBudget = useCallback(
+    (value: number) => {
+      if (!model?.id) return
+      const budget = clampThinkingBudget(value, model.maxOutputTokens)
+      const providerStore = useProviderStore.getState()
+      const targetProviderId = providerId ?? providerStore.activeProviderId
+      if (!targetProviderId) return
+
+      providerStore.updateModel(targetProviderId, model.id, {
+        supportsThinking: true,
+        thinkingConfig: buildAnthropicThinkingConfigWithBudget(model.thinkingConfig, budget)
+      })
+      useSettingsStore.getState().updateSettings({ thinkingEnabled: true })
     },
     [model, providerId]
   )
@@ -262,6 +404,39 @@ function ModelSettingsPopover({
     })
   }, [model, providerId, responsesImageGenerationEnabled])
 
+  const priceRows = [
+    { label: tSettings('provider.inputPrice'), value: formatPrice(model?.inputPrice) },
+    { label: tSettings('provider.outputPrice'), value: formatPrice(model?.outputPrice) },
+    { label: tSettings('provider.cacheHitPrice'), value: formatPrice(model?.cacheHitPrice) }
+  ]
+
+  const capabilityItems = [
+    {
+      enabled: !!model && modelSupportsVision(model, providerType),
+      label: t('topbar.vision'),
+      icon: <Eye className="size-3" />,
+      className: 'bg-lime-500/15 text-lime-500'
+    },
+    {
+      enabled: !!model?.supportsFunctionCall,
+      label: t('topbar.tools'),
+      icon: <Wrench className="size-3" />,
+      className: 'bg-cyan-500/15 text-cyan-500'
+    },
+    {
+      enabled: supportsThinking,
+      label: t('topbar.thinking'),
+      icon: <Brain className="size-3" />,
+      className: 'bg-fuchsia-500/15 text-fuchsia-500'
+    },
+    {
+      enabled: requestType === 'openai-responses',
+      label: tSettings('provider.responsesConfig'),
+      icon: <Settings2 className="size-3" />,
+      className: 'bg-emerald-500/15 text-emerald-500'
+    }
+  ].filter((item) => item.enabled)
+
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -273,211 +448,223 @@ function ModelSettingsPopover({
           <Settings2 className="size-3" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-56 p-2" align="start" side="top" sideOffset={8}>
-        <div className="flex flex-col gap-1">
-          {!hasAnySetting && (
+      <PopoverContent
+        className="w-[388px] overflow-hidden rounded-xl border-border/70 bg-popover/95 p-0 shadow-2xl backdrop-blur"
+        align="start"
+        side="top"
+        sideOffset={8}
+      >
+        <div className="space-y-4 p-4">
+          {!model && (
             <div className="px-2 py-3 text-center text-xs text-muted-foreground">
               {tChat('input.noModelSettings')}
             </div>
           )}
-          {supportsThinking && (
-            <>
-              <div className="flex items-center gap-1.5 px-1 pb-1 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
-                <Brain className="size-3" />
-                {t('topbar.deepThinking')}
-              </div>
 
-              {levels && levels.length > 0 ? (
-                <>
-                  <button
-                    type="button"
-                    className={cn(
-                      'flex items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
-                      thinkingEnabled
-                        ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400'
-                        : 'hover:bg-muted/60 text-foreground/80'
-                    )}
-                    onClick={toggleThinking}
-                  >
-                    <span className="font-medium">
-                      {thinkingEnabled
-                        ? tChat('input.disableThinking')
-                        : tChat('input.enableThinking')}
-                    </span>
-                    <span
-                      className={cn(
-                        'size-4 rounded-full border-2 transition-colors',
-                        thinkingEnabled
-                          ? 'bg-violet-500 border-violet-500'
-                          : 'border-muted-foreground/30'
-                      )}
-                    />
-                  </button>
-                  {thinkingEnabled &&
-                    levels.map((level) => (
-                      <button
-                        key={level}
-                        type="button"
-                        className={cn(
-                          'flex items-center gap-2 rounded-md px-2.5 py-1.5 text-xs transition-colors text-left',
-                          thinkingEnabled && effectiveReasoningEffort === level
-                            ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
-                            : 'hover:bg-muted/60 text-foreground/80'
-                        )}
-                        onClick={() => setEffort(level)}
-                      >
-                        <span className="font-medium uppercase">{level}</span>
-                        <span className="text-[10px] text-muted-foreground">
-                          {tChat(`input.effortDesc.${level}`)}
-                        </span>
-                      </button>
+          {model && (
+            <>
+              <SettingSection accent="bg-blue-500" title={tSettings('provider.contextLength')}>
+                <div className="flex items-baseline justify-between px-2">
+                  <span className="text-xs text-muted-foreground">{model.name}</span>
+                  <span className="text-sm font-semibold text-foreground">
+                    {formatTokenCount(model.contextLength)}
+                  </span>
+                </div>
+              </SettingSection>
+
+              <SettingSection accent="bg-violet-500" title={t('topbar.capabilities')}>
+                <div className="flex items-center justify-between px-2">
+                  <span className="text-xs text-muted-foreground">
+                    {capabilityItems.length > 0 ? requestType : '-'}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {capabilityItems.map((item) => (
+                      <Tooltip key={item.label}>
+                        <TooltipTrigger asChild>
+                          <span
+                            className={cn(
+                              'inline-flex size-6 items-center justify-center rounded-md',
+                              item.className
+                            )}
+                          >
+                            {item.icon}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-[11px]">
+                          {item.label}
+                        </TooltipContent>
+                      </Tooltip>
                     ))}
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className={cn(
-                    'flex items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
-                    thinkingEnabled
-                      ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400'
-                      : 'hover:bg-muted/60 text-foreground/80'
-                  )}
-                  onClick={toggleThinking}
-                >
-                  <span className="font-medium">
-                    {thinkingEnabled
-                      ? tChat('input.disableThinking')
-                      : tChat('input.enableThinking')}
-                  </span>
-                  <span
-                    className={cn(
-                      'size-4 rounded-full border-2 transition-colors',
+                  </div>
+                </div>
+              </SettingSection>
+
+              <SettingSection accent="bg-amber-500" title={tSettings('provider.pricing')}>
+                <div className="space-y-2 px-2 text-xs">
+                  {priceRows.map((row) => (
+                    <div key={row.label} className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{row.label}</span>
+                      <span className="text-right font-medium text-foreground/85">{row.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </SettingSection>
+
+              <SettingSection accent="bg-emerald-500" title={tSettings('provider.modelConfig')}>
+                {!hasConfigControls && (
+                  <div className="px-2 py-2 text-xs text-muted-foreground">
+                    {tChat('input.noModelSettings')}
+                  </div>
+                )}
+
+                {supportsThinking && (
+                  <PillToggle
+                    enabled={thinkingEnabled}
+                    onClick={toggleThinking}
+                    label={t('topbar.deepThinking')}
+                    description={
                       thinkingEnabled
-                        ? 'bg-violet-500 border-violet-500'
-                        : 'border-muted-foreground/30'
-                    )}
+                        ? tChat('input.thinkingLevel', {
+                            level: String(effectiveReasoningEffort).toUpperCase()
+                          })
+                        : tChat('input.thinkingOff')
+                    }
                   />
-                </button>
-              )}
-            </>
-          )}
-
-          {supportsThinking && supportsFastMode && (
-            <div className="my-1 border-t border-border/50" />
-          )}
-
-          {supportsFastMode && (
-            <>
-              <div className="flex items-center gap-1.5 px-1 pb-1 pt-1 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
-                <Zap className="size-3" />
-                {t('topbar.fastMode')}
-              </div>
-              <button
-                type="button"
-                className={cn(
-                  'flex items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
-                  fastModeEnabled
-                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                    : 'hover:bg-muted/60 text-foreground/80'
                 )}
-                onClick={() =>
-                  useSettingsStore.getState().updateSettings({ fastModeEnabled: !fastModeEnabled })
-                }
-              >
-                <span className="flex min-w-0 flex-col text-left">
-                  <span className="font-medium">{t('topbar.fastMode')}</span>
-                  <span className="text-[10px] text-muted-foreground">
-                    {t('topbar.fastModeDesc')}
-                  </span>
-                </span>
-                <span
-                  className={cn(
-                    'size-4 rounded-full border-2 transition-colors shrink-0',
-                    fastModeEnabled ? 'bg-amber-500 border-amber-500' : 'border-muted-foreground/30'
-                  )}
-                />
-              </button>
-            </>
-          )}
 
-          {supportsResponsesWebsocket && (
-            <>
-              {(supportsThinking || supportsFastMode) && (
-                <div className="my-1 border-t border-border/50" />
-              )}
-              <div className="flex items-center gap-1.5 px-1 pb-1 pt-1 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
-                <Settings2 className="size-3" />
-                {tSettings('provider.responsesConfig')}
-              </div>
-              <button
-                type="button"
-                className={cn(
-                  'flex items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
-                  websocketEnabled
-                    ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400'
-                    : 'hover:bg-muted/60 text-foreground/80'
+                {supportsThinking && levels && levels.length > 0 && (
+                  <div className={cn('px-2 py-1.5', !thinkingEnabled && 'opacity-60')}>
+                    <div className="mb-2 flex items-end justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-foreground">
+                          {t('topbar.reasoningEffort')}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">reasoning_effort</div>
+                      </div>
+                    </div>
+                    <div
+                      className="relative grid gap-1"
+                      style={{ gridTemplateColumns: `repeat(${levels.length}, minmax(0, 1fr))` }}
+                    >
+                      <span className="absolute left-4 right-4 top-2.5 h-px bg-border" />
+                      {levels.map((level) => {
+                        const active = effectiveReasoningEffort === level && thinkingEnabled
+                        return (
+                          <button
+                            key={level}
+                            type="button"
+                            className="relative z-10 flex min-w-0 flex-col items-center gap-1 text-[10px]"
+                            title={tChat(`input.effortDesc.${level}`)}
+                            onClick={() => setEffort(level)}
+                          >
+                            <span
+                              className={cn(
+                                'flex size-5 items-center justify-center rounded-full border-2 bg-popover transition-colors',
+                                active
+                                  ? 'border-violet-400 text-violet-400'
+                                  : 'border-border text-muted-foreground'
+                              )}
+                            >
+                              {active && <span className="size-2 rounded-full bg-violet-400" />}
+                            </span>
+                            <span
+                              className={cn(
+                                'max-w-full truncate uppercase',
+                                active ? 'font-semibold text-foreground' : 'text-muted-foreground'
+                              )}
+                            >
+                              {level}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
                 )}
-                onClick={toggleResponsesWebsocket}
-              >
-                <span className="font-medium">{tSettings('provider.responsesWebsocket')}</span>
-                <span
-                  className={cn(
-                    'size-4 rounded-full border-2 transition-colors shrink-0',
-                    websocketEnabled ? 'bg-sky-500 border-sky-500' : 'border-muted-foreground/30'
-                  )}
-                />
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'flex items-center justify-between rounded-md px-2.5 py-2 text-xs transition-colors',
-                  responsesImageGenerationEnabled
-                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                    : 'hover:bg-muted/60 text-foreground/80'
-                )}
-                onClick={toggleResponsesImageGeneration}
-              >
-                <span className="font-medium">
-                  {tSettings('provider.responsesImageGeneration')}
-                </span>
-                <span
-                  className={cn(
-                    'size-4 rounded-full border-2 transition-colors shrink-0',
-                    responsesImageGenerationEnabled
-                      ? 'bg-emerald-500 border-emerald-500'
-                      : 'border-muted-foreground/30'
-                  )}
-                />
-              </button>
-            </>
-          )}
 
-          {supportsContextCompression && (
-            <>
-              {(supportsThinking ||
-                supportsFastMode ||
-                supportsResponsesWebsocket ||
-                supportsResponsesImageGeneration) && (
-                <div className="my-1 border-t border-border/50" />
-              )}
-              <div className="flex items-center gap-1.5 px-1 pb-1 pt-1 text-[10px] font-medium text-muted-foreground/60 uppercase tracking-wider">
-                <Settings2 className="size-3" />
-                {tChat('input.contextCompressionThreshold')}
-              </div>
-              <div className="flex items-center gap-2 rounded-md px-2.5 py-2 text-xs text-foreground/80">
-                <input
-                  type="range"
-                  min={Math.round(MIN_CONTEXT_COMPRESSION_THRESHOLD * 100)}
-                  max={Math.round(MAX_CONTEXT_COMPRESSION_THRESHOLD * 100)}
-                  step={1}
-                  value={contextCompressionPercent}
-                  onChange={(e) => updateContextCompressionThreshold(Number(e.target.value))}
-                  className="w-full"
-                />
-                <span className="shrink-0 text-[10px] text-muted-foreground">
-                  {contextCompressionPercent}%
-                </span>
-              </div>
+                {supportsAnthropicThinkingBudget && (
+                  <div className="px-2 py-1.5">
+                    <div className="mb-2 flex items-end justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-foreground">
+                          {tSettings('provider.thinkingBudget')}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">budget_tokens</div>
+                      </div>
+                      <span className="text-xs font-semibold text-foreground">
+                        {thinkingBudget.toLocaleString()}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={MIN_ANTHROPIC_THINKING_BUDGET}
+                      max={thinkingBudgetMax}
+                      step={1}
+                      value={thinkingBudget}
+                      onChange={(e) => updateAnthropicThinkingBudget(Number(e.target.value))}
+                      className="w-full accent-violet-500"
+                    />
+                    <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+                      <span>{MIN_ANTHROPIC_THINKING_BUDGET.toLocaleString()}</span>
+                      <span>{thinkingBudgetMax.toLocaleString()}</span>
+                    </div>
+                  </div>
+                )}
+
+                {supportsFastMode && (
+                  <PillToggle
+                    enabled={fastModeEnabled}
+                    onClick={() =>
+                      useSettingsStore
+                        .getState()
+                        .updateSettings({ fastModeEnabled: !fastModeEnabled })
+                    }
+                    label={t('topbar.fastMode')}
+                    description={t('topbar.fastModeDesc')}
+                    activeClassName="bg-amber-500 border-amber-500"
+                  />
+                )}
+
+                {supportsResponsesWebsocket && (
+                  <PillToggle
+                    enabled={websocketEnabled}
+                    onClick={toggleResponsesWebsocket}
+                    label={tSettings('provider.responsesWebsocket')}
+                    activeClassName="bg-sky-500 border-sky-500"
+                  />
+                )}
+
+                {supportsResponsesImageGeneration && (
+                  <PillToggle
+                    enabled={responsesImageGenerationEnabled}
+                    onClick={toggleResponsesImageGeneration}
+                    label={tSettings('provider.responsesImageGeneration')}
+                    activeClassName="bg-emerald-500 border-emerald-500"
+                  />
+                )}
+
+                {supportsContextCompression && (
+                  <div className="px-2 py-1.5">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold text-foreground">
+                        {tChat('input.contextCompressionThreshold')}
+                      </span>
+                      <span className="text-xs font-semibold text-foreground">
+                        {contextCompressionPercent}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={Math.round(MIN_CONTEXT_COMPRESSION_THRESHOLD * 100)}
+                      max={Math.round(MAX_CONTEXT_COMPRESSION_THRESHOLD * 100)}
+                      step={1}
+                      value={contextCompressionPercent}
+                      onChange={(e) => updateContextCompressionThreshold(Number(e.target.value))}
+                      className="w-full accent-sky-500"
+                    />
+                  </div>
+                )}
+              </SettingSection>
             </>
           )}
         </div>

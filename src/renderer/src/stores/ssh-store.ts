@@ -47,6 +47,7 @@ export interface SshTab {
   connectionId: string
   connectionName: string
   title: string
+  projectId?: string | null
   filePath?: string
   status?: 'connecting' | 'connected' | 'error'
   error?: string
@@ -587,7 +588,7 @@ interface SshStore {
 
   // Terminal sessions
   connect: (connectionId: string) => Promise<string | null>
-  openTerminalTab: (connectionId: string) => Promise<string | null>
+  openTerminalTab: (connectionId: string, projectId?: string | null) => Promise<string | null>
   disconnect: (sessionId: string) => Promise<void>
   setActiveTerminal: (sessionId: string | null) => void
   setSelectedConnection: (connectionId: string | null) => void
@@ -1405,7 +1406,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
     return result.sessionId
   },
 
-  openTerminalTab: async (connectionId) => {
+  openTerminalTab: async (connectionId, projectId) => {
     const conn = get().connections.find((item) => item.id === connectionId)
     if (!conn) return null
 
@@ -1420,6 +1421,7 @@ export const useSshStore = create<SshStore>()((set, get) => ({
           connectionId,
           connectionName: conn.name,
           title: conn.name,
+          projectId: projectId ?? null,
           status: 'connecting'
         }
       ],
@@ -1446,7 +1448,8 @@ export const useSshStore = create<SshStore>()((set, get) => ({
       sessionId,
       connectionId,
       connectionName: conn.name,
-      title: conn.name
+      title: conn.name,
+      projectId: projectId ?? null
     })
     get().setActiveTerminal(sessionId)
     return resolvedTabId

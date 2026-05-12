@@ -56,6 +56,49 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   })
 }
 
+function parsePositiveSvgNumber(value: string | null): number | null {
+  if (!value?.trim() || value.trim().endsWith('%')) return null
+
+  const number = Number.parseFloat(value)
+  return Number.isFinite(number) && number > 0 ? number : null
+}
+
+function parseSvgViewBox(svgElement: Element): { width: number; height: number } | null {
+  const viewBox = svgElement.getAttribute('viewBox')
+  if (!viewBox) return null
+
+  const parts = viewBox.split(/[\s,]+/).map(Number)
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return null
+
+  const [, , width, height] = parts
+  return width > 0 && height > 0 ? { width, height } : null
+}
+
+function svgStringToBlob(svg: string): Blob {
+  if (!svg.trim()) throw new Error('No SVG content available')
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(svg, 'text/html')
+  const svgElement = doc.querySelector('svg')
+  if (!svgElement) throw new Error('No SVG element found')
+
+  svgElement.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+  svgElement.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink')
+
+  const viewBoxSize = parseSvgViewBox(svgElement)
+  const width =
+    parsePositiveSvgNumber(svgElement.getAttribute('width')) ?? viewBoxSize?.width ?? 640
+  const height =
+    parsePositiveSvgNumber(svgElement.getAttribute('height')) ?? viewBoxSize?.height ?? 360
+
+  svgElement.setAttribute('width', String(Math.ceil(width)))
+  svgElement.setAttribute('height', String(Math.ceil(height)))
+
+  return new Blob([new XMLSerializer().serializeToString(svgElement)], {
+    type: 'image/svg+xml;charset=utf-8'
+  })
+}
+
 async function convertBlobToPng(blob: Blob): Promise<Blob> {
   if (blob.type === 'image/png') return blob
 
@@ -119,4 +162,8 @@ export async function writeImageBlobToClipboard(blob: Blob): Promise<void> {
 
 export async function writeImageDataUrlToClipboard(dataUrl: string): Promise<void> {
   await writeImageBlobToClipboard(dataUrlToBlob(dataUrl))
+}
+
+export async function writeSvgStringToClipboard(svg: string): Promise<void> {
+  await writeImageBlobToClipboard(svgStringToBlob(svg))
 }

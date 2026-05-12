@@ -69,6 +69,23 @@ function breadcrumbParts(filePath: string, workingFolder?: string | null): strin
     .filter(Boolean)
 }
 
+function fileExtension(filePath: string): string {
+  const dot = filePath.lastIndexOf('.')
+  return dot >= 0 ? filePath.slice(dot).toLowerCase() : ''
+}
+
+function shouldReadPreviewText(tab: PreviewPanelTab | null): boolean {
+  if (!tab || tab.source !== 'file') return false
+  if (tab.viewerType === 'html' || tab.viewerType === 'svg' || tab.viewerType === 'markdown') {
+    return true
+  }
+  if (tab.viewerType === 'spreadsheet') {
+    const ext = fileExtension(tab.filePath)
+    return ext === '.csv' || ext === '.tsv'
+  }
+  return tab.viewerType === 'fallback'
+}
+
 function tabTitle(tab: PreviewPanelTab): string {
   if (tab.source === 'markdown') return tab.markdownTitle || tab.title
   if (tab.source === 'dev-server') return tab.title
@@ -87,7 +104,13 @@ function TabIcon({ tab }: { tab: PreviewPanelTab }): React.JSX.Element {
   return <File className="size-3.5 text-muted-foreground" />
 }
 
-export function PreviewPanel({ embedded = false }: { embedded?: boolean }): React.JSX.Element {
+export function PreviewPanel({
+  embedded = false,
+  showTabStrip = !embedded
+}: {
+  embedded?: boolean
+  showTabStrip?: boolean
+}): React.JSX.Element {
   const { t } = useTranslation('layout')
   const tabs = useUIStore((s) => s.previewPanelTabs)
   const activeTabId = useUIStore((s) => s.activePreviewPanelTabId)
@@ -110,7 +133,8 @@ export function PreviewPanel({ embedded = false }: { embedded?: boolean }): Reac
     return activeSession?.workingFolder ?? activeProject?.workingFolder ?? null
   })
 
-  const filePath = activeTab?.source === 'file' ? activeTab.filePath : null
+  const filePath =
+    activeTab?.source === 'file' && shouldReadPreviewText(activeTab) ? activeTab.filePath : null
   const {
     content: fileContent,
     setContent,
@@ -137,7 +161,9 @@ export function PreviewPanel({ embedded = false }: { embedded?: boolean }): Reac
     activeTab?.source === 'file' && !!activeTab.filePath && !activeTab.sshConnectionId
   const canToggleViewMode =
     activeTab?.source === 'file' &&
-    (activeTab.viewerType === 'html' || activeTab.viewerType === 'markdown')
+    (activeTab.viewerType === 'html' ||
+      activeTab.viewerType === 'svg' ||
+      activeTab.viewerType === 'markdown')
   const activeFilePath = activeTab?.source === 'file' ? activeTab.filePath : ''
   const breadcrumbs = activeFilePath ? breadcrumbParts(activeFilePath, workingFolder) : []
 
@@ -307,30 +333,32 @@ export function PreviewPanel({ embedded = false }: { embedded?: boolean }): Reac
   if (!activeTab) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-background">
-        <div className="flex h-10 shrink-0 items-center justify-end border-b border-border/50 px-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-7">
-                <Plus className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem onSelect={() => void handleOpenLocalFiles()}>
-                <FolderOpen className="size-4" />
-                {t('preview.openFile', { defaultValue: 'Open file' })}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground"
-            onClick={() => setRightPanelOpen(false)}
-            title={t('rightPanelAction.closePanel', { defaultValue: 'Close panel' })}
-          >
-            <PanelRightClose className="size-4" />
-          </Button>
-        </div>
+        {showTabStrip ? (
+          <div className="flex h-10 shrink-0 items-center justify-end border-b border-border/50 px-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="size-7">
+                  <Plus className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onSelect={() => void handleOpenLocalFiles()}>
+                  <FolderOpen className="size-4" />
+                  {t('preview.openFile', { defaultValue: 'Open file' })}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 text-muted-foreground"
+              onClick={() => setRightPanelOpen(false)}
+              title={t('rightPanelAction.closePanel', { defaultValue: 'Close panel' })}
+            >
+              <PanelRightClose className="size-4" />
+            </Button>
+          </div>
+        ) : null}
         <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
           {t('rightPanel.previewEmpty', { defaultValue: 'No preview content' })}
         </div>
@@ -351,91 +379,93 @@ export function PreviewPanel({ embedded = false }: { embedded?: boolean }): Reac
       )}
       {isDragging && !embedded && <div className="absolute inset-0 z-10" />}
 
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/50 bg-background px-1">
-        <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto pt-1">
-          {tabs.map((tab) => {
-            const active = tab.id === activeTab.id
-            return (
-              <div
-                key={tab.id}
-                className={cn(
-                  'group flex h-8 min-w-0 max-w-48 shrink-0 items-center gap-1.5 rounded-t-md border border-transparent px-2 text-left text-xs transition-colors',
-                  active
-                    ? 'border-border/70 border-b-background bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-                )}
-                title={tabPathTitle(tab)}
-              >
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                  onClick={() => setActivePreviewTab(tab.id)}
-                >
-                  <TabIcon tab={tab} />
-                  <span className="min-w-0 truncate">{tabTitle(tab)}</span>
-                  {tab.modified && (
-                    <span
-                      className="size-1.5 shrink-0 rounded-full bg-amber-500"
-                      title={t('preview.modified')}
-                    />
+      {showTabStrip ? (
+        <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border/50 bg-background px-1">
+          <div className="flex min-w-0 flex-1 items-end gap-0.5 overflow-x-auto pt-1">
+            {tabs.map((tab) => {
+              const active = tab.id === activeTab.id
+              return (
+                <div
+                  key={tab.id}
+                  className={cn(
+                    'group flex h-8 min-w-0 max-w-48 shrink-0 items-center gap-1.5 rounded-t-md border border-transparent px-2 text-left text-xs transition-colors',
+                    active
+                      ? 'border-border/70 border-b-background bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
                   )}
-                </button>
-                <button
-                  type="button"
-                  className="ml-0.5 rounded p-0.5 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
-                  title={t('action.close', { ns: 'common' })}
-                  onClick={(event) => {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    requestCloseTab(tab)
-                  }}
+                  title={tabPathTitle(tab)}
                 >
-                  <X className="size-3" />
-                </button>
-              </div>
-            )
-          })}
-        </div>
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+                    onClick={() => setActivePreviewTab(tab.id)}
+                  >
+                    <TabIcon tab={tab} />
+                    <span className="min-w-0 truncate">{tabTitle(tab)}</span>
+                    {tab.modified && (
+                      <span
+                        className="size-1.5 shrink-0 rounded-full bg-amber-500"
+                        title={t('preview.modified')}
+                      />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="ml-0.5 rounded p-0.5 opacity-60 transition-opacity hover:bg-muted hover:opacity-100"
+                    title={t('action.close', { ns: 'common' })}
+                    onClick={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      requestCloseTab(tab)
+                    }}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="size-7 shrink-0">
-              <Plus className="size-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem onSelect={() => void handleOpenLocalFiles()}>
-              <FolderOpen className="size-4" />
-              {t('preview.openFile', { defaultValue: 'Open file' })}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            {browserPluginEnabled && (
-              <DropdownMenuItem onSelect={() => setRightPanelTab('browser')}>
-                <Globe className="size-4" />
-                {t('rightPanel.browser')}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-7 shrink-0">
+                <Plus className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onSelect={() => void handleOpenLocalFiles()}>
+                <FolderOpen className="size-4" />
+                {t('preview.openFile', { defaultValue: 'Open file' })}
               </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onSelect={() => setRightPanelTab('artifacts')}>
-              <FileOutput className="size-4" />
-              {t('rightPanel.artifacts')}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => setRightPanelTab('context')}>
-              <Database className="size-4" />
-              {t('rightPanel.context')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuSeparator />
+              {browserPluginEnabled && (
+                <DropdownMenuItem onSelect={() => setRightPanelTab('browser')}>
+                  <Globe className="size-4" />
+                  {t('rightPanel.browser')}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => setRightPanelTab('artifacts')}>
+                <FileOutput className="size-4" />
+                {t('rightPanel.artifacts')}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRightPanelTab('context')}>
+                <Database className="size-4" />
+                {t('rightPanel.context')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
-          onClick={() => setRightPanelOpen(false)}
-          title={t('rightPanelAction.closePanel', { defaultValue: 'Close panel' })}
-        >
-          <PanelRightClose className="size-4" />
-        </Button>
-      </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 text-muted-foreground hover:text-foreground"
+            onClick={() => setRightPanelOpen(false)}
+            title={t('rightPanelAction.closePanel', { defaultValue: 'Close panel' })}
+          >
+            <PanelRightClose className="size-4" />
+          </Button>
+        </div>
+      ) : null}
 
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 bg-muted/20 px-3">
         <div className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground">

@@ -49,6 +49,36 @@ interface RunAccumulator {
   lastEventAt: number
 }
 
+function getWidgetCode(input?: Record<string, unknown>): string {
+  if (!input) return ''
+  if (typeof input.widget_code === 'string') return input.widget_code
+  if (typeof input.widget_code_preview === 'string') return input.widget_code_preview
+  return ''
+}
+
+function mergeWidgetInputSnapshot(
+  previous: Record<string, unknown> | undefined,
+  next: Record<string, unknown>
+): Record<string, unknown> {
+  if (!previous) return next
+  const previousCode = getWidgetCode(previous)
+  const nextCode = getWidgetCode(next)
+  if (!previousCode || nextCode.length >= previousCode.length) return next
+
+  return {
+    ...previous,
+    ...next,
+    ...(typeof previous.widget_code === 'string' ? { widget_code: previous.widget_code } : {}),
+    ...(typeof previous.widget_code_preview === 'string'
+      ? { widget_code_preview: previous.widget_code_preview }
+      : {}),
+    widget_code_chars:
+      typeof next.widget_code_chars === 'number' && typeof previous.widget_code_chars === 'number'
+        ? Math.max(previous.widget_code_chars, next.widget_code_chars)
+        : (next.widget_code_chars ?? previous.widget_code_chars)
+  }
+}
+
 // ---- Batcher ----
 
 export type EnvelopeHandler = (envelope: AgentStreamEnvelope) => void
@@ -157,10 +187,16 @@ export class AdaptiveEventBatcher {
         acc.thinkingDelta += event.thinking
         break
       case 'tool_use_args_delta':
-        acc.toolArgsDelta.set(
-          event.toolCallId,
-          summarizeLiveToolInput(acc.toolNamesById.get(event.toolCallId) ?? '', event.partialInput)
-        )
+        {
+          const toolName = acc.toolNamesById.get(event.toolCallId) ?? ''
+          const nextInput = summarizeLiveToolInput(toolName, event.partialInput)
+          acc.toolArgsDelta.set(
+            event.toolCallId,
+            toolName === 'visualize_show_widget'
+              ? mergeWidgetInputSnapshot(acc.toolArgsDelta.get(event.toolCallId), nextInput)
+              : nextInput
+          )
+        }
         break
     }
 

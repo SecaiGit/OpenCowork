@@ -47,6 +47,37 @@ function applyHeaderOverrides(
   return headers
 }
 
+function isChatGptCodexBackend(baseUrl: string | undefined): boolean {
+  const trimmed = baseUrl?.trim()
+  if (!trimmed) return false
+
+  try {
+    const parsed = new URL(trimmed)
+    return (
+      parsed.hostname === 'chatgpt.com' &&
+      parsed.pathname.replace(/\/+$/, '') === '/backend-api/codex'
+    )
+  } catch {
+    return false
+  }
+}
+
+function deleteHeader(headers: Record<string, string>, headerName: string): void {
+  const normalizedName = headerName.toLowerCase()
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === normalizedName) {
+      delete headers[key]
+    }
+  }
+}
+
+function normalizeCodexOAuthHeaders(headers: Record<string, string>, config: ProviderConfig): void {
+  if (config.providerBuiltinId !== 'codex-oauth' || isChatGptCodexBackend(config.baseUrl)) return
+
+  deleteHeader(headers, 'session_id')
+  deleteHeader(headers, 'conversation_id')
+}
+
 function applyBodyOverrides(body: Record<string, unknown>, config: ProviderConfig): void {
   const overrides = config.requestOverrides
   if (overrides?.body) {
@@ -200,6 +231,7 @@ class OpenAIResponsesProvider implements APIProvider {
     if (runtimeConfig.serviceTier) headers.service_tier = runtimeConfig.serviceTier
     if (accountId) headers['Chatgpt-Account-Id'] = accountId
     applyHeaderOverrides(headers, runtimeConfig)
+    normalizeCodexOAuthHeaders(headers, runtimeConfig)
 
     const httpBodyStr = JSON.stringify(body)
 

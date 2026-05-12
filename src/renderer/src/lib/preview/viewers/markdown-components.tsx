@@ -1,4 +1,8 @@
+import 'katex/contrib/mhchem'
 import type { Components } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
+import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { IPC } from '../../ipc/channels'
@@ -23,6 +27,9 @@ type MarkdownCodeElementProps = {
     end?: { line?: number }
   }
 }
+
+export const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath]
+export const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex]
 
 function isMarkdownCodeBlock(rawCode: string, node?: MarkdownCodeElementProps): boolean {
   const startLine = node?.position?.start?.line

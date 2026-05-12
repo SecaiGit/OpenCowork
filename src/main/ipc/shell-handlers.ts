@@ -131,7 +131,7 @@ function compactStreamOutput(
     sections.push(head.join('\n'))
   }
 
-  if (stream === 'stderr' && errorLines.length > 0) {
+  if (errorLines.length > 0 && (stream === 'stderr' || exitCode !== 0)) {
     sections.push(`[error-like lines]\n${errorLines.join('\n')}`)
   } else if (stream === 'stdout' && exitCode === 0 && warningLines.length > 0) {
     sections.push(`[warning-like lines]\n${warningLines.join('\n')}`)

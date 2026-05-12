@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'markstream-react/index.css';
+@import 'katex/dist/katex.min.css';
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
@@ -555,6 +556,16 @@
   }
   #root {
     height: 100%;
+  }
+
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.25rem 0;
+  }
+
+  .katex-display > .katex {
+    white-space: nowrap;
   }
 }
 

@@ -1,16 +1,16 @@
 import type { ImageBlock, ToolResultContent } from '@renderer/lib/api/types'
 import { toolRegistry } from '../agent/tool-registry'
 import { encodeStructuredToolResult, encodeToolError } from './tool-result-format'
-import type { ToolHandler } from './tool-types'
+import type { ToolContext, ToolHandler } from './tool-types'
 import { useUIStore } from '../../stores/ui-store'
 import { getBrowserAccessDecision } from '../app-plugin/browser-access'
 
-function getWebview(): Electron.WebviewTag | null {
-  return useUIStore.getState().browserWebviewRef?.current ?? null
+function getWebview(ctx?: ToolContext): Electron.WebviewTag | null {
+  return useUIStore.getState().getBrowserWebviewRef(ctx?.sessionId)?.current ?? null
 }
 
-function requireWebview(): Electron.WebviewTag {
-  const wv = getWebview()
+function requireWebview(ctx?: ToolContext): Electron.WebviewTag {
+  const wv = getWebview(ctx)
   if (!wv) throw new Error('No page is loaded in the browser. Use BrowserNavigate first.')
   return wv
 }
@@ -31,10 +31,13 @@ async function waitForLoad(wv: Electron.WebviewTag, timeoutMs = 30000): Promise<
   })
 }
 
-async function waitForWebview(maxWaitMs = 3000): Promise<Electron.WebviewTag | null> {
+async function waitForWebview(
+  ctx?: ToolContext,
+  maxWaitMs = 3000
+): Promise<Electron.WebviewTag | null> {
   const start = Date.now()
   while (Date.now() - start < maxWaitMs) {
-    const wv = getWebview()
+    const wv = getWebview(ctx)
     if (wv) return wv
     await new Promise((r) => setTimeout(r, 50))
   }
@@ -46,8 +49,8 @@ function getBrowserAccessError(url: string): ToolResultContent | null {
   return decision.allowed ? null : encodeToolError(decision.reason ?? 'Browser navigation blocked.')
 }
 
-function getCurrentBrowserAccessError(): ToolResultContent | null {
-  const url = useUIStore.getState().browserUrl
+function getCurrentBrowserAccessError(ctx?: ToolContext): ToolResultContent | null {
+  const url = useUIStore.getState().getBrowserState(ctx?.sessionId).url
   return url ? getBrowserAccessError(url) : null
 }
 
@@ -81,7 +84,7 @@ const browserNavigateHandler: ToolHandler = {
       }
     }
   },
-  execute: async (input) => {
+  execute: async (input, ctx) => {
     const action = (input.action as string) || 'goto'
 
     if (action === 'goto') {
@@ -93,38 +96,40 @@ const browserNavigateHandler: ToolHandler = {
       }
       const accessError = getBrowserAccessError(url)
       if (accessError) return accessError
-      useUIStore.getState().openBrowserTab(url)
-      const wv = await waitForWebview()
+      useUIStore.getState().openBrowserTab(url, ctx.sessionId)
+      const wv = await waitForWebview(ctx)
       if (wv) {
         const loadPromise = waitForLoad(wv)
         wv.src = url
         await loadPromise
       }
+      const browserState = useUIStore.getState().getBrowserState(ctx.sessionId)
       return encodeStructuredToolResult({
         success: true,
         url,
-        title: useUIStore.getState().browserPageTitle
+        title: browserState.pageTitle
       })
     }
 
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const loadPromise = waitForLoad(wv)
     if (action === 'back') {
       wv.goBack()
     } else if (action === 'forward') {
       wv.goForward()
     } else if (action === 'refresh') {
-      const accessError = getCurrentBrowserAccessError()
+      const accessError = getCurrentBrowserAccessError(ctx)
       if (accessError) return accessError
       wv.reload()
     } else {
       return encodeToolError(`Unknown action "${action}". Use goto, back, forward, or refresh.`)
     }
     await loadPromise
+    const browserState = useUIStore.getState().getBrowserState(ctx.sessionId)
     return encodeStructuredToolResult({
       success: true,
-      url: useUIStore.getState().browserUrl,
-      title: useUIStore.getState().browserPageTitle
+      url: browserState.url,
+      title: browserState.pageTitle
     })
   }
 }
@@ -237,10 +242,10 @@ const browserGetContentHandler: ToolHandler = {
       }
     }
   },
-  execute: async (input) => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (input, ctx) => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const sel = (input.selector as string) || ''
     const outputType = (input.type as string) || 'markdown'
 
@@ -256,7 +261,7 @@ const browserGetContentHandler: ToolHandler = {
       if (parsed.error) return encodeToolError(parsed.error)
       const content = (parsed.content as string).slice(0, 80000)
       return encodeStructuredToolResult({
-        url: useUIStore.getState().browserUrl,
+        url: useUIStore.getState().getBrowserState(ctx.sessionId).url,
         title: parsed.title,
         type: 'html',
         content
@@ -270,7 +275,7 @@ const browserGetContentHandler: ToolHandler = {
     if (parsed.error) return encodeToolError(parsed.error)
     const content = (parsed.content as string).slice(0, 80000)
     return encodeStructuredToolResult({
-      url: useUIStore.getState().browserUrl,
+      url: useUIStore.getState().getBrowserState(ctx.sessionId).url,
       title: parsed.title,
       type: 'markdown',
       content
@@ -297,10 +302,10 @@ const browserScreenshotHandler: ToolHandler = {
       properties: {}
     }
   },
-  execute: async (): Promise<ToolResultContent> => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (_input, ctx): Promise<ToolResultContent> => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const nativeImage = await wv.capturePage()
     if (nativeImage.isEmpty()) {
       return encodeToolError('Failed to capture screenshot — page may still be loading.')
@@ -315,7 +320,7 @@ const browserScreenshotHandler: ToolHandler = {
       image,
       {
         type: 'text',
-        text: `Screenshot captured: ${size.width}x${size.height}px — ${useUIStore.getState().browserUrl}`
+        text: `Screenshot captured: ${size.width}x${size.height}px — ${useUIStore.getState().getBrowserState(ctx.sessionId).url}`
       }
     ]
   }
@@ -399,17 +404,17 @@ const browserSnapshotHandler: ToolHandler = {
       properties: {}
     }
   },
-  execute: async () => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (_input, ctx) => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const raw = await wv.executeJavaScript(SNAPSHOT_SCRIPT)
     const parsed = JSON.parse(raw as string)
     const lines = (parsed.elements as Array<{ selector: string; description: string }>)
       .map((e, i) => `[${i}] ${e.description}\n    selector: ${e.selector}`)
       .join('\n')
     return encodeStructuredToolResult({
-      url: useUIStore.getState().browserUrl,
+      url: useUIStore.getState().getBrowserState(ctx.sessionId).url,
       title: parsed.title,
       elementCount: parsed.count,
       elements: lines
@@ -471,10 +476,10 @@ const browserClickHandler: ToolHandler = {
       required: ['selector']
     }
   },
-  execute: async (input) => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (input, ctx) => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const selector = input.selector as string
     if (!selector) return encodeToolError('"selector" is required')
     const raw = await wv.executeJavaScript(`${CLICK_SCRIPT}(${JSON.stringify(selector)})`)
@@ -558,10 +563,10 @@ const browserTypeHandler: ToolHandler = {
       required: ['selector', 'text']
     }
   },
-  execute: async (input) => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (input, ctx) => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const selector = input.selector as string
     const text = input.text as string
     const clear = input.clear !== false
@@ -609,10 +614,10 @@ const browserScrollHandler: ToolHandler = {
       }
     }
   },
-  execute: async (input) => {
-    const accessError = getCurrentBrowserAccessError()
+  execute: async (input, ctx) => {
+    const accessError = getCurrentBrowserAccessError(ctx)
     if (accessError) return accessError
-    const wv = requireWebview()
+    const wv = requireWebview(ctx)
     const direction = (input.direction as string) || 'down'
     const amount = typeof input.amount === 'number' ? input.amount : 0
     const raw = await wv.executeJavaScript(`

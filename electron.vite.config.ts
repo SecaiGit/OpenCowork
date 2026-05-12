@@ -13,6 +13,13 @@ export default defineConfig({
   },
   preload: {},
   renderer: {
+    server: {
+      port: 5173,
+      strictPort: true
+    },
+    optimizeDeps: {
+      exclude: ['@monaco-editor/react', '@monaco-editor/loader', 'monaco-editor']
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src')

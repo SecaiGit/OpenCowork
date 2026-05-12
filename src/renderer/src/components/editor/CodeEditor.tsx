@@ -1,4 +1,5 @@
 import * as React from 'react'
+import MonacoEditor from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import { Loader2 } from 'lucide-react'
 import { useTheme } from 'next-themes'
@@ -11,11 +12,6 @@ import {
 } from '@renderer/lib/monaco/source-navigation'
 import { initializeMonaco } from '@renderer/lib/monaco/setup'
 import { createModelUri, type EditorWorkspace } from '@renderer/lib/monaco/workspace'
-
-const MonacoEditor = React.lazy(async () => {
-  const mod = await import('@monaco-editor/react')
-  return { default: mod.default }
-})
 
 export interface CodeEditorProps {
   filePath: string
@@ -183,25 +179,22 @@ export const CodeEditor = React.forwardRef<CodeEditorHandle, CodeEditorProps>(fu
   }, [initialPositionKey, path, revealInitialPosition])
 
   return (
-    <React.Suspense
-      fallback={
+    <MonacoEditor
+      beforeMount={initializeMonaco}
+      height={height}
+      language={language ?? guessLanguage(filePath)}
+      loading={
         <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
           <Loader2 className="size-4 animate-spin text-amber-500" />
         </div>
       }
-    >
-      <MonacoEditor
-        beforeMount={initializeMonaco}
-        height={height}
-        language={language ?? guessLanguage(filePath)}
-        onChange={(value) => onChange?.(value ?? '')}
-        onMount={handleMount}
-        options={mergedOptions}
-        path={path}
-        theme={resolvedTheme === 'light' ? 'vs' : 'vs-dark'}
-        value={content}
-      />
-    </React.Suspense>
+      onChange={(value) => onChange?.(value ?? '')}
+      onMount={handleMount}
+      options={mergedOptions}
+      path={path}
+      theme={resolvedTheme === 'light' ? 'vs' : 'vs-dark'}
+      value={content}
+    />
   )
 })
 

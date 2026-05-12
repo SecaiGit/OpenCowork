@@ -6,6 +6,7 @@ import {
 
 const EDIT_TOOL_PREVIEW_CHARS = 800
 const WRITE_TOOL_PREVIEW_CHARS = 1200
+const WIDGET_TOOL_RENDER_CHARS = 64_000
 // Inline limits deliberately aggressive: any Write > 4KB or Edit payload > 2KB
 // gets replaced with a preview + hash + byte count. This bounds resident
 // memory and DB footprint for file-mutating tools, and matches what the
@@ -163,10 +164,10 @@ export function compactStreamingToolInput(input: Record<string, unknown>): Recor
     const widgetCode = String(input.widget_code)
     if (input.title !== undefined) compact.title = input.title
     if (input.loading_messages !== undefined) compact.loading_messages = input.loading_messages
-    compact.widget_code_preview = widgetCode.slice(0, WRITE_TOOL_PREVIEW_CHARS)
+    compact.widget_code = widgetCode.slice(0, WIDGET_TOOL_RENDER_CHARS)
     compact.widget_code_chars = widgetCode.length
     compact.widget_kind = widgetCode.trimStart().startsWith('<svg') ? 'svg' : 'html'
-    if (widgetCode.length > WRITE_TOOL_PREVIEW_CHARS) compact.widget_code_truncated = true
+    if (widgetCode.length > WIDGET_TOOL_RENDER_CHARS) compact.widget_code_truncated = true
   }
 
   return compact

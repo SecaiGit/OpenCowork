@@ -11,6 +11,7 @@ import { emitAgentRuntimeSync, isAgentRuntimeSyncSuppressed } from '../lib/agent
 import { useTeamStore } from './team-store'
 import { sendApprovalResponse } from '../lib/agent/teams/inbox-poller'
 import { sendPlanApprovalResponse } from '../lib/agent/teams/plan-approval-bridge'
+import { compactBashToolResultContent } from '../lib/tools/bash-output'
 import { summarizeToolInputForHistory } from '../lib/tools/tool-input-sanitizer'
 
 // Approval resolvers live outside the store — they hold non-serializable
@@ -126,11 +127,20 @@ function limitToolResultContent(
   return normalized
 }
 
+function normalizeToolOutput(
+  toolName: string | undefined,
+  output: ToolResultContent | undefined
+): ToolResultContent | undefined {
+  if (output === undefined) return undefined
+  const compacted = toolName === 'Bash' ? compactBashToolResultContent(output) : output
+  return limitToolResultContent(compacted)
+}
+
 function normalizeToolCall(tc: ToolCallState): ToolCallState {
   return {
     ...tc,
     input: normalizeToolCallInput(tc.name, tc.input),
-    output: limitToolResultContent(tc.output),
+    output: normalizeToolOutput(tc.name, tc.output),
     error: tc.error ? truncateText(tc.error, MAX_TOOL_ERROR_CHARS) : tc.error
   }
 }
@@ -142,7 +152,9 @@ function normalizeToolCallPatch(
   return {
     ...patch,
     ...(patch.input ? { input: normalizeToolCallInput(patch.name ?? toolName, patch.input) } : {}),
-    ...(patch.output !== undefined ? { output: limitToolResultContent(patch.output) } : {}),
+    ...(patch.output !== undefined
+      ? { output: normalizeToolOutput(patch.name ?? toolName, patch.output) }
+      : {}),
     ...(patch.error ? { error: truncateText(patch.error, MAX_TOOL_ERROR_CHARS) } : {})
   }
 }
@@ -498,6 +510,34 @@ function buildSubAgentSummary(agent: SubAgentState): SubAgentState {
   return cloneSubAgentStateSnapshot(agent)
 }
 
+function buildPersistedSubAgentSnapshot(agent: SubAgentState): SubAgentState {
+  const snapshot = buildSubAgentSummary(agent)
+  if (!snapshot.isRunning) return snapshot
+
+  return {
+    ...snapshot,
+    isRunning: false,
+    currentAssistantMessageId: null,
+    completedAt: snapshot.completedAt ?? snapshot.startedAt,
+    reportStatus: snapshot.report.trim() ? snapshot.reportStatus : 'missing'
+  }
+}
+
+function compactSubAgentListForPersistence(items: SubAgentState[]): SubAgentState[] {
+  return items.slice(-MAX_SUBAGENT_HISTORY).map(buildPersistedSubAgentSnapshot)
+}
+
+function compactSessionSubAgentSummariesForPersistence(
+  summariesBySession: Record<string, SubAgentState[]>
+): Record<string, SubAgentState[]> {
+  return Object.fromEntries(
+    Object.entries(summariesBySession).map(([sessionId, summaries]) => [
+      sessionId,
+      compactSubAgentListForPersistence(summaries)
+    ])
+  )
+}
+
 interface SessionToolCallCache {
   pending: ToolCallState[]
   executed: ToolCallState[]
@@ -782,6 +822,36 @@ function trimRunChangesMap(map: Record<string, AgentRunChangeSet>): void {
   }
 }
 
+function cacheRunChangeSet(
+  map: Record<string, AgentRunChangeSet>,
+  changeSet: AgentRunChangeSet,
+  alias?: string | null
+): void {
+  map[changeSet.runId] = changeSet
+  map[changeSet.assistantMessageId] = changeSet
+  if (alias) {
+    map[alias] = changeSet
+  }
+}
+
+function changeSetBelongsToSession(changeSet: AgentRunChangeSet, sessionId: string): boolean {
+  return (
+    changeSet.sessionId === sessionId ||
+    changeSet.changes.some((change) => change.sessionId === sessionId)
+  )
+}
+
+function clearSessionRunChangeCache(
+  map: Record<string, AgentRunChangeSet>,
+  sessionId: string
+): void {
+  for (const [key, changeSet] of Object.entries(map)) {
+    if (changeSetBelongsToSession(changeSet, sessionId)) {
+      delete map[key]
+    }
+  }
+}
+
 function ensureSessionToolCallCache(
   state: {
     sessionToolCallsCache: Record<string, SessionToolCallCache>
@@ -962,6 +1032,10 @@ interface AgentStore {
   refreshRunChanges: (
     runId: string,
     query?: { sessionId?: string; toolUseIds?: string[] }
+  ) => Promise<void>
+  refreshSessionRunChanges: (
+    sessionId: string,
+    query?: { assistantMessageIds?: string[]; toolUseIds?: string[] }
   ) => Promise<void>
   acceptRunChanges: (runId: string) => Promise<{ error?: string }>
   acceptFileChange: (runId: string, changeId: string) => Promise<{ error?: string }>
@@ -1453,12 +1527,33 @@ export const useAgentStore = create<AgentStore>()(
           set((state) => {
             if (result && typeof result === 'object' && 'runId' in result) {
               const changeSet = result as AgentRunChangeSet
-              state.runChangesByRunId[changeSet.runId] = changeSet
-              state.runChangesByRunId[runId] = changeSet
+              cacheRunChangeSet(state.runChangesByRunId, changeSet, runId)
               trimRunChangesMap(state.runChangesByRunId)
             } else {
               delete state.runChangesByRunId[runId]
             }
+          })
+        } catch {
+          // ignore fetch failures for ephemeral change journal state
+        }
+      },
+
+      refreshSessionRunChanges: async (sessionId, query) => {
+        if (!sessionId) return
+        try {
+          const result = await ipcClient.invoke(IPC.AGENT_CHANGES_LIST_SESSION, {
+            sessionId,
+            ...query
+          })
+          if (isAgentChangeError(result) || !Array.isArray(result)) return
+          set((state) => {
+            clearSessionRunChangeCache(state.runChangesByRunId, sessionId)
+            for (const item of result) {
+              if (!item || typeof item !== 'object' || !('runId' in item)) continue
+              const changeSet = item as AgentRunChangeSet
+              cacheRunChangeSet(state.runChangesByRunId, changeSet)
+            }
+            trimRunChangesMap(state.runChangesByRunId)
           })
         } catch {
           // ignore fetch failures for ephemeral change journal state
@@ -1476,7 +1571,7 @@ export const useAgentStore = create<AgentStore>()(
               : undefined
           set((state) => {
             if (changeset) {
-              state.runChangesByRunId[runId] = changeset
+              cacheRunChangeSet(state.runChangesByRunId, changeset, runId)
               trimRunChangesMap(state.runChangesByRunId)
             }
           })
@@ -1497,7 +1592,7 @@ export const useAgentStore = create<AgentStore>()(
               : undefined
           set((state) => {
             if (changeset) {
-              state.runChangesByRunId[runId] = changeset
+              cacheRunChangeSet(state.runChangesByRunId, changeset, runId)
               trimRunChangesMap(state.runChangesByRunId)
             }
           })
@@ -1518,7 +1613,7 @@ export const useAgentStore = create<AgentStore>()(
               : undefined
           set((state) => {
             if (changeset) {
-              state.runChangesByRunId[runId] = changeset
+              cacheRunChangeSet(state.runChangesByRunId, changeset, runId)
               trimRunChangesMap(state.runChangesByRunId)
             }
           })
@@ -1542,7 +1637,7 @@ export const useAgentStore = create<AgentStore>()(
               : undefined
           set((state) => {
             if (changeset) {
-              state.runChangesByRunId[runId] = changeset
+              cacheRunChangeSet(state.runChangesByRunId, changeset, runId)
               trimRunChangesMap(state.runChangesByRunId)
             }
           })
@@ -1820,7 +1915,7 @@ export const useAgentStore = create<AgentStore>()(
           }
 
           for (const [runId, changeSet] of Object.entries(state.runChangesByRunId)) {
-            if (changeSet.sessionId === sessionId) {
+            if (changeSetBelongsToSession(changeSet, sessionId)) {
               delete state.runChangesByRunId[runId]
             }
           }
@@ -1947,7 +2042,11 @@ export const useAgentStore = create<AgentStore>()(
       name: 'opencowork-agent',
       storage: createJSONStorage(() => ipcStorage),
       partialize: (state) => ({
-        approvedToolNames: state.approvedToolNames
+        approvedToolNames: state.approvedToolNames,
+        subAgentHistory: compactSubAgentListForPersistence(state.subAgentHistory),
+        sessionSubAgentSummaries: compactSessionSubAgentSummariesForPersistence(
+          state.sessionSubAgentSummaries
+        )
       }),
       onRehydrateStorage: () => () => {}
     }

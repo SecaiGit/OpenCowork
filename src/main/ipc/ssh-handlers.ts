@@ -231,10 +231,15 @@ type TransferCounters = {
 }
 
 type SearchLimitReason = 'max_results' | 'max_output_bytes' | 'timeout' | 'max_depth' | null
+type GrepMatchKind = 'match' | 'context'
+type GrepOutputMode = 'matches' | 'files_with_matches' | 'count'
+type GrepPathStyle = 'relative' | 'absolute'
 
 const DEFAULT_SSH_GLOB_LIMIT = 100
-const DEFAULT_SSH_GREP_LIMIT = 100
-const DEFAULT_SSH_RIPGREP_LIMIT = 200
+const DEFAULT_SSH_GREP_LIMIT = 20
+const MAX_SSH_GREP_LIMIT = 200
+const MAX_SSH_GREP_CONTEXT = 20
+const MAX_SSH_GREP_DEPTH = 50
 
 const SSH_SEARCH_IGNORE_DIRS = [
   'node_modules',
@@ -268,16 +273,23 @@ const SSH_SEARCH_IGNORE_DIRS = [
 type SearchMeta = {
   backend: 'ssh'
   searchRoot: string
-  pathStyle: 'absolute'
+  pathStyle: 'absolute' | 'relative_to_search_root'
   truncated: boolean
   timedOut: boolean
   limitReason: SearchLimitReason
   pattern: string
   include?: string | null
+  exclude?: string | null
+  outputMode?: GrepOutputMode
   hiddenIncluded: boolean
   ignoredDefaultsApplied: boolean
+  respectGitignore?: boolean
+  followSymlinks?: boolean
   warnings?: string[]
   maxDepth?: number | null
+  beforeContext?: number
+  afterContext?: number
+  maxResults?: number
 }
 
 type SshGlobResult = {
@@ -289,34 +301,77 @@ type SshGlobResult = {
 
 type SshGrepResult = {
   kind: 'grep'
-  matches: Array<{ path: string; line: number; text: string }>
+  matches: Array<{
+    path: string
+    line?: number
+    text?: string
+    kind?: GrepMatchKind
+    count?: number
+  }>
   meta: SearchMeta
   error?: string
+}
+
+type SshGrepOptions = {
+  pattern: string
+  include?: string
+  exclude?: string
+  caseSensitive: boolean
+  smartCase: boolean
+  literal: boolean
+  word: boolean
+  line: boolean
+  invertMatch: boolean
+  beforeContext: number
+  afterContext: number
+  maxResults: number
+  maxDepth: number | null
+  hidden: boolean
+  respectGitignore: boolean
+  followSymlinks: boolean
+  outputMode: GrepOutputMode
+  pathStyle: GrepPathStyle
 }
 
 function createSshSearchMeta(args: {
   searchRoot: string
   pattern: string
   include?: string | null
+  exclude?: string | null
+  outputMode?: GrepOutputMode
   truncated?: boolean
   timedOut?: boolean
   limitReason?: SearchLimitReason
   warnings?: string[]
   maxDepth?: number | null
+  pathStyle?: 'absolute' | 'relative_to_search_root'
+  hiddenIncluded?: boolean
+  respectGitignore?: boolean
+  followSymlinks?: boolean
+  beforeContext?: number
+  afterContext?: number
+  maxResults?: number
 }): SearchMeta {
   return {
     backend: 'ssh',
     searchRoot: args.searchRoot,
-    pathStyle: 'absolute',
+    pathStyle: args.pathStyle ?? 'absolute',
     truncated: args.truncated === true,
     timedOut: args.timedOut === true,
     limitReason: args.limitReason ?? null,
     pattern: args.pattern,
     include: args.include ?? null,
-    hiddenIncluded: true,
+    exclude: args.exclude ?? null,
+    outputMode: args.outputMode ?? 'matches',
+    hiddenIncluded: args.hiddenIncluded ?? true,
     ignoredDefaultsApplied: true,
+    respectGitignore: args.respectGitignore ?? true,
+    followSymlinks: args.followSymlinks ?? false,
     warnings: args.warnings ?? [],
-    maxDepth: args.maxDepth ?? null
+    maxDepth: args.maxDepth ?? null,
+    beforeContext: args.beforeContext ?? 0,
+    afterContext: args.afterContext ?? 0,
+    maxResults: args.maxResults
   }
 }
 
@@ -370,6 +425,30 @@ function appendSshRipgrepDefaultGlobs(cmd: string): string {
   return next
 }
 
+function appendSshRipgrepSearchFlags(cmd: string, options: SshGrepOptions): string {
+  let next = cmd
+  if (options.outputMode === 'matches') {
+    next += ' --json'
+    if (options.beforeContext > 0) next += ` --before-context ${options.beforeContext}`
+    if (options.afterContext > 0) next += ` --after-context ${options.afterContext}`
+  } else if (options.outputMode === 'files_with_matches') {
+    next += ' --files-with-matches'
+  } else {
+    next += ' --count'
+  }
+  if (options.smartCase) next += ' --smart-case'
+  else if (!options.caseSensitive) next += ' --ignore-case'
+  if (options.literal) next += ' --fixed-strings'
+  if (options.word) next += ' --word-regexp'
+  if (options.line) next += ' --line-regexp'
+  if (options.invertMatch) next += ' --invert-match'
+  if (options.hidden) next += ' --hidden'
+  if (!options.respectGitignore) next += ' --no-ignore'
+  if (options.followSymlinks) next += ' --follow'
+  if (options.maxDepth !== null) next += ` --max-depth ${options.maxDepth}`
+  return next
+}
+
 function appendSshGrepExcludeDirs(cmd: string): string {
   let next = cmd
   for (const dir of SSH_SEARCH_IGNORE_DIRS) {
@@ -382,21 +461,127 @@ function clampSshSearchLimit(value: unknown, fallback: number): number {
   if (!Number.isFinite(value)) return fallback
   const normalized = Math.floor(Number(value))
   if (normalized <= 0) return fallback
-  return Math.min(normalized, fallback)
+  return Math.min(normalized, MAX_SSH_GREP_LIMIT)
+}
+
+function clampSshContext(value: unknown): number {
+  if (!Number.isFinite(value)) return 0
+  const normalized = Math.floor(Number(value))
+  if (normalized <= 0) return 0
+  return Math.min(normalized, MAX_SSH_GREP_CONTEXT)
+}
+
+function clampSshOptionalNumber(value: unknown, max: number): number | null {
+  if (!Number.isFinite(value)) return null
+  const normalized = Math.floor(Number(value))
+  if (normalized <= 0) return null
+  return Math.min(normalized, max)
+}
+
+function normalizeSshBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+function normalizeSshOutputMode(value: unknown): GrepOutputMode {
+  return value === 'files_with_matches' || value === 'count' ? value : 'matches'
+}
+
+function parseSshGlobPatterns(value?: string): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((pattern) => pattern.trim())
+    .filter(Boolean)
+}
+
+function normalizeSshPathStyle(value: unknown): GrepPathStyle {
+  return value === 'absolute' ? 'absolute' : 'relative'
+}
+
+function normalizeSshGrepOptions(args: {
+  pattern?: unknown
+  include?: unknown
+  exclude?: unknown
+  caseSensitive?: unknown
+  smartCase?: unknown
+  literal?: unknown
+  word?: unknown
+  line?: unknown
+  invertMatch?: unknown
+  context?: unknown
+  beforeContext?: unknown
+  afterContext?: unknown
+  maxResults?: unknown
+  limit?: unknown
+  maxDepth?: unknown
+  hidden?: unknown
+  respectGitignore?: unknown
+  followSymlinks?: unknown
+  outputMode?: unknown
+  pathStyle?: unknown
+}): SshGrepOptions {
+  const pattern = String(args.pattern ?? '')
+  const smartCase = normalizeSshBoolean(args.smartCase, false)
+  const hasExplicitCaseSensitive = typeof args.caseSensitive === 'boolean'
+  const caseSensitive = hasExplicitCaseSensitive
+    ? Boolean(args.caseSensitive)
+    : smartCase
+      ? /[A-Z]/.test(pattern)
+      : false
+  const context = clampSshContext(args.context)
+  const include = typeof args.include === 'string' ? args.include.trim() : undefined
+  const exclude = typeof args.exclude === 'string' ? args.exclude.trim() : undefined
+
+  return {
+    pattern,
+    include: include || undefined,
+    exclude: exclude || undefined,
+    caseSensitive,
+    smartCase,
+    literal: normalizeSshBoolean(args.literal, false),
+    word: normalizeSshBoolean(args.word, false),
+    line: normalizeSshBoolean(args.line, false),
+    invertMatch: normalizeSshBoolean(args.invertMatch, false),
+    beforeContext: args.beforeContext === undefined ? context : clampSshContext(args.beforeContext),
+    afterContext: args.afterContext === undefined ? context : clampSshContext(args.afterContext),
+    maxResults: clampSshSearchLimit(args.maxResults ?? args.limit, DEFAULT_SSH_GREP_LIMIT),
+    maxDepth: clampSshOptionalNumber(args.maxDepth, MAX_SSH_GREP_DEPTH),
+    hidden: normalizeSshBoolean(args.hidden, true),
+    respectGitignore: normalizeSshBoolean(args.respectGitignore, true),
+    followSymlinks: normalizeSshBoolean(args.followSymlinks, false),
+    outputMode: normalizeSshOutputMode(args.outputMode),
+    pathStyle: normalizeSshPathStyle(args.pathStyle)
+  }
+}
+
+function formatSshGrepPath(cwd: string, rawPath: string, options: SshGrepOptions): string {
+  const fullPath = path.posix.isAbsolute(rawPath) ? rawPath : path.posix.join(cwd, rawPath)
+  if (options.pathStyle === 'absolute') return fullPath
+  const relativePath = path.posix.relative(cwd, fullPath)
+  return relativePath || path.posix.basename(fullPath)
 }
 
 function createSshGrepResult(args: {
   searchRoot: string
   pattern: string
   include?: string | null
-  matches: Array<{ path: string; line: number; text: string }>
+  exclude?: string | null
+  outputMode?: GrepOutputMode
+  matches: Array<{
+    path: string
+    line?: number
+    text?: string
+    kind?: GrepMatchKind
+    count?: number
+  }>
   truncated?: boolean
   timedOut?: boolean
   limitReason?: SearchLimitReason
   warnings?: string[]
   maxDepth?: number | null
+  options?: SshGrepOptions
   error?: string
 }): SshGrepResult {
+  const options = args.options
   return {
     kind: 'grep',
     matches: args.matches,
@@ -404,11 +589,20 @@ function createSshGrepResult(args: {
       searchRoot: args.searchRoot,
       pattern: args.pattern,
       include: args.include,
+      exclude: args.exclude,
+      outputMode: args.outputMode ?? options?.outputMode,
       truncated: args.truncated,
       timedOut: args.timedOut,
       limitReason: args.limitReason,
       warnings: args.warnings,
-      maxDepth: args.maxDepth
+      maxDepth: options?.maxDepth ?? args.maxDepth,
+      pathStyle: options?.pathStyle === 'relative' ? 'relative_to_search_root' : 'absolute',
+      hiddenIncluded: options?.hidden,
+      respectGitignore: options?.respectGitignore,
+      followSymlinks: options?.followSymlinks,
+      beforeContext: options?.beforeContext,
+      afterContext: options?.afterContext,
+      maxResults: options?.maxResults
     }),
     error: args.error
   }
@@ -454,6 +648,12 @@ async function sftpUnlinkSafe(session: SshLikeSession, remotePath: string): Prom
 async function checkRemoteCommandExists(session: SshClientSession, cmd: string): Promise<boolean> {
   const result = await sshExec(session, `command -v ${cmd} >/dev/null 2>&1`)
   return result.exitCode === 0
+}
+
+async function checkRemoteGrepSupportsRecursiveGlobs(session: SshClientSession): Promise<boolean> {
+  const result = await sshExec(session, 'grep --help 2>&1', 10_000)
+  const helpText = `${result.stdout}\n${result.stderr}`
+  return helpText.includes('--include') && helpText.includes('--exclude-dir')
 }
 
 function formatUnzipInstallHint(): string {
@@ -3670,41 +3870,97 @@ export function registerSshHandlers(): void {
         pattern: string
         path?: string
         include?: string
+        exclude?: string
+        caseSensitive?: boolean
+        smartCase?: boolean
+        literal?: boolean
+        word?: boolean
+        line?: boolean
+        invertMatch?: boolean
+        context?: number
+        beforeContext?: number
+        afterContext?: number
+        maxResults?: number
         limit?: number
+        maxDepth?: number
+        hidden?: boolean
+        respectGitignore?: boolean
+        followSymlinks?: boolean
+        outputMode?: GrepOutputMode
+        pathStyle?: GrepPathStyle
       }
     ) => {
       try {
+        const options = normalizeSshGrepOptions(args)
         return await withFileSession(args.connectionId, async (session) => {
           const cwdInput = args.path || '.'
           const cwd = await resolveSftpPath(session, cwdInput)
-          const gitIgnoreMatcher = await createRemoteGitIgnoreContext(session, cwd)
+          const gitIgnoreMatcher = options.respectGitignore
+            ? await createRemoteGitIgnoreContext(session, cwd)
+            : null
           const hasRipgrep = await checkRemoteCommandExists(session, 'rg')
 
           if (hasRipgrep) {
-            const limit = clampSshSearchLimit(args.limit, DEFAULT_SSH_RIPGREP_LIMIT)
-            let cmd = `cd ${shellEscape(cwd)} && rg --json --line-number --color never --no-messages --ignore-case --hidden --max-filesize 10M`
+            const limit = options.maxResults
+            const remoteLineLimit =
+              options.outputMode === 'matches'
+                ? Math.max(
+                    limit * Math.max(8, options.beforeContext + options.afterContext + 4),
+                    limit + 100
+                  )
+                : limit
+            let cmd = `cd ${shellEscape(cwd)} && rg --line-number --color never --no-messages --max-filesize 10M`
+            cmd = appendSshRipgrepSearchFlags(cmd, options)
             cmd = appendSshRipgrepDefaultGlobs(cmd)
-            if (args.include) cmd += ` --glob ${shellEscape(args.include)}`
-            cmd += ` ${shellEscape(args.pattern)} . 2>/dev/null | head -${limit}`
+            for (const includePattern of parseSshGlobPatterns(options.include)) {
+              cmd += ` --glob ${shellEscape(includePattern)}`
+            }
+            for (const excludePattern of parseSshGlobPatterns(options.exclude)) {
+              cmd += ` --glob ${shellEscape(`!${excludePattern}`)}`
+            }
+            cmd += ` ${shellEscape(options.pattern)} . 2>/dev/null | head -${remoteLineLimit}`
 
             const result = await sshExec(session, cmd)
             if (result.exitCode !== 0 && result.exitCode !== 1) {
               return createSshGrepResult({
                 searchRoot: cwd,
-                pattern: args.pattern,
-                include: args.include,
+                pattern: options.pattern,
+                include: options.include,
+                exclude: options.exclude,
+                outputMode: options.outputMode,
                 matches: [],
                 error: result.stderr || 'grep failed',
-                warnings: ['SSH grep uses remote rg and may be truncated by result limits']
+                warnings: ['SSH grep uses remote rg and may be truncated by result limits'],
+                options
               })
             }
 
-            const matches: Array<{ path: string; line: number; text: string }> = []
+            const matches: SshGrepResult['matches'] = []
             let rawMatchCount = 0
             let parseFailed = false
             const rawLines = result.stdout.split('\n')
             for (const rawLine of rawLines) {
               if (!rawLine.trim()) continue
+              if (options.outputMode !== 'matches') {
+                if (options.outputMode === 'files_with_matches') {
+                  matches.push({
+                    path: formatSshGrepPath(cwd, rawLine.trim(), options)
+                  })
+                  rawMatchCount += 1
+                  continue
+                }
+                const countLine = rawLine.trim()
+                const countMatch = countLine.match(/^(.*?):(\d+)$/)
+                if (!countMatch) continue
+                const count = Number(countMatch[2])
+                if (count <= 0) continue
+                matches.push({
+                  path: formatSshGrepPath(cwd, countMatch[1], options),
+                  count
+                })
+                rawMatchCount += 1
+                continue
+              }
               try {
                 const parsed = JSON.parse(rawLine) as {
                   type?: string
@@ -3714,7 +3970,7 @@ export function registerSshHandlers(): void {
                     line_number?: number
                   }
                 }
-                if (parsed.type !== 'match') continue
+                if (parsed.type !== 'match' && parsed.type !== 'context') continue
                 rawMatchCount += 1
                 const rawPath = parsed.data?.path?.text
                 const lineNumber = parsed.data?.line_number
@@ -3723,8 +3979,13 @@ export function registerSshHandlers(): void {
                 const fullPath = path.posix.isAbsolute(rawPath)
                   ? rawPath
                   : path.posix.join(cwd, rawPath)
-                if (await gitIgnoreMatcher.ignores(fullPath, false)) continue
-                matches.push({ path: fullPath, line: lineNumber, text: text.trim() })
+                if (gitIgnoreMatcher && (await gitIgnoreMatcher.ignores(fullPath, false))) continue
+                matches.push({
+                  path: formatSshGrepPath(cwd, rawPath, options),
+                  line: lineNumber,
+                  text: text.trim(),
+                  kind: parsed.type as GrepMatchKind
+                })
               } catch {
                 parseFailed = true
               }
@@ -3732,64 +3993,140 @@ export function registerSshHandlers(): void {
             const truncated = rawMatchCount >= limit
             return createSshGrepResult({
               searchRoot: cwd,
-              pattern: args.pattern,
-              include: args.include,
+              pattern: options.pattern,
+              include: options.include,
+              exclude: options.exclude,
+              outputMode: options.outputMode,
               matches,
               truncated,
               limitReason: truncated ? 'max_results' : null,
               warnings: [
                 ...(truncated ? ['SSH grep result truncated by remote limit'] : []),
                 ...(parseFailed ? ['Some SSH grep result lines could not be parsed'] : [])
-              ]
+              ],
+              options
             })
           }
 
-          const limit = clampSshSearchLimit(args.limit, DEFAULT_SSH_GREP_LIMIT)
-          let cmd = `grep -rn`
+          const limit = options.maxResults
+          const grepWarnings = [
+            ...(options.respectGitignore
+              ? ['SSH grep fallback does not support gitignore semantics']
+              : []),
+            ...(options.smartCase ? ['SSH grep fallback does not support smartCase'] : []),
+            ...(options.maxDepth !== null ? ['SSH grep fallback does not support maxDepth'] : []),
+            ...(!options.hidden ? ['SSH grep fallback does not support hidden=false'] : []),
+            ...(options.followSymlinks
+              ? ['SSH grep fallback follows grep implementation defaults']
+              : [])
+          ]
+          const grepSupportsRecursiveGlobs = await checkRemoteGrepSupportsRecursiveGlobs(session)
+          if (!grepSupportsRecursiveGlobs) {
+            return createSshGrepResult({
+              searchRoot: cwd,
+              pattern: options.pattern,
+              include: options.include,
+              exclude: options.exclude,
+              outputMode: options.outputMode,
+              matches: [],
+              error:
+                'Remote grep fallback requires ripgrep or GNU grep-style --include/--exclude-dir support',
+              warnings: [
+                ...grepWarnings,
+                'Install ripgrep on the remote host for full SSH Grep support'
+              ],
+              options
+            })
+          }
+          let cmd = `grep -Rsn`
+          if (!options.caseSensitive) cmd += ` -i`
+          if (options.literal) cmd += ` -F`
+          if (options.word) cmd += ` -w`
+          if (options.line) cmd += ` -x`
+          if (options.invertMatch) cmd += ` -v`
+          if (options.beforeContext > 0) cmd += ` -B ${options.beforeContext}`
+          if (options.afterContext > 0) cmd += ` -A ${options.afterContext}`
+          if (options.outputMode === 'files_with_matches') cmd += ` -l`
+          if (options.outputMode === 'count') cmd += ` -c`
           cmd = appendSshGrepExcludeDirs(cmd)
-          if (args.include) cmd += ` --include=${shellEscape(args.include)}`
-          cmd += ` ${shellEscape(args.pattern)} ${shellEscape(cwd)}`
+          for (const includePattern of parseSshGlobPatterns(options.include)) {
+            cmd += ` --include=${shellEscape(includePattern)}`
+          }
+          for (const excludePattern of parseSshGlobPatterns(options.exclude)) {
+            cmd += ` --exclude=${shellEscape(excludePattern)}`
+          }
+          cmd += ` ${shellEscape(options.pattern)} ${shellEscape(cwd)}`
           cmd += ` 2>/dev/null | head -${limit}`
 
           const result = await sshExec(session, cmd)
           if (result.exitCode !== 0 && result.exitCode !== 1) {
             return createSshGrepResult({
               searchRoot: cwd,
-              pattern: args.pattern,
-              include: args.include,
+              pattern: options.pattern,
+              include: options.include,
+              exclude: options.exclude,
+              outputMode: options.outputMode,
               matches: [],
               error: result.stderr || 'grep failed',
-              warnings: ['SSH grep uses remote grep and may be truncated by result limits']
+              warnings: grepWarnings,
+              options
             })
           }
 
           const rawLines = result.stdout.split('\n').filter(Boolean)
-          const matches: Array<{ path: string; line: number; text: string }> = []
+          const matches: SshGrepResult['matches'] = []
           for (const rawLine of rawLines) {
-            const match = rawLine.match(/^(.+?):(\d+):(.*)$/)
+            if (options.outputMode === 'files_with_matches') {
+              matches.push({ path: formatSshGrepPath(cwd, rawLine.trim(), options) })
+              continue
+            }
+            if (options.outputMode === 'count') {
+              const countMatch = rawLine.match(/^(.+?):(\d+)$/)
+              if (!countMatch) continue
+              const count = Number(countMatch[2])
+              if (count <= 0) continue
+              matches.push({ path: formatSshGrepPath(cwd, countMatch[1], options), count })
+              continue
+            }
+            const match = rawLine.match(/^(.+?)([:-])(\d+)\2(.*)$/)
             if (!match) continue
-            if (await gitIgnoreMatcher.ignores(match[1], false)) continue
-            matches.push({ path: match[1], line: parseInt(match[2], 10), text: match[3] })
+            if (gitIgnoreMatcher && (await gitIgnoreMatcher.ignores(match[1], false))) continue
+            matches.push({
+              path: formatSshGrepPath(cwd, match[1], options),
+              line: parseInt(match[3], 10),
+              text: match[4],
+              kind: match[2] === '-' ? 'context' : 'match'
+            })
           }
           return createSshGrepResult({
             searchRoot: cwd,
-            pattern: args.pattern,
-            include: args.include,
+            pattern: options.pattern,
+            include: options.include,
+            exclude: options.exclude,
+            outputMode: options.outputMode,
             matches,
             truncated: rawLines.length >= limit,
             limitReason: rawLines.length >= limit ? 'max_results' : null,
-            warnings: ['SSH grep uses remote grep and may be truncated by result limits']
+            warnings: [
+              ...grepWarnings,
+              ...(rawLines.length >= limit ? ['SSH grep result truncated by remote limit'] : [])
+            ],
+            options
           })
         })
       } catch (err) {
+        const options = normalizeSshGrepOptions(args)
         const cwd = args.path || '.'
         return createSshGrepResult({
           searchRoot: cwd,
-          pattern: args.pattern,
-          include: args.include,
+          pattern: options.pattern,
+          include: options.include,
+          exclude: options.exclude,
+          outputMode: options.outputMode,
           matches: [],
           error: String(err),
-          warnings: ['SSH grep uses remote grep and may be truncated by result limits']
+          warnings: ['SSH grep uses remote grep and may be truncated by result limits'],
+          options
         })
       }
     }

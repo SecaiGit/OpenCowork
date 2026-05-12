@@ -153,6 +153,7 @@ export async function* ipcStreamRequest(params: {
   responsesSessionScope?: string
   websocketUrl?: string
   websocketMode?: 'auto' | 'disabled'
+  httpFallbackBody?: string
 }): AsyncIterable<SSEEvent> {
   const requestId = nanoid()
   const {
@@ -171,7 +172,8 @@ export async function* ipcStreamRequest(params: {
     sessionId,
     responsesSessionScope,
     websocketUrl,
-    websocketMode
+    websocketMode,
+    httpFallbackBody
   } = params
 
   const queue: QueueItem[] = []
@@ -232,10 +234,12 @@ export async function* ipcStreamRequest(params: {
     sessionId,
     responsesSessionScope,
     websocketUrl,
-    websocketMode
+    websocketMode,
+    httpFallbackBody
   })
 
   let buffer = ''
+  const errorDebugBody = httpFallbackBody ?? body
 
   try {
     while (!done) {
@@ -272,7 +276,7 @@ export async function* ipcStreamRequest(params: {
               url,
               method,
               headers: maskHeaders(headers),
-              body,
+              body: errorDebugBody,
               timestamp: Date.now()
             },
             {

@@ -1,162 +1,184 @@
+import * as React from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AnimatePresence } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
-import { FadeIn } from '@renderer/components/animate-ui'
-import { useUIStore, type RightPanelTab } from '@renderer/stores/ui-store'
-import { ArtifactsPanel } from '@renderer/components/cowork/ArtifactsPanel'
-import { ContextPanel } from '@renderer/components/cowork/ContextPanel'
+import { Loader2, Terminal } from 'lucide-react'
+import { Badge } from '@renderer/components/ui/badge'
+import { Button } from '@renderer/components/ui/button'
+import { useUIStore, type RightPanelTabInstance } from '@renderer/stores/ui-store'
 import { useChatStore } from '@renderer/stores/chat-store'
-import { useAgentStore } from '@renderer/stores/agent-store'
-import { useSettingsStore } from '@renderer/stores/settings-store'
+import { useAgentStore, type SubAgentState } from '@renderer/stores/agent-store'
 import { useAppPluginStore } from '@renderer/stores/app-plugin-store'
-import { useTeamStore } from '@renderer/stores/team-store'
 import { BROWSER_PLUGIN_ID } from '@renderer/lib/app-plugin/types'
-import { TASK_TOOL_NAME } from '@renderer/lib/agent/sub-agents/create-tool'
-import { isProjectSession } from '@renderer/lib/session-scope'
 import { cn } from '@renderer/lib/utils'
 import { RightPanelHeader } from './RightPanelHeader'
-import { PreviewPanel } from './PreviewPanel'
 import { BrowserPanel } from './BrowserPanel'
-import { DetailPanel } from './DetailPanel'
+import { PreviewPanel } from './PreviewPanel'
 import { SubAgentsPanel } from './SubAgentsPanel'
 import { SubAgentExecutionDetail } from './SubAgentExecutionDetail'
-import { OrchestrationConsole } from './OrchestrationConsole'
-import {
-  RIGHT_PANEL_DEFAULT_WIDTH,
-  RIGHT_PANEL_SECTION_DEFS,
-  RIGHT_PANEL_TAB_DEFS,
-  clampRightPanelWidth
-} from './right-panel-defs'
+import { SessionChangeReviewPanel } from './SessionChangeReviewPanel'
+import { LocalTerminal } from '@renderer/components/terminal/LocalTerminal'
+import { ipcClient } from '@renderer/lib/ipc/ipc-client'
+import { IPC } from '@renderer/lib/ipc/channels'
+import { RIGHT_PANEL_DEFAULT_WIDTH, clampRightPanelWidth } from './right-panel-defs'
+
+function findSubAgent(
+  toolUseId: string | null | undefined,
+  activeSubAgents: Record<string, SubAgentState>,
+  completedSubAgents: Record<string, SubAgentState>,
+  subAgentHistory: SubAgentState[]
+): SubAgentState | null {
+  if (!toolUseId) return null
+  return (
+    activeSubAgents[toolUseId] ??
+    completedSubAgents[toolUseId] ??
+    subAgentHistory.find((item) => item.toolUseId === toolUseId) ??
+    null
+  )
+}
+
+function TerminalTabContent({ processId }: { processId: string }): React.JSX.Element {
+  const { t } = useTranslation('layout')
+  const process = useAgentStore((state) => state.backgroundProcesses[processId])
+  const sendBackgroundProcessInput = useAgentStore((state) => state.sendBackgroundProcessInput)
+  const stopBackgroundProcess = useAgentStore((state) => state.stopBackgroundProcess)
+
+  if (!process) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+        <Terminal className="mb-3 size-8 text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">{t('detailPanel.terminalNotFound')}</p>
+      </div>
+    )
+  }
+
+  const isRunning = process.status === 'running'
+  const statusText =
+    process.status === 'running'
+      ? t('detailPanel.running')
+      : process.status === 'stopped'
+        ? t('detailPanel.stopped')
+        : process.status === 'error'
+          ? t('detailPanel.error')
+          : t('detailPanel.exited')
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 p-3">
+      <div className="rounded-lg border border-border/60 bg-muted/15 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Badge
+            variant={isRunning ? 'default' : 'secondary'}
+            className={cn('h-5 text-[10px]', isRunning && 'bg-emerald-500')}
+          >
+            {statusText}
+          </Badge>
+          <span className="min-w-0 truncate text-[11px] text-muted-foreground">
+            {process.command}
+          </span>
+        </div>
+        {process.cwd ? (
+          <div className="mt-1 truncate text-[11px] text-muted-foreground/75">{process.cwd}</div>
+        ) : null}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border/60 bg-zinc-950">
+        {process.terminalId ? (
+          <LocalTerminal terminalId={process.terminalId} readOnly={!isRunning} />
+        ) : (
+          <div className="size-full overflow-auto px-3 py-2 font-mono text-[11px] leading-5 text-zinc-200 whitespace-pre-wrap break-words">
+            {process.output || '[no output yet]'}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={!isRunning}
+          onClick={() => void sendBackgroundProcessInput(processId, '\u0003', false)}
+        >
+          {t('detailPanel.sendCtrlC')}
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={!isRunning}
+          onClick={() => void stopBackgroundProcess(processId)}
+        >
+          {t('detailPanel.stopProcess')}
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 export function RightPanel({ compact = false }: { compact?: boolean }): React.JSX.Element {
   const { t } = useTranslation('layout')
-  const tab = useUIStore((s) => s.rightPanelTab)
-  const section = useUIStore((s) => s.rightPanelSection)
-  const rightPanelWidth = useUIStore((s) => s.rightPanelWidth)
-  const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
-  const detailPanelOpen = useUIStore((s) => s.detailPanelOpen)
-  const previewPanelOpen = useUIStore((s) => s.previewPanelOpen)
-  const previewPanelTabCount = useUIStore((s) => s.previewPanelTabs.length)
-  const activePreviewPanelTabId = useUIStore((s) => s.activePreviewPanelTabId)
-  const selectedSubAgentToolUseId = useUIStore((s) => s.selectedSubAgentToolUseId)
-  const subAgentExecutionDetailOpen = useUIStore((s) => s.subAgentExecutionDetailOpen)
-  const subAgentExecutionDetailToolUseId = useUIStore((s) => s.subAgentExecutionDetailToolUseId)
-  const subAgentExecutionDetailInlineText = useUIStore((s) => s.subAgentExecutionDetailInlineText)
-  const chatView = useUIStore((s) => s.chatView)
-  const setTab = useUIStore((s) => s.setRightPanelTab)
-  const setSection = useUIStore((s) => s.setRightPanelSection)
-  const setRightPanelWidth = useUIStore((s) => s.setRightPanelWidth)
-  const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen)
+  const rightPanelOpen = useUIStore((state) => state.rightPanelOpen)
+  const rightPanelWidth = useUIStore((state) => state.rightPanelWidth)
+  const rightPanelTabs = useUIStore((state) => state.rightPanelTabs)
+  const activeTabId = useUIStore((state) => state.rightPanelActiveTabId)
+  const setRightPanelOpen = useUIStore((state) => state.setRightPanelOpen)
+  const setRightPanelWidth = useUIStore((state) => state.setRightPanelWidth)
+  const setRightPanelActiveTab = useUIStore((state) => state.setRightPanelActiveTab)
+  const closeRightPanelTab = useUIStore((state) => state.closeRightPanelTab)
+  const ensureBrowserTab = useUIStore((state) => state.ensureBrowserTab)
+  const openFilePreview = useUIStore((state) => state.openFilePreview)
+  const activeScopedSessionId = useUIStore((state) => state.activeScopedSessionId)
 
-  const teamToolsEnabled = useSettingsStore((s) => s.teamToolsEnabled)
-  const activeProjectId = useChatStore((s) => s.activeProjectId)
-  const browserPluginEnabled = useAppPluginStore((s) =>
-    Boolean(s.getPlugin(BROWSER_PLUGIN_ID, activeProjectId)?.enabled)
+  const activeProjectId = useChatStore((state) => state.activeProjectId)
+  const activeSessionId = useChatStore((state) => state.activeSessionId)
+  const browserPluginEnabled = useAppPluginStore((state) =>
+    Boolean(state.getPlugin(BROWSER_PLUGIN_ID, activeProjectId)?.enabled)
   )
-  const activeSessionId = useChatStore((s) => s.activeSessionId)
-  const activeSession = useChatStore((s) =>
-    s.sessions.find((session) => session.id === s.activeSessionId)
-  )
-  const sessionHasWorkspace = isProjectSession({
-    chatView,
-    session: activeSession,
-    activeProjectId,
-    workingFolder: activeSession?.workingFolder
-  })
-  const hasSessionTeam = useTeamStore((s) => {
-    if (!activeSessionId) return false
-    return (
-      s.activeTeam?.sessionId === activeSessionId ||
-      s.teamHistory.some((team) => team.sessionId === activeSessionId)
-    )
-  })
-  const hasSessionSubAgents = useAgentStore((s) => {
-    if (!activeSessionId) return false
-    const matchSession = (item: { sessionId?: string }): boolean =>
-      !item.sessionId || item.sessionId === activeSessionId
-    const hasActive = Object.values(s.activeSubAgents).some(matchSession)
-    const hasCompleted = Object.values(s.completedSubAgents).some(matchSession)
-    const hasHistory = s.subAgentHistory.some(matchSession)
-    return hasActive || hasCompleted || hasHistory
-  })
-  const hasSessionSubAgentMessages = useChatStore((s) => {
-    if (!activeSessionId) return false
-    return s.getSessionMessages(activeSessionId).some((message) => {
-      if (!Array.isArray(message.content)) return false
-      return message.content.some(
-        (block) =>
-          block.type === 'tool_use' &&
-          block.name === TASK_TOOL_NAME &&
-          block.input.run_in_background !== true
-      )
-    })
-  })
-  const shouldShowSubAgentsTab =
-    hasSessionSubAgents ||
-    hasSessionSubAgentMessages ||
-    tab === 'subagents' ||
-    tab === 'orchestration' ||
-    !!selectedSubAgentToolUseId ||
-    subAgentExecutionDetailOpen
+  const activeSubAgents = useAgentStore((state) => state.activeSubAgents)
+  const completedSubAgents = useAgentStore((state) => state.completedSubAgents)
+  const subAgentHistory = useAgentStore((state) => state.subAgentHistory)
 
-  const visibleTabs = useMemo(
+  const tabs = useMemo(
     () =>
-      RIGHT_PANEL_TAB_DEFS.filter(
-        (item) => (teamToolsEnabled && hasSessionTeam) || item.value !== 'team'
-      )
-        .filter((item) => browserPluginEnabled || item.value !== 'browser')
-        .filter(
-          (item) =>
-            shouldShowSubAgentsTab || (item.value !== 'subagents' && item.value !== 'orchestration')
+      rightPanelTabs.map((tab) => {
+        if (tab.kind === 'review') {
+          return { ...tab, title: t('rightPanel.review', { defaultValue: 'Review' }) }
+        }
+        if (tab.kind === 'browser') {
+          return { ...tab, title: t('rightPanel.browser', { defaultValue: 'Browser' }) }
+        }
+        if (tab.kind !== 'subagent') return tab
+        if (!tab.toolUseId) {
+          const title = t('subAgentsPanel.title', { defaultValue: 'Task Runs' })
+          return title === tab.title ? tab : { ...tab, title }
+        }
+        const agent = findSubAgent(
+          tab.toolUseId,
+          activeSubAgents,
+          completedSubAgents,
+          subAgentHistory
         )
-        .filter((item) => {
-          if (sessionHasWorkspace) return true
-          if (item.value === 'preview') {
-            return previewPanelOpen || detailPanelOpen || tab === 'preview'
-          }
-          return item.value !== 'files' && item.value !== 'artifacts'
-        }),
-    [
-      browserPluginEnabled,
-      detailPanelOpen,
-      hasSessionTeam,
-      previewPanelOpen,
-      sessionHasWorkspace,
-      shouldShowSubAgentsTab,
-      tab,
-      teamToolsEnabled
-    ]
+        const title = agent?.displayName ?? agent?.name ?? tab.title
+        return title === tab.title ? tab : { ...tab, title }
+      }),
+    [activeSubAgents, completedSubAgents, rightPanelTabs, subAgentHistory, t]
   )
+  const selectedTab =
+    tabs.find((tab) => tab.id === activeTabId) ??
+    tabs.find((tab) => tab.kind === 'review') ??
+    tabs[0]
+  const hasBrowserTab = tabs.some((tab) => tab.kind === 'browser') && browserPluginEnabled
+  const browserSessionId = activeScopedSessionId ?? activeSessionId ?? null
+  const browserPanelKey = browserSessionId
+    ? `session:${browserSessionId}`
+    : activeProjectId
+      ? `project:${activeProjectId}`
+      : 'global'
+  const activeTab =
+    selectedTab?.kind === 'browser' && !browserPluginEnabled
+      ? (tabs.find((tab) => tab.kind === 'review') ?? selectedTab)
+      : selectedTab
 
-  const availableSections = useMemo(
-    () =>
-      RIGHT_PANEL_SECTION_DEFS.filter((sectionDef) =>
-        visibleTabs.some((tabDef) => tabDef.section === sectionDef.value)
-      ),
-    [visibleTabs]
-  )
-  const resolvedTab = visibleTabs.some((tabDef) => tabDef.value === tab)
-    ? tab
-    : (visibleTabs[0]?.value ?? 'context')
-  const resolvedSection = availableSections.some((sectionDef) => sectionDef.value === section)
-    ? section
-    : (availableSections[0]?.value ?? 'monitoring')
-
-  useEffect(() => {
-    if (resolvedTab !== tab) setTab(resolvedTab)
-  }, [resolvedTab, tab, setTab])
-
-  useEffect(() => {
-    if (resolvedSection !== section) setSection(resolvedSection)
-  }, [resolvedSection, section, setSection])
-
-  const activeTabDef = visibleTabs.find((item) => item.value === resolvedTab) ?? visibleTabs[0]
-  const previewUsesFileChrome =
-    resolvedTab === 'preview' &&
-    previewPanelOpen &&
-    previewPanelTabCount > 0 &&
-    !!activePreviewPanelTabId &&
-    !detailPanelOpen
   const draggingRef = useRef(false)
   const startXRef = useRef(0)
   const startWidthRef = useRef(rightPanelWidth)
@@ -201,8 +223,49 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
     setIsDragging(true)
   }
 
-  const handleSelectTab = (nextTab: RightPanelTab): void => {
-    setTab(nextTab)
+  const handleOpenLocalFiles = async (): Promise<void> => {
+    const result = (await ipcClient.invoke(IPC.FS_SELECT_FILE, {
+      multiSelections: true
+    })) as { canceled?: boolean; path?: string; paths?: string[] }
+    if (result.canceled) return
+
+    const selectedPaths = result.paths?.length ? result.paths : result.path ? [result.path] : []
+    for (const selectedPath of selectedPaths) {
+      openFilePreview(selectedPath)
+    }
+  }
+
+  const renderActivePanel = (tab: RightPanelTabInstance | undefined): React.ReactNode => {
+    if (!tab) return null
+    if (tab.kind === 'review') {
+      return <SessionChangeReviewPanel initialChangeId={tab.initialChangeId} />
+    }
+    if (tab.kind === 'preview') {
+      return <PreviewPanel embedded showTabStrip={false} />
+    }
+    if (tab.kind === 'subagent') {
+      return tab.toolUseId ? (
+        <SubAgentExecutionDetail
+          embedded
+          toolUseId={tab.toolUseId}
+          inlineText={tab.inlineText ?? undefined}
+          sessionId={tab.sessionId ?? undefined}
+        />
+      ) : (
+        <SubAgentsPanel />
+      )
+    }
+    if (tab.kind === 'terminal' && tab.processId) {
+      return <TerminalTabContent processId={tab.processId} />
+    }
+    if (tab.kind === 'browser') return null
+
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <Loader2 className="mr-2 size-4 animate-spin" />
+        {t('thinking.thinkingEllipsis', { ns: 'chat', defaultValue: 'Loading...' })}
+      </div>
+    )
   }
 
   return (
@@ -213,85 +276,50 @@ export function RightPanel({ compact = false }: { compact?: boolean }): React.JS
     >
       <aside
         className={cn(
-          'relative flex h-full w-full border-l border-border/60 bg-background transition-opacity duration-200',
-          rightPanelOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+          'relative flex h-full w-full flex-col border-l border-border/60 bg-background shadow-[-18px_0_42px_rgba(0,0,0,0.16)] transition-[opacity,transform] duration-300 ease-out',
+          rightPanelOpen
+            ? 'translate-x-0 opacity-100'
+            : 'pointer-events-none translate-x-full opacity-0'
         )}
       >
-        {activeTabDef ? (
-          <div className="flex h-full min-h-0 w-full flex-col">
-            {!previewUsesFileChrome && (
-              <RightPanelHeader
-                activeTabDef={activeTabDef}
-                visibleTabs={visibleTabs}
-                onSelectTab={handleSelectTab}
-                onClose={() => setRightPanelOpen(false)}
-                t={t}
+        <RightPanelHeader
+          tabs={tabs}
+          activeTabId={activeTab?.id ?? 'review'}
+          browserEnabled={browserPluginEnabled}
+          onSelectTab={setRightPanelActiveTab}
+          onCloseTab={closeRightPanelTab}
+          onOpenFiles={() => void handleOpenLocalFiles()}
+          onAddBrowser={() => ensureBrowserTab()}
+          onClosePanel={() => setRightPanelOpen(false)}
+          t={t}
+        />
+
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
+          <AnimatePresence mode="wait">
+            {activeTab?.kind !== 'browser' ? (
+              <motion.div
+                key={activeTab?.id ?? 'empty'}
+                className="absolute inset-0 min-h-0"
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -6 }}
+                transition={{ duration: 0.16, ease: 'easeOut' }}
+              >
+                {renderActivePanel(activeTab)}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>
+
+          {hasBrowserTab ? (
+            <div className={cn('absolute inset-0', activeTab?.kind !== 'browser' && 'hidden')}>
+              <BrowserPanel
+                key={browserPanelKey}
+                sessionId={browserSessionId}
+                projectId={activeProjectId}
               />
-            )}
-            <div
-              className={cn(
-                'min-h-0 flex-1 bg-background',
-                previewUsesFileChrome ? 'overflow-hidden p-0' : 'overflow-auto p-4'
-              )}
-            >
-              <AnimatePresence mode="wait">
-                {(resolvedTab === 'orchestration' || resolvedTab === 'team') && (
-                  <FadeIn key="orchestration" className="h-full">
-                    <OrchestrationConsole />
-                  </FadeIn>
-                )}
-
-                {resolvedTab === 'subagents' && (
-                  <FadeIn key="subagents" className="h-full">
-                    {subAgentExecutionDetailOpen ? (
-                      <SubAgentExecutionDetail
-                        embedded
-                        toolUseId={subAgentExecutionDetailToolUseId ?? selectedSubAgentToolUseId}
-                        inlineText={subAgentExecutionDetailInlineText ?? undefined}
-                        onClose={() => useUIStore.getState().closeSubAgentExecutionDetail()}
-                      />
-                    ) : (
-                      <SubAgentsPanel />
-                    )}
-                  </FadeIn>
-                )}
-
-                {resolvedTab === 'artifacts' && (
-                  <FadeIn key="artifacts" className="h-full">
-                    <ArtifactsPanel />
-                  </FadeIn>
-                )}
-
-                {resolvedTab === 'preview' && (
-                  <FadeIn key="preview" className="h-full">
-                    {previewPanelOpen ? (
-                      <PreviewPanel embedded />
-                    ) : detailPanelOpen ? (
-                      <DetailPanel embedded />
-                    ) : (
-                      <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border/60 bg-background/40 text-xs text-muted-foreground">
-                        {t('rightPanel.previewEmpty', { defaultValue: 'No preview content' })}
-                      </div>
-                    )}
-                  </FadeIn>
-                )}
-
-                {resolvedTab === 'context' && (
-                  <FadeIn key="context" className="h-full">
-                    <ContextPanel />
-                  </FadeIn>
-                )}
-              </AnimatePresence>
-
-              {/* Browser stays mounted to preserve webview state */}
-              {browserPluginEnabled && (
-                <div className={cn('h-full', resolvedTab !== 'browser' && 'hidden')}>
-                  <BrowserPanel />
-                </div>
-              )}
             </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
 
         {rightPanelOpen && (
           <div

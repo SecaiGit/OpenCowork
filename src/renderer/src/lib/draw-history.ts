@@ -77,8 +77,8 @@ function safeParseJson<T>(value: string | null, fallback: T): T {
   }
 }
 
-function normalizeRun(run: DrawRun, interruptedMessage: string): DrawRun {
-  if (!run.isGenerating) return run
+function normalizeRun(run: DrawRun, interruptedMessage: string, isStillActive: boolean): DrawRun {
+  if (!run.isGenerating || isStillActive) return run
 
   return {
     ...run,
@@ -94,7 +94,11 @@ function normalizeRun(run: DrawRun, interruptedMessage: string): DrawRun {
   }
 }
 
-function fromRow(row: DrawRunRow, interruptedMessage: string): DrawRun {
+function fromRow(
+  row: DrawRunRow,
+  interruptedMessage: string,
+  activeRunIds: ReadonlySet<string>
+): DrawRun {
   const run: DrawRun = {
     id: row.id,
     prompt: row.prompt,
@@ -108,16 +112,20 @@ function fromRow(row: DrawRunRow, interruptedMessage: string): DrawRun {
     error: safeParseJson<DrawRunError | null>(row.error_json, null)
   }
 
-  return normalizeRun(run, interruptedMessage)
+  return normalizeRun(run, interruptedMessage, activeRunIds.has(row.id))
 }
 
-export async function listPersistedDrawRuns(interruptedMessage: string): Promise<DrawRun[]> {
+export async function listPersistedDrawRuns(
+  interruptedMessage: string,
+  options?: { activeRunIds?: ReadonlySet<string> }
+): Promise<DrawRun[]> {
   const rows = (await ipcClient.invoke('db:draw-runs:list')) as DrawRunRow[]
-  const runs = rows.map((row) => fromRow(row, interruptedMessage))
+  const activeRunIds = options?.activeRunIds ?? new Set<string>()
+  const runs = rows.map((row) => fromRow(row, interruptedMessage, activeRunIds))
 
   await Promise.all(
     rows.map((row, index) => {
-      if (row.is_generating !== 1) return Promise.resolve()
+      if (row.is_generating !== 1 || activeRunIds.has(row.id)) return Promise.resolve()
       return savePersistedDrawRun(runs[index]).catch(() => undefined)
     })
   )

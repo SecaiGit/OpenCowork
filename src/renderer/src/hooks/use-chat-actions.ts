@@ -164,8 +164,6 @@ import {
   buildSidecarAgentRunRequest,
   normalizeSidecarApprovalRequest
 } from '@renderer/lib/ipc/sidecar-protocol'
-import { attachRendererToolBridge } from '@renderer/lib/ipc/renderer-tool-bridge'
-import { attachRendererProviderBridge } from '@renderer/lib/ipc/renderer-provider-bridge'
 import { agentStream } from '@renderer/lib/ipc/agent-stream-receiver'
 import { toAgentEvent, toSubAgentEvent } from '@renderer/lib/agent/stream-event-adapter'
 import type { AgentStreamEvent } from '../../../shared/agent-stream-protocol'
@@ -174,11 +172,6 @@ import type { AgentStreamEvent } from '../../../shared/agent-stream-protocol'
 const sessionAbortControllers = new Map<string, AbortController>()
 const sessionSidecarRunIds = new Map<string, string>()
 const continuingToolExecutionSessions = new Set<string>()
-// Register IPC listeners once at module level — not inside useEffect —
-// to avoid accumulating duplicate listeners when multiple components call useChatActions.
-attachRendererToolBridge()
-attachRendererProviderBridge()
-agentStream.attach()
 installSessionControlSyncListener((event) => {
   applySessionControlSyncEvent(event)
 })
@@ -2512,6 +2505,8 @@ function createSubAgentEventBuffer(sessionId: string): {
   }
 }
 
+export type ManualCompressionResult = 'compressed' | 'skipped' | 'blocked' | 'failed'
+
 export function useChatActions(): {
   sendMessage: (
     text: string,
@@ -2527,7 +2522,7 @@ export function useChatActions(): {
   retryLastMessage: () => Promise<void>
   editAndResend: (messageId: string, draft: EditableUserMessageDraft) => Promise<void>
   deleteMessage: (messageId: string) => Promise<void>
-  manualCompressContext: (focusPrompt?: string) => Promise<void>
+  manualCompressContext: (focusPrompt?: string) => Promise<ManualCompressionResult>
 } {
   const activeSessionId = useChatStore((state) => state.activeSessionId)
 
@@ -3413,7 +3408,11 @@ export function useChatActions(): {
 
           // Tool input throttling state — defined before try block so finally can safely dispose
           const liveToolInputThrottle = new Map<string, LiveToolInputThrottleEntry>()
-          const unthrottledLiveToolInputs = new Set(['TaskCreate', 'TaskUpdate'])
+          const unthrottledLiveToolInputs = new Set([
+            'TaskCreate',
+            'TaskUpdate',
+            'visualize_show_widget'
+          ])
 
           const disposeToolInputQueues = (): void => {
             for (const entry of liveToolInputThrottle.values()) {
@@ -3424,10 +3423,13 @@ export function useChatActions(): {
           }
 
           try {
+            const requestContextMaxMessages =
+              settings.contextCompressionEnabled && compressionContextLength > 0 ? null : undefined
             let messagesToSend = await useChatStore
               .getState()
               .getSessionMessagesForRequest(sessionId, {
-                includeTrailingAssistantPlaceholder: !!existingAssistantMessage
+                includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
+                requestContextMaxMessages
               })
             messagesToSend = ensureRequestContainsExpectedUserMessage(
               messagesToSend,
@@ -3789,6 +3791,39 @@ export function useChatActions(): {
               return summary
             }
 
+            const getWidgetCode = (input?: Record<string, unknown>): string => {
+              if (!input) return ''
+              if (typeof input.widget_code === 'string') return input.widget_code
+              if (typeof input.widget_code_preview === 'string') return input.widget_code_preview
+              return ''
+            }
+
+            const mergeLiveWidgetInput = (
+              previous: Record<string, unknown> | undefined,
+              next: Record<string, unknown>
+            ): Record<string, unknown> => {
+              if (!previous) return next
+              const previousCode = getWidgetCode(previous)
+              const nextCode = getWidgetCode(next)
+              if (!previousCode || nextCode.length >= previousCode.length) return next
+
+              return {
+                ...previous,
+                ...next,
+                ...(typeof previous.widget_code === 'string'
+                  ? { widget_code: previous.widget_code }
+                  : {}),
+                ...(typeof previous.widget_code_preview === 'string'
+                  ? { widget_code_preview: previous.widget_code_preview }
+                  : {}),
+                widget_code_chars:
+                  typeof next.widget_code_chars === 'number' &&
+                  typeof previous.widget_code_chars === 'number'
+                    ? Math.max(previous.widget_code_chars, next.widget_code_chars)
+                    : (next.widget_code_chars ?? previous.widget_code_chars)
+              }
+            }
+
             const flushChatToolInput = (toolCallId: string, toolName?: string): void => {
               const entry = liveToolInputThrottle.get(toolCallId)
               if (!entry?.pendingRaw) return
@@ -3825,7 +3860,10 @@ export function useChatActions(): {
             ): void => {
               const now = Date.now()
               const entry = getLiveToolInputEntry(toolCallId)
-              entry.pendingRaw = partialInput
+              entry.pendingRaw =
+                toolName === 'visualize_show_widget'
+                  ? mergeLiveWidgetInput(entry.pendingRaw, partialInput)
+                  : partialInput
               entry.pendingSummary = undefined
               entry.pendingSignature = undefined
 
@@ -5006,7 +5044,7 @@ export function useChatActions(): {
     const sessionId = chatStore.activeSessionId
     if (!sessionId) {
       toast.error('无法压缩', { description: '没有活跃的会话' })
-      return
+      return 'blocked'
     }
     await chatStore.loadSessionMessages(sessionId)
 
@@ -5014,7 +5052,7 @@ export function useChatActions(): {
     const sessionStatus = agentStore.runningSessions[sessionId]
     if (sessionStatus === 'running' || sessionStatus === 'retrying') {
       toast.error('无法压缩', { description: 'Agent 正在运行中，请等待完成后再手动压缩' })
-      return
+      return 'blocked'
     }
 
     const messages = chatStore.getSessionMessages(sessionId)
@@ -5025,7 +5063,7 @@ export function useChatActions(): {
       toast.error('无法压缩', {
         description: `至少需要 ${MIN_MESSAGES} 条消息才能进行压缩（当前 ${messages.length} 条）`
       })
-      return
+      return 'blocked'
     }
 
     // Limitation 3: detect recent compressed summaries in both new and legacy top-of-session layouts.
@@ -5034,7 +5072,7 @@ export function useChatActions(): {
       .some((message) => isCompactSummaryLikeMessage(message))
     if (hasRecentSummary && messages.length < MIN_MESSAGES + 4) {
       toast.error('无法压缩', { description: '上次压缩后消息过少，请继续对话后再尝试' })
-      return
+      return 'blocked'
     }
 
     // Build provider config (same as sendMessage)
@@ -5045,7 +5083,7 @@ export function useChatActions(): {
       const ready = await ensureProviderAuthReady(activeProvider.id)
       if (!ready) {
         toast.error('认证缺失', { description: '请先在设置中完成服务商登录' })
-        return
+        return 'blocked'
       }
     }
 
@@ -5076,7 +5114,7 @@ export function useChatActions(): {
 
     if (!config) {
       toast.error('无法压缩', { description: '未配置 AI 服务商' })
-      return
+      return 'blocked'
     }
 
     // Override with session-bound provider if available
@@ -5085,7 +5123,7 @@ export function useChatActions(): {
       const ready = await ensureProviderAuthReady(compressSession.providerId)
       if (!ready) {
         toast.error('认证缺失', { description: '请先在设置中完成会话服务商登录' })
-        return
+        return 'blocked'
       }
       const sessionProviderConfig = providerStore.getProviderConfigById(
         compressSession.providerId,
@@ -5126,13 +5164,15 @@ export function useChatActions(): {
       )
       if (!result.compressed) {
         toast.warning('无需压缩', { description: '当前消息数量不足以进行有效压缩' })
-        return
+        return 'skipped'
       }
       chatStore.replaceSessionMessages(sessionId, compressed)
+      return 'compressed'
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
       console.error('[Manual Compress Error]', err)
       toast.error('压缩失败', { description: errMsg })
+      return 'failed'
     }
   }, [])
 
@@ -5383,9 +5423,14 @@ async function runSimpleChat(
 ): Promise<void> {
   const chatStore = useChatStore.getState()
   const chatModelConfig = findProviderModel(config.providerId, config.model).modelConfig
+  const requestContextMaxMessages =
+    useSettingsStore.getState().contextCompressionEnabled && chatModelConfig?.contextLength
+      ? null
+      : undefined
   const requestMessages = ensureRequestContainsExpectedUserMessage(
     await chatStore.getSessionMessagesForRequest(sessionId, {
-      includeTrailingAssistantPlaceholder: options?.includeTrailingAssistantPlaceholder ?? false
+      includeTrailingAssistantPlaceholder: options?.includeTrailingAssistantPlaceholder ?? false,
+      requestContextMaxMessages
     }),
     options?.expectedUserMessage
   )

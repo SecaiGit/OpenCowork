@@ -67,7 +67,9 @@ export const anthropicPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 10000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -86,7 +88,9 @@ export const anthropicPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 8000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'medium'
       }
     },
     {
@@ -129,7 +133,9 @@ export const anthropicPreset: BuiltinProviderPreset = {
         bodyParams: {
           thinking: { type: 'enabled', budget_tokens: 10000 }
         },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -148,7 +154,9 @@ export const anthropicPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 10000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'high'
       }
     },
     {
@@ -167,7 +175,9 @@ export const anthropicPreset: BuiltinProviderPreset = {
       supportsThinking: true,
       thinkingConfig: {
         bodyParams: { thinking: { type: 'enabled', budget_tokens: 8000 } },
-        forceTemperature: 1
+        forceTemperature: 1,
+        reasoningEffortLevels: ['low', 'medium', 'high'],
+        defaultReasoningEffort: 'medium'
       }
     }
   ]

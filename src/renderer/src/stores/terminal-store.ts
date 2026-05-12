@@ -5,6 +5,7 @@ import { IPC } from '@renderer/lib/ipc/channels'
 
 export interface LocalTerminalTab {
   id: string
+  projectId: string | null
   title: string
   cwd: string
   shell: string
@@ -18,21 +19,32 @@ interface TerminalStore {
   activeTabId: string | null
   initialized: boolean
   init: () => void
-  createTab: (cwd?: string, title?: string, initialCommand?: string) => Promise<string | null>
+  createTab: (
+    cwd?: string,
+    title?: string,
+    initialCommand?: string,
+    projectId?: string | null
+  ) => Promise<string | null>
   closeTab: (id: string) => Promise<void>
   setActiveTab: (id: string | null) => void
-  findTabByCwd: (cwd?: string | null) => LocalTerminalTab | null
+  findTabByCwd: (cwd?: string | null, projectId?: string | null) => LocalTerminalTab | null
   markExited: (id: string, exitCode?: number) => void
 }
 
 let subscribed = false
 
-function buildNextTitle(tabs: LocalTerminalTab[], preferredTitle?: string): string {
+function buildNextTitle(
+  tabs: LocalTerminalTab[],
+  preferredTitle?: string,
+  projectId?: string | null
+): string {
   const baseTitle = preferredTitle?.trim() || 'Terminal'
-  if (!tabs.some((tab) => tab.title === baseTitle)) return baseTitle
+  const normalizedProjectId = projectId ?? null
+  const scopedTabs = tabs.filter((tab) => (tab.projectId ?? null) === normalizedProjectId)
+  if (!scopedTabs.some((tab) => tab.title === baseTitle)) return baseTitle
 
   let nextIndex = 2
-  while (tabs.some((tab) => tab.title === `${baseTitle} ${nextIndex}`)) {
+  while (scopedTabs.some((tab) => tab.title === `${baseTitle} ${nextIndex}`)) {
     nextIndex += 1
   }
 
@@ -59,8 +71,8 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
     set({ initialized: true })
   },
-  createTab: async (cwd, preferredTitle, initialCommand) => {
-    const title = buildNextTitle(get().tabs, preferredTitle)
+  createTab: async (cwd, preferredTitle, initialCommand, projectId) => {
+    const title = buildNextTitle(get().tabs, preferredTitle, projectId)
     const result = (await ipcClient.invoke(IPC.TERMINAL_CREATE, {
       cwd,
       title
@@ -84,6 +96,7 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
 
     const tab: LocalTerminalTab = {
       id: result.id,
+      projectId: projectId ?? null,
       title: result.title || title,
       cwd: result.cwd || cwd || '',
       shell: result.shell || '',
@@ -123,9 +136,14 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
     })
   },
   setActiveTab: (id) => set({ activeTabId: id }),
-  findTabByCwd: (cwd) => {
+  findTabByCwd: (cwd, projectId) => {
     if (!cwd) return null
-    return get().tabs.find((tab) => tab.cwd === cwd) ?? null
+    const normalizedProjectId = projectId ?? null
+    return (
+      get().tabs.find(
+        (tab) => tab.cwd === cwd && (tab.projectId ?? null) === normalizedProjectId
+      ) ?? null
+    )
   },
   markExited: (id, exitCode) =>
     set((state) => ({

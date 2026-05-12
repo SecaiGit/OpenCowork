@@ -245,27 +245,44 @@ function mapTeamMember(
   }
 }
 
-function buildSingleAgentRun(agent: SubAgentState, sourceMessageId: string): OrchestrationRun {
-  const member = mapSubAgentToMember(agent)
-  const members = [member]
+function buildSubAgentRun(agents: SubAgentState[], sourceMessageId: string): OrchestrationRun {
+  const members = agents.map((agent) => mapSubAgentToMember(agent))
   const status = deriveRunStatus(members)
-  const summary = member.summary || member.latestAction || agent.description || member.name
-  const latestAction = member.latestAction || summary
+  const primaryMember =
+    members.find((member) => member.isRunning) ??
+    members.find((member) => member.status === 'failed') ??
+    members[0]
+  const summary =
+    members
+      .map((member) => member.summary || member.latestAction)
+      .filter(Boolean)
+      .join('\n\n') ||
+    primaryMember?.description ||
+    primaryMember?.name ||
+    ''
+  const latestAction = primaryMember?.latestAction || summary
   const { stageIndex, stageCount, stages } = buildStages({
     members,
-    hasTasks: !!agent.description,
-    hasMessages: agent.transcript.length > 0
+    hasTasks: agents.some((agent) => !!agent.description),
+    hasMessages: agents.some((agent) => agent.transcript.length > 0)
   })
+  const sourceToolUseIds = agents.map((agent) => agent.toolUseId)
 
   const run: OrchestrationRun = {
-    id: `single:${agent.toolUseId}`,
-    sessionId: agent.sessionId,
+    id:
+      agents.length === 1
+        ? `single:${agents[0].toolUseId}`
+        : `single-group:${sourceMessageId}:${sourceToolUseIds.join(',')}`,
+    sessionId: agents[0]?.sessionId,
     sourceMessageId,
     kind: 'single-agent',
-    title: member.name,
+    title: primaryMember?.name ?? 'Agent',
     status,
-    startedAt: agent.startedAt,
-    completedAt: agent.completedAt,
+    startedAt: Math.min(...agents.map((agent) => agent.startedAt)),
+    completedAt:
+      status === 'running'
+        ? null
+        : Math.max(...agents.map((agent) => agent.completedAt ?? agent.startedAt)),
     stageIndex,
     stageCount,
     stages,
@@ -274,8 +291,8 @@ function buildSingleAgentRun(agent: SubAgentState, sourceMessageId: string): Orc
     members,
     tasks: [],
     messages: [],
-    selectedMemberId: member.id,
-    sourceToolUseIds: [agent.toolUseId],
+    selectedMemberId: primaryMember?.id ?? null,
+    sourceToolUseIds,
     historySnapshot: { summary: '', latestAction: '', members: [] }
   }
 
@@ -368,14 +385,27 @@ export function buildOrchestrationRuns(input: BuildRunsInput): OrchestrationDeri
     }
   }
 
+  const subAgentsByMessage = new Map<string, SubAgentState[]>()
   for (const agent of getAllSubAgents(input)) {
     if (usedToolUseIds.has(agent.toolUseId)) continue
-    const run = buildSingleAgentRun(agent, getSourceMessageIdForAgent(agent, input.messages))
+    const sourceMessageId = getSourceMessageIdForAgent(agent, input.messages)
+    const agents = subAgentsByMessage.get(sourceMessageId)
+    if (agents) {
+      agents.push(agent)
+    } else {
+      subAgentsByMessage.set(sourceMessageId, [agent])
+    }
+  }
+
+  for (const [sourceMessageId, agents] of subAgentsByMessage) {
+    agents.sort((left, right) => left.startedAt - right.startedAt)
+    const run = buildSubAgentRun(agents, sourceMessageId)
     runs.push(run)
     byId.set(run.id, run)
+    const existing = rawByMessageId.get(run.sourceMessageId)
     rawByMessageId.set(run.sourceMessageId, {
       primaryRun: run,
-      hiddenToolUseIds: new Set(run.sourceToolUseIds)
+      hiddenToolUseIds: new Set([...(existing?.hiddenToolUseIds ?? []), ...run.sourceToolUseIds])
     })
   }
 

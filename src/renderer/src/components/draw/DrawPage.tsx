@@ -90,6 +90,13 @@ import {
   modelSupportsVision,
   useProviderStore
 } from '@renderer/stores/provider-store'
+import {
+  abortActiveDrawRuns,
+  getActiveDrawRunIds,
+  registerDrawRunController,
+  unregisterDrawRunController,
+  useDrawStore
+} from '@renderer/stores/draw-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 
 interface ProviderModelGroup {
@@ -357,32 +364,17 @@ export function DrawPage(): React.JSX.Element {
   const [gifCharacterPrompt, setGifCharacterPrompt] = useState('')
   const [gifStylePrompt, setGifStylePrompt] = useState('')
   const [gifActionPrompt, setGifActionPrompt] = useState('')
-  const [runs, setRuns] = useState<DrawRun[]>([])
-  // Keep a synchronous snapshot so stream callbacks persist the same run state they render.
-  const runsRef = useRef<DrawRun[]>([])
+  const runs = useDrawStore((state) => state.runs)
+  const commitRuns = useDrawStore((state) => state.commitRuns)
+  const updateStoredRun = useDrawStore((state) => state.updateRun)
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
-  const [isGenerating, setIsGenerating] = useState(false)
   const [isOptimizingPrompt, setIsOptimizingPrompt] = useState(false)
   const [optimizedPrompt, setOptimizedPrompt] = useState('')
   const [optimizationDialogOpen, setOptimizationDialogOpen] = useState(false)
   const [modelDialogOpen, setModelDialogOpen] = useState(false)
   const [dialogProviderId, setDialogProviderId] = useState<string | null>(null)
-  const abortControllerRef = useRef<AbortController | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-
-  const commitRuns = useCallback(
-    (updater: DrawRun[] | ((current: DrawRun[]) => DrawRun[])): DrawRun[] => {
-      const nextRuns =
-        typeof updater === 'function'
-          ? (updater as (current: DrawRun[]) => DrawRun[])(runsRef.current)
-          : updater
-
-      runsRef.current = nextRuns
-      setRuns(nextRuns)
-      return nextRuns
-    },
-    []
-  )
+  const isGenerating = runs.some((run) => run.isGenerating)
 
   const providerModelGroups = useMemo<ProviderModelGroup[]>(
     () =>
@@ -435,19 +427,34 @@ export function DrawPage(): React.JSX.Element {
   ])
 
   useEffect(() => {
-    return () => {
-      abortControllerRef.current?.abort()
-      abortControllerRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
 
-    void listPersistedDrawRuns(t('drawPage.interrupted'))
+    void listPersistedDrawRuns(t('drawPage.interrupted'), {
+      activeRunIds: getActiveDrawRunIds()
+    })
       .then((persistedRuns) => {
         if (!cancelled) {
-          commitRuns(persistedRuns)
+          commitRuns((current) => {
+            const currentActiveRunIds = getActiveDrawRunIds()
+            if (currentActiveRunIds.size === 0) return persistedRuns
+
+            const activeRunsById = new Map(
+              current.filter((run) => currentActiveRunIds.has(run.id)).map((run) => [run.id, run])
+            )
+            const mergedRunIds = new Set<string>()
+            const mergedRuns = persistedRuns.map((run) => {
+              mergedRunIds.add(run.id)
+              return activeRunsById.get(run.id) ?? run
+            })
+
+            for (const activeRun of activeRunsById.values()) {
+              if (!mergedRunIds.has(activeRun.id)) {
+                mergedRuns.push(activeRun)
+              }
+            }
+
+            return mergedRuns.sort((a, b) => b.createdAt - a.createdAt)
+          })
         }
       })
       .catch(() => {})
@@ -523,21 +530,13 @@ export function DrawPage(): React.JSX.Element {
 
   const updateRun = useCallback(
     (runId: string, updater: (run: DrawRun) => DrawRun): void => {
-      let nextRun: DrawRun | null = null
-
-      commitRuns((current) =>
-        current.map((run) => {
-          if (run.id !== runId) return run
-          nextRun = updater(run)
-          return nextRun
-        })
-      )
+      const nextRun = updateStoredRun(runId, updater)
 
       if (nextRun) {
         persistRun(nextRun)
       }
     },
-    [commitRuns, persistRun]
+    [persistRun, updateStoredRun]
   )
 
   const finishRun = useCallback(
@@ -558,8 +557,7 @@ export function DrawPage(): React.JSX.Element {
   )
 
   const handleStop = useCallback((): void => {
-    abortControllerRef.current?.abort()
-    abortControllerRef.current = null
+    abortActiveDrawRuns()
   }, [])
 
   const handlePaste = useCallback(
@@ -796,8 +794,7 @@ export function DrawPage(): React.JSX.Element {
       error: null
     }
 
-    abortControllerRef.current = controller
-    setIsGenerating(true)
+    registerDrawRunController(runId, controller)
     commitRuns((current) => [newRun, ...current])
     persistRun(newRun)
 
@@ -895,11 +892,20 @@ export function DrawPage(): React.JSX.Element {
         }))
       }
     } finally {
-      finishRun(runId)
-      if (abortControllerRef.current === controller) {
-        abortControllerRef.current = null
+      if (controller.signal.aborted) {
+        updateRun(runId, (run) => ({
+          ...run,
+          error:
+            run.error || run.images.length > 0
+              ? run.error
+              : {
+                  code: 'request_aborted',
+                  message: t('drawPage.interrupted')
+                }
+        }))
       }
-      setIsGenerating(false)
+      finishRun(runId)
+      unregisterDrawRunController(runId, controller)
     }
   }, [
     attachedImages,
@@ -984,8 +990,7 @@ export function DrawPage(): React.JSX.Element {
         error: null
       }
 
-      abortControllerRef.current = controller
-      setIsGenerating(true)
+      registerDrawRunController(runId, controller)
       commitRuns((current) => [newRun, ...current])
       persistRun(newRun)
 
@@ -1132,11 +1137,20 @@ export function DrawPage(): React.JSX.Element {
           }))
         }
       } finally {
-        finishRun(runId)
-        if (abortControllerRef.current === controller) {
-          abortControllerRef.current = null
+        if (controller.signal.aborted) {
+          updateRun(runId, (run) => ({
+            ...run,
+            error:
+              run.error || run.images.length > 0
+                ? run.error
+                : {
+                    code: 'request_aborted',
+                    message: t('drawPage.interrupted')
+                  }
+          }))
         }
-        setIsGenerating(false)
+        finishRun(runId)
+        unregisterDrawRunController(runId, controller)
       }
     },
     [

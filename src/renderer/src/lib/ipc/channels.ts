@@ -52,6 +52,7 @@ export const IPC = {
 
   // Agent Changes
   AGENT_CHANGES_LIST: 'agent:changes:list',
+  AGENT_CHANGES_LIST_SESSION: 'agent:changes:list-session',
   AGENT_CHANGES_DIFF_CONTENT: 'agent:changes:diff-content',
   AGENT_CHANGES_SNAPSHOT_CONTENT: 'agent:changes:snapshot-content',
   AGENT_CHANGES_ACCEPT: 'agent:changes:accept',

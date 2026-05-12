@@ -90,6 +90,7 @@ import { openDetachedSessionWindow, openSessionOrFocusDetached } from '@renderer
 import { cn } from '@renderer/lib/utils'
 import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { IPC } from '@renderer/lib/ipc/channels'
+import { generateSessionTitle } from '@renderer/lib/api/generate-title'
 import { clampLeftSidebarWidth, LEFT_SIDEBAR_DEFAULT_WIDTH } from './right-panel-defs'
 import { WorkingFolderSelectorDialog } from '@renderer/components/chat/WorkingFolderSelectorDialog'
 import { toast } from 'sonner'
@@ -281,6 +282,40 @@ function formatRelativeTime(updatedAt: number, locale: string): string {
   return rtf.format(-Math.max(1, Math.round(elapsed / WEEK_MS)), 'week')
 }
 
+function getSessionMessageText(message: Session['messages'][number]): string {
+  if (typeof message.content === 'string') return message.content.trim()
+
+  const parts: string[] = []
+  for (const block of message.content) {
+    if (block.type === 'text') {
+      parts.push(block.text)
+    }
+  }
+  return parts.join('\n').trim()
+}
+
+function buildSmartRenameInput(session: Session): string {
+  const excerpts: string[] = []
+
+  for (const message of session.messages) {
+    if (message.role === 'system') continue
+    const text = getSessionMessageText(message)
+    if (!text) continue
+    excerpts.push(`${message.role}: ${text.slice(0, 1200)}`)
+    if (excerpts.length >= 16) break
+  }
+
+  const transcript = excerpts.join('\n\n').slice(0, 6000).trim()
+  if (!transcript) return ''
+
+  return [
+    'Generate a concise session title from this conversation.',
+    `Current title: ${session.title}`,
+    'Conversation excerpt:',
+    transcript
+  ].join('\n\n')
+}
+
 type ExportedSessionPayload = {
   version: 1
   type: 'session'
@@ -339,6 +374,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
   const updateProjectDirectory = useChatStore((state) => state.updateProjectDirectory)
   const deleteSession = useChatStore((state) => state.deleteSession)
   const updateSessionTitle = useChatStore((state) => state.updateSessionTitle)
+  const updateSessionIcon = useChatStore((state) => state.updateSessionIcon)
   const duplicateSession = useChatStore((state) => state.duplicateSession)
   const clearSessionMessages = useChatStore((state) => state.clearSessionMessages)
   const clearAllSessions = useChatStore((state) => state.clearAllSessions)
@@ -383,6 +419,7 @@ export function WorkspaceSidebar(): React.JSX.Element {
     clearableCount: number
     runningCount: number
   } | null>(null)
+  const [autoRenamingSessionId, setAutoRenamingSessionId] = useState<string | null>(null)
   const [folderPickerTarget, setFolderPickerTarget] = useState<FolderPickerTarget | null>(null)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set())
   const [expandedProjectIds, setExpandedProjectIds] = useState<Set<string>>(() => new Set())
@@ -721,6 +758,66 @@ export function WorkspaceSidebar(): React.JSX.Element {
     toast.success(tCommon('action.rename'))
   }, [renameDialog, renameProject, renameValue, tCommon, updateSessionTitle])
 
+  const handleSmartRenameSession = useCallback(
+    async (sessionId: string) => {
+      if (autoRenamingSessionId) return
+      setAutoRenamingSessionId(sessionId)
+
+      try {
+        await useChatStore.getState().loadSessionMessages(sessionId)
+        const session = useChatStore.getState().sessions.find((item) => item.id === sessionId)
+        if (!session) return
+
+        const titleInput = buildSmartRenameInput(session)
+        if (!titleInput) {
+          toast.error(
+            t('sidebar_toast.smartRenameNoContent', {
+              defaultValue:
+                language === 'zh'
+                  ? '会话里还没有可用于重命名的内容'
+                  : 'No conversation content available for renaming'
+            })
+          )
+          return
+        }
+
+        const result = await generateSessionTitle(titleInput, { maxInputChars: 6000 })
+        const nextTitle = result?.title.trim()
+        const nextIcon = result?.icon.trim()
+        if (!nextTitle) {
+          toast.error(
+            t('sidebar_toast.smartRenameFailed', {
+              defaultValue: language === 'zh' ? '智能重命名失败' : 'Smart rename failed'
+            })
+          )
+          return
+        }
+
+        updateSessionTitle(sessionId, nextTitle)
+        if (nextIcon) {
+          updateSessionIcon(sessionId, nextIcon)
+        }
+        toast.success(
+          t('sidebar_toast.smartRenameSuccess', {
+            defaultValue: language === 'zh' ? '已智能重命名会话' : 'Session renamed intelligently'
+          })
+        )
+      } catch (error) {
+        toast.error(
+          t('sidebar_toast.smartRenameFailed', {
+            defaultValue: language === 'zh' ? '智能重命名失败' : 'Smart rename failed'
+          }),
+          {
+            description: error instanceof Error ? error.message : String(error)
+          }
+        )
+      } finally {
+        setAutoRenamingSessionId((current) => (current === sessionId ? null : current))
+      }
+    },
+    [autoRenamingSessionId, language, t, updateSessionIcon, updateSessionTitle]
+  )
+
   const deferDropdownAction = useCallback((action: () => void) => {
     window.setTimeout(action, 0)
   }, [])
@@ -928,6 +1025,25 @@ export function WorkspaceSidebar(): React.JSX.Element {
           >
             <Pencil className="size-4" />
             {tCommon('action.rename')}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={!!autoRenamingSessionId || session.messageCount === 0}
+            onClick={() => {
+              void handleSmartRenameSession(session.id)
+            }}
+          >
+            {autoRenamingSessionId === session.id ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Wand2 className="size-4" />
+            )}
+            {autoRenamingSessionId === session.id
+              ? t('sidebar.smartRenaming', {
+                  defaultValue: language === 'zh' ? '智能命名中' : 'Smart renaming'
+                })
+              : t('sidebar.smartRename', {
+                  defaultValue: language === 'zh' ? '智能重命名' : 'Smart Rename'
+                })}
           </ContextMenuItem>
           <ContextMenuItem
             onClick={() => {

@@ -108,7 +108,7 @@ const looksLikeReasoning = (value: string): boolean => {
   return markers.filter((r) => r.test(value)).length >= 2
 }
 
-const TITLE_SYSTEM_PROMPT = `You are a title generator. Given a user message, produce:
+const TITLE_SYSTEM_PROMPT = `You are a title generator. Given a user message or conversation excerpt, produce:
 1. A concise title (max 30 characters) that summarizes the intent.
 2. Pick ONE icon name from the following Lucide icon list that best represents the topic:
 ${SESSION_ICONS_PROMPT_LIST}
@@ -117,12 +117,15 @@ Reply with ONLY a JSON object in this exact format (no markdown, no explanation)
 {"title":"your title here","icon":"icon-name"}`
 
 /**
- * Use the fast model to generate a short session title from the user's first message.
+ * Use the fast model to generate a short session title from a user message or conversation excerpt.
  * Runs in the background — does not block the main chat flow.
  * Returns { title, icon } or null on failure.
  */
 export async function generateSessionTitle(
-  userMessage: string
+  userMessage: string,
+  options?: {
+    maxInputChars?: number
+  }
 ): Promise<SessionTitleResult | null> {
   const settings = useSettingsStore.getState()
 
@@ -160,7 +163,7 @@ export async function generateSessionTitle(
     {
       id: 'title-req',
       role: 'user',
-      content: userMessage.slice(0, 500),
+      content: userMessage.slice(0, options?.maxInputChars ?? 500),
       createdAt: Date.now()
     }
   ]

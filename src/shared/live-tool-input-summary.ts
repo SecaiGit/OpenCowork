@@ -1,4 +1,5 @@
 const LIVE_PREVIEW_CHARS = 1_200
+const LIVE_WIDGET_RENDER_CHARS = 64_000
 const LIVE_PRECISE_LINE_COUNT_LIMIT = 128 * 1024
 const SIGNATURE_CHARS = 64
 
@@ -143,13 +144,17 @@ function summarizeWidgetInput(
   options?: LiveToolInputSummaryOptions
 ): Record<string, unknown> {
   const widgetCode = typeof input.widget_code === 'string' ? input.widget_code : ''
+  const renderCode = widgetCode.slice(0, LIVE_WIDGET_RENDER_CHARS)
   const result: Record<string, unknown> = {
     ...(input.title !== undefined ? { title: input.title } : {}),
     ...(input.loading_messages !== undefined ? { loading_messages: input.loading_messages } : {}),
     widget_kind: widgetCode.trimStart().startsWith('<svg') ? 'svg' : 'html',
-    widget_code_hidden_until_complete: true
+    ...(renderCode ? { widget_code: renderCode } : {})
   }
   summarizeTextMetric(result, 'widget_code', widgetCode, options)
+  if (widgetCode.length > LIVE_WIDGET_RENDER_CHARS) {
+    result.widget_code_preview_truncated = true
+  }
   return result
 }
 

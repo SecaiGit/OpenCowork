@@ -8,14 +8,34 @@ export const minimaxCodingPreset: BuiltinProviderPreset = {
   homepage: 'https://platform.minimaxi.com/subscribe/coding-plan',
   apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
   defaultEnabled: false,
+  defaultModel: 'MiniMax-M2.7',
   defaultModels: [
     // Coding Plan models (official docs: same Anthropic endpoint, dedicated Coding Plan key)
+    {
+      id: 'MiniMax-M2.7',
+      name: 'MiniMax M2.7',
+      icon: 'minimax',
+      enabled: true,
+      contextLength: 204_800,
+      maxOutputTokens: 131_072,
+      supportsFunctionCall: true
+    },
+    {
+      id: 'MiniMax-M2.7-highspeed',
+      name: 'MiniMax M2.7 Highspeed',
+      icon: 'minimax',
+      enabled: true,
+      contextLength: 204_800,
+      maxOutputTokens: 131_072,
+      supportsFunctionCall: true
+    },
     {
       id: 'MiniMax-M2.5',
       name: 'MiniMax M2.5',
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 131_072,
       supportsFunctionCall: true
     },
     {
@@ -24,6 +44,7 @@ export const minimaxCodingPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 131_072,
       supportsFunctionCall: true
     },
     {
@@ -32,6 +53,7 @@ export const minimaxCodingPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 64_000,
       supportsFunctionCall: true
     },
     {
@@ -40,6 +62,7 @@ export const minimaxCodingPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 131_072,
       supportsFunctionCall: true
     }
   ]
@@ -52,20 +75,47 @@ export const minimaxPreset: BuiltinProviderPreset = {
   defaultBaseUrl: 'https://api.minimaxi.com/anthropic',
   homepage: 'https://www.minimaxi.com',
   apiKeyUrl: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+  defaultModel: 'MiniMax-M2.7',
   defaultModels: [
-    // OpenRouter USD pricing references:
-    // M2.5: https://openrouter.ai/minimax/minimax-m2.5
-    // M2.1: https://openrouter.ai/minimax/minimax-m2.1
-    // M2: https://openrouter.ai/minimax/minimax-m2
+    // USD pricing references: https://platform.minimax.io/docs/guides/pricing-paygo
+    {
+      id: 'MiniMax-M2.7',
+      name: 'MiniMax M2.7',
+      icon: 'minimax',
+      enabled: true,
+      contextLength: 204_800,
+      maxOutputTokens: 131_072,
+      supportsFunctionCall: true,
+      inputPrice: 0.3,
+      outputPrice: 1.2,
+      cacheHitPrice: 0.06,
+      cacheCreationPrice: 0.375
+    },
+    {
+      id: 'MiniMax-M2.7-highspeed',
+      name: 'MiniMax M2.7 Highspeed',
+      icon: 'minimax',
+      enabled: true,
+      contextLength: 204_800,
+      maxOutputTokens: 131_072,
+      supportsFunctionCall: true,
+      inputPrice: 0.6,
+      outputPrice: 2.4,
+      cacheHitPrice: 0.06,
+      cacheCreationPrice: 0.375
+    },
     {
       id: 'MiniMax-M2.5',
       name: 'MiniMax M2.5',
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 131_072,
       supportsFunctionCall: true,
       inputPrice: 0.3,
-      outputPrice: 1.1
+      outputPrice: 1.2,
+      cacheHitPrice: 0.03,
+      cacheCreationPrice: 0.375
     },
     {
       id: 'MiniMax-M2.5-highspeed',
@@ -73,7 +123,12 @@ export const minimaxPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
-      supportsFunctionCall: true
+      maxOutputTokens: 131_072,
+      supportsFunctionCall: true,
+      inputPrice: 0.6,
+      outputPrice: 2.4,
+      cacheHitPrice: 0.03,
+      cacheCreationPrice: 0.375
     },
     {
       id: 'MiniMax-M2.1',
@@ -81,9 +136,12 @@ export const minimaxPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 64_000,
       supportsFunctionCall: true,
-      inputPrice: 0.27,
-      outputPrice: 0.95
+      inputPrice: 0.3,
+      outputPrice: 1.2,
+      cacheHitPrice: 0.03,
+      cacheCreationPrice: 0.375
     },
     {
       id: 'MiniMax-M2.1-highspeed',
@@ -91,7 +149,12 @@ export const minimaxPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
-      supportsFunctionCall: true
+      maxOutputTokens: 64_000,
+      supportsFunctionCall: true,
+      inputPrice: 0.6,
+      outputPrice: 2.4,
+      cacheHitPrice: 0.03,
+      cacheCreationPrice: 0.375
     },
     {
       id: 'MiniMax-M2',
@@ -99,9 +162,12 @@ export const minimaxPreset: BuiltinProviderPreset = {
       icon: 'minimax',
       enabled: true,
       contextLength: 204_800,
+      maxOutputTokens: 131_072,
       supportsFunctionCall: true,
-      inputPrice: 0.255,
-      outputPrice: 1
+      inputPrice: 0.3,
+      outputPrice: 1.2,
+      cacheHitPrice: 0.03,
+      cacheCreationPrice: 0.375
     }
   ]
 }

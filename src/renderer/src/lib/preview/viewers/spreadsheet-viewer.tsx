@@ -79,14 +79,28 @@ async function parseXlsx(
   return { sheets: wb.SheetNames, data }
 }
 
-async function buildXlsxBase64(sheetsData: Map<string, string[][]>): Promise<string> {
+type WorkbookBookType = 'xlsx' | 'xlsm' | 'xlsb' | 'biff8' | 'ods'
+
+function getWorkbookBookType(filePath: string): WorkbookBookType {
+  const ext = getExt(filePath)
+  if (ext === '.xlsm') return 'xlsm'
+  if (ext === '.xlsb') return 'xlsb'
+  if (ext === '.xls') return 'biff8'
+  if (ext === '.ods') return 'ods'
+  return 'xlsx'
+}
+
+async function buildWorkbookBase64(
+  filePath: string,
+  sheetsData: Map<string, string[][]>
+): Promise<string> {
   const XLSX = await import('xlsx')
   const wb = XLSX.utils.book_new()
   for (const [name, rows] of sheetsData) {
     const ws = XLSX.utils.aoa_to_sheet(rows)
     XLSX.utils.book_append_sheet(wb, ws, name)
   }
-  return XLSX.write(wb, { type: 'base64', bookType: 'xlsx' }) as string
+  return XLSX.write(wb, { type: 'base64', bookType: getWorkbookBookType(filePath) }) as string
 }
 
 // --- Types ---
@@ -110,13 +124,13 @@ export function SpreadsheetViewer({
   sshConnectionId
 }: ViewerProps): React.JSX.Element {
   const ext = getExt(filePath)
-  const isXlsx = ext === '.xlsx' || ext === '.xls'
+  const isWorkbook = ['.xlsx', '.xls', '.xlsm', '.xlsb', '.ods'].includes(ext)
 
-  const [data, setData] = useState<string[][]>(() => (isXlsx ? [] : parseCSV(content)))
+  const [data, setData] = useState<string[][]>(() => (isWorkbook ? [] : parseCSV(content)))
   const [sheetNames, setSheetNames] = useState<string[]>([])
   const [allSheets, setAllSheets] = useState<Map<string, string[][]>>(new Map())
   const [activeSheet, setActiveSheet] = useState<string>('')
-  const [xlsxLoading, setXlsxLoading] = useState(isXlsx)
+  const [xlsxLoading, setXlsxLoading] = useState(isWorkbook)
   const [xlsxError, setXlsxError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -128,7 +142,7 @@ export function SpreadsheetViewer({
 
   // Load xlsx binary
   useEffect(() => {
-    if (!isXlsx) return
+    if (!isWorkbook) return
     let cancelled = false
     setXlsxLoading(true)
     setXlsxError(null)
@@ -161,13 +175,13 @@ export function SpreadsheetViewer({
     return () => {
       cancelled = true
     }
-  }, [filePath, isXlsx, sshConnectionId])
+  }, [filePath, isWorkbook, sshConnectionId])
 
   // CSV: sync from content prop
   useEffect(() => {
-    if (isXlsx) return
+    if (isWorkbook) return
     setData(parseCSV(content))
-  }, [content, isXlsx])
+  }, [content, isWorkbook])
 
   // Switch sheet
   const handleSwitchSheet = useCallback(
@@ -185,7 +199,7 @@ export function SpreadsheetViewer({
 
   const pushHistory = useCallback(
     (newData: string[][]) => {
-      if (isXlsx) {
+      if (isWorkbook) {
         setAllSheets((prev) => {
           const next = new Map(prev)
           next.set(activeSheet, newData)
@@ -201,7 +215,7 @@ export function SpreadsheetViewer({
         onContentChange?.(csv)
       }
     },
-    [isXlsx, activeSheet, onContentChange]
+    [isWorkbook, activeSheet, onContentChange]
   )
 
   const updateCell = useCallback(
@@ -218,7 +232,7 @@ export function SpreadsheetViewer({
   )
 
   const undo = useCallback(() => {
-    if (isXlsx) return
+    if (isWorkbook) return
     setHistory((prev) => {
       if (prev.index <= 0) return prev
       const newIndex = prev.index - 1
@@ -226,10 +240,10 @@ export function SpreadsheetViewer({
       onContentChange?.(prev.snapshots[newIndex])
       return { ...prev, index: newIndex }
     })
-  }, [isXlsx, onContentChange])
+  }, [isWorkbook, onContentChange])
 
   const redo = useCallback(() => {
-    if (isXlsx) return
+    if (isWorkbook) return
     setHistory((prev) => {
       if (prev.index >= prev.snapshots.length - 1) return prev
       const newIndex = prev.index + 1
@@ -237,7 +251,7 @@ export function SpreadsheetViewer({
       onContentChange?.(prev.snapshots[newIndex])
       return { ...prev, index: newIndex }
     })
-  }, [isXlsx, onContentChange])
+  }, [isWorkbook, onContentChange])
 
   const addRow = useCallback(() => {
     setData((prev) => {
@@ -262,12 +276,12 @@ export function SpreadsheetViewer({
 
   // Save xlsx
   const handleSaveXlsx = useCallback(async () => {
-    if (!isXlsx) return
+    if (!isWorkbook) return
     setSaving(true)
     try {
       const sheets = new Map(allSheets)
       sheets.set(activeSheet, data)
-      const base64 = await buildXlsxBase64(sheets)
+      const base64 = await buildWorkbookBase64(filePath, sheets)
       const channel = sshConnectionId ? IPC.SSH_FS_WRITE_FILE_BINARY : IPC.FS_WRITE_FILE_BINARY
       const args = sshConnectionId
         ? { connectionId: sshConnectionId, path: filePath, data: base64 }
@@ -278,7 +292,7 @@ export function SpreadsheetViewer({
     } finally {
       setSaving(false)
     }
-  }, [isXlsx, filePath, allSheets, activeSheet, data, sshConnectionId])
+  }, [isWorkbook, filePath, allSheets, activeSheet, data, sshConnectionId])
 
   const maxCols = useMemo(() => Math.max(...data.map((r) => r.length), 1), [data])
 
@@ -307,7 +321,7 @@ export function SpreadsheetViewer({
     <div className="flex size-full flex-col">
       {/* Toolbar */}
       <div className="flex h-8 items-center gap-1 border-b px-2">
-        {!isXlsx && (
+        {!isWorkbook && (
           <>
             <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs" onClick={undo}>
               <Undo2 className="size-3" /> Undo
@@ -321,7 +335,7 @@ export function SpreadsheetViewer({
         <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-xs" onClick={addRow}>
           <Plus className="size-3" /> Row
         </Button>
-        {isXlsx && (
+        {isWorkbook && (
           <Button
             variant="ghost"
             size="sm"
@@ -355,7 +369,7 @@ export function SpreadsheetViewer({
       </div>
 
       {/* Sheet tabs (xlsx with multiple sheets) */}
-      {isXlsx && sheetNames.length > 1 && (
+      {isWorkbook && sheetNames.length > 1 && (
         <div className="flex h-7 items-center gap-0.5 border-b px-2 overflow-x-auto">
           {sheetNames.map((name) => (
             <button

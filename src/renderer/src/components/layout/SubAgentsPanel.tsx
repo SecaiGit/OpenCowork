@@ -31,6 +31,7 @@ import type { ToolResultContent, UnifiedMessage } from '@renderer/lib/api/types'
 import { cn } from '@renderer/lib/utils'
 
 const DAY_MS = 24 * 60 * 60 * 1000
+const EMPTY_SESSION_MESSAGES: UnifiedMessage[] = []
 
 type PanelFilter = 'all' | 'running' | 'completed' | 'today'
 
@@ -308,7 +309,7 @@ export function SubAgentsPanel(): React.JSX.Element {
   const { t } = useTranslation('layout')
   const activeSessionId = useChatStore((s) => s.activeSessionId)
   const sessionMessages = useChatStore((s) =>
-    activeSessionId ? s.getSessionMessages(activeSessionId) : []
+    activeSessionId ? s.getSessionMessages(activeSessionId) : EMPTY_SESSION_MESSAGES
   )
   const activeSubAgents = useAgentStore((s) => s.activeSubAgents)
   const completedSubAgents = useAgentStore((s) => s.completedSubAgents)
@@ -489,7 +490,11 @@ export function SubAgentsPanel(): React.JSX.Element {
                   }}
                   onOpenDetail={() => {
                     setSelectedToolUseId(agent.toolUseId)
-                    openSubAgentExecutionDetail(agent.toolUseId)
+                    openSubAgentExecutionDetail(
+                      agent.toolUseId,
+                      null,
+                      agent.displayName ?? agent.name
+                    )
                   }}
                 />
               ))}
@@ -520,7 +525,11 @@ export function SubAgentsPanel(): React.JSX.Element {
                   }}
                   onOpenDetail={() => {
                     setSelectedToolUseId(agent.toolUseId)
-                    openSubAgentExecutionDetail(agent.toolUseId)
+                    openSubAgentExecutionDetail(
+                      agent.toolUseId,
+                      null,
+                      agent.displayName ?? agent.name
+                    )
                   }}
                 />
               ))}

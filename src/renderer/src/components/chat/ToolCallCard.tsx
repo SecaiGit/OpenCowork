@@ -14,15 +14,18 @@ import {
   Folder,
   File,
   Clock,
-  Bot
+  Bot,
+  FileText
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
+import { toast } from 'sonner'
 import { cn } from '@renderer/lib/utils'
 import type { ToolCallStatus } from '@renderer/lib/agent/types'
 import type { ToolResultContent } from '@renderer/lib/api/types'
 import { decodeStructuredToolResult } from '@renderer/lib/tools/tool-result-format'
 import { MONO_FONT } from '@renderer/lib/constants'
 import { estimateTokens, formatTokens } from '@renderer/lib/format-tokens'
+import { writeSvgStringToClipboard } from '@renderer/lib/utils/image-clipboard'
 import { useAgentStore } from '@renderer/stores/agent-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { Button } from '@renderer/components/ui/button'
@@ -231,21 +234,23 @@ function normalizeWidgetPayload(input: Record<string, unknown>): WidgetToolPaylo
       : typeof input.widget_code_preview === 'string'
         ? input.widget_code_preview
         : ''
-  const widgetCode = rawCode.trim()
+  const widgetCode = rawCode.trimStart()
   const loadingMessages = Array.isArray(input.loading_messages)
     ? input.loading_messages
         .filter((item): item is string => typeof item === 'string')
         .map((item) => item.trim())
         .filter(Boolean)
     : []
+  const explicitKind =
+    input.widget_kind === 'svg' || input.widget_kind === 'html' ? input.widget_kind : null
 
-  if (!title && !widgetCode) return null
+  if (!title && !widgetCode.trim()) return null
 
   return {
     title: title || 'widget',
     loadingMessages: loadingMessages.length > 0 ? loadingMessages : DEFAULT_WIDGET_LOADING_MESSAGES,
     widgetCode,
-    kind: /^<svg[\s>]/i.test(widgetCode) ? 'svg' : 'html'
+    kind: explicitKind ?? (/^<svg[\s>]/i.test(widgetCode) ? 'svg' : 'html')
   }
 }
 
@@ -259,7 +264,10 @@ function buildWidgetDocument(payload: WidgetToolPayload): string {
       html, body {
         margin: 0;
         padding: 0;
-        background: transparent;
+        background: transparent !important;
+      }
+      html {
+        color-scheme: dark;
       }
       body {
         font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -268,8 +276,9 @@ function buildWidgetDocument(payload: WidgetToolPayload): string {
       }
       #open-cowork-widget-root {
         width: 100%;
+        background: transparent !important;
       }
-      ${payload.kind === 'svg' ? '#open-cowork-widget-root { line-height: 0; font-size: 0; } #open-cowork-widget-root > svg { display: block; width: 100%; height: auto; }' : ''}
+      ${payload.kind === 'svg' ? '#open-cowork-widget-root { display: block; overflow: hidden; line-height: 0; font-size: 0; } #open-cowork-widget-root > svg { display: block; width: 100%; height: auto; margin: 0; background: transparent !important; overflow: hidden; }' : ''}
     </style>
     <script>
       (() => {
@@ -300,6 +309,32 @@ function buildWidgetDocument(payload: WidgetToolPayload): string {
             getContentHeight(document.body);
           post('resize', { height: Math.max(nextHeight, 32) });
         };
+        let lastAppliedCode = '';
+
+        const executeInsertedScripts = (root) => {
+          const scripts = Array.from(root.querySelectorAll('script'));
+          for (const script of scripts) {
+            const next = document.createElement('script');
+            for (const attr of Array.from(script.attributes)) {
+              next.setAttribute(attr.name, attr.value);
+            }
+            next.text = script.textContent || '';
+            script.replaceWith(next);
+          }
+        };
+
+        const applyWidgetCode = (code) => {
+          if (typeof code !== 'string' || code === lastAppliedCode) return;
+          lastAppliedCode = code;
+          const root = document.getElementById('open-cowork-widget-root');
+          if (!root) return;
+          root.innerHTML = code;
+          executeInsertedScripts(root);
+          reportSize();
+          window.requestAnimationFrame(reportSize);
+          setTimeout(reportSize, 80);
+          setTimeout(reportSize, 240);
+        };
 
         window.sendPrompt = (text) => {
           if (typeof text !== 'string') return;
@@ -307,6 +342,13 @@ function buildWidgetDocument(payload: WidgetToolPayload): string {
           if (!trimmed) return;
           post('send_prompt', { text: trimmed });
         };
+
+        window.addEventListener('message', (event) => {
+          const data = event.data;
+          if (!data || typeof data !== 'object') return;
+          if (data.source !== bridgeSource || data.type !== 'update_code') return;
+          applyWidgetCode(data.code);
+        });
 
         window.__openCoworkWidgetReady = () => {
           const root = document.getElementById('open-cowork-widget-root');
@@ -324,10 +366,63 @@ function buildWidgetDocument(payload: WidgetToolPayload): string {
     </script>
   </head>
   <body>
-    <div id="open-cowork-widget-root">${payload.widgetCode}</div>
+    <div id="open-cowork-widget-root"></div>
     <script>window.__openCoworkWidgetReady && window.__openCoworkWidgetReady();</script>
   </body>
 </html>`
+}
+
+function SvgWidgetCopyButton({ svg }: { svg: string }): React.JSX.Element {
+  const [copied, setCopied] = React.useState(false)
+  const [copying, setCopying] = React.useState(false)
+  const resetTimerRef = React.useRef<number | null>(null)
+
+  React.useEffect(() => {
+    return () => {
+      if (resetTimerRef.current != null) {
+        window.clearTimeout(resetTimerRef.current)
+      }
+    }
+  }, [])
+
+  const handleCopy = React.useCallback(async (): Promise<void> => {
+    if (copying || !svg.trim()) return
+
+    try {
+      setCopying(true)
+      await writeSvgStringToClipboard(svg)
+      setCopied(true)
+      toast.success('Image copied to clipboard')
+
+      if (resetTimerRef.current != null) {
+        window.clearTimeout(resetTimerRef.current)
+      }
+      resetTimerRef.current = window.setTimeout(() => {
+        setCopied(false)
+        resetTimerRef.current = null
+      }, 1500)
+    } catch (error) {
+      console.error('[Widget] Copy SVG image failed:', error)
+      toast.error('Failed to copy image')
+    } finally {
+      setCopying(false)
+    }
+  }, [copying, svg])
+
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      className="absolute right-2 top-2 z-20 size-8 border border-border/60 bg-background/85 text-muted-foreground shadow-sm backdrop-blur hover:bg-background hover:text-foreground disabled:opacity-60"
+      onClick={() => void handleCopy()}
+      disabled={copying || !svg.trim()}
+      title={copied ? 'Copied' : 'Copy image to clipboard'}
+      aria-label={copied ? 'Copied' : 'Copy image to clipboard'}
+    >
+      {copied ? <Check className="size-3.5 text-green-500" /> : <Copy className="size-3.5" />}
+    </Button>
+  )
 }
 
 export function WidgetOutputBlock({
@@ -338,31 +433,55 @@ export function WidgetOutputBlock({
   status: ToolCallStatus | 'completed'
 }): React.JSX.Element | null {
   const isExecuting = status === 'streaming' || status === 'running'
-  const payload = React.useMemo(
-    () => (isExecuting ? null : normalizeWidgetPayload(input)),
-    [input, isExecuting]
-  )
+  const payload = normalizeWidgetPayload(input)
+  const hasPayload = Boolean(payload)
+  const loadingMessages = payload?.loadingMessages ?? DEFAULT_WIDGET_LOADING_MESSAGES
   const iframeRef = React.useRef<HTMLIFrameElement>(null)
   const resizeRafRef = React.useRef<number | null>(null)
   const lastAppliedHeightRef = React.useRef<number>(0)
   const [loaded, setLoaded] = React.useState(false)
   const [frameHeight, setFrameHeight] = React.useState(240)
   const [loadingIndex, setLoadingIndex] = React.useState(0)
+  const frameKey = payload ? `${payload.title}:${payload.kind}` : 'widget-empty'
+  const pendingWidgetCodeRef = React.useRef('')
+  const lastPostedWidgetCodeRef = React.useRef('')
   const { sendMessage } = useChatActions()
+
+  const postWidgetCode = React.useCallback((code: string): void => {
+    const frameWindow = iframeRef.current?.contentWindow
+    if (!frameWindow || !code || code === lastPostedWidgetCodeRef.current) return
+    lastPostedWidgetCodeRef.current = code
+    frameWindow.postMessage(
+      {
+        source: WIDGET_BRIDGE_SOURCE,
+        type: 'update_code',
+        code
+      },
+      '*'
+    )
+  }, [])
 
   React.useEffect(() => {
     setLoaded(false)
     setLoadingIndex(0)
     setFrameHeight(payload?.kind === 'svg' ? 320 : 420)
-  }, [payload?.title, payload?.widgetCode, payload?.kind])
+    lastPostedWidgetCodeRef.current = ''
+  }, [payload?.title, payload?.kind])
 
   React.useEffect(() => {
-    if (!payload || payload.loadingMessages.length <= 1 || loaded) return
+    pendingWidgetCodeRef.current = payload?.widgetCode ?? ''
+    if (loaded && payload?.widgetCode) {
+      postWidgetCode(payload.widgetCode)
+    }
+  }, [loaded, payload?.widgetCode, postWidgetCode])
+
+  React.useEffect(() => {
+    if (!hasPayload || loadingMessages.length <= 1 || loaded) return
     const timer = window.setInterval(() => {
-      setLoadingIndex((index) => (index + 1) % payload.loadingMessages.length)
+      setLoadingIndex((index) => (index + 1) % loadingMessages.length)
     }, 1400)
     return () => window.clearInterval(timer)
-  }, [loaded, payload])
+  }, [hasPayload, loaded, loadingMessages.length])
 
   React.useEffect(() => {
     const handleMessage = (event: MessageEvent): void => {
@@ -374,6 +493,7 @@ export function WidgetOutputBlock({
       const type = (data as { type?: unknown }).type
       if (type === 'ready') {
         setLoaded(true)
+        postWidgetCode(pendingWidgetCodeRef.current)
         return
       }
 
@@ -411,9 +531,9 @@ export function WidgetOutputBlock({
         resizeRafRef.current = null
       }
     }
-  }, [sendMessage])
+  }, [postWidgetCode, sendMessage])
 
-  if (isExecuting) {
+  if (isExecuting && !payload?.widgetCode) {
     const title =
       typeof input.title === 'string' && input.title.trim() ? input.title.trim() : 'widget'
     const chars =
@@ -434,8 +554,8 @@ export function WidgetOutputBlock({
 
   if (!payload) return null
 
-  const isPending = isExecuting && !loaded
-  const loadingMessage = payload.loadingMessages[loadingIndex] ?? DEFAULT_WIDGET_LOADING_MESSAGES[0]
+  const isPending = isExecuting && !loaded && !payload.widgetCode
+  const loadingMessage = loadingMessages[loadingIndex] ?? DEFAULT_WIDGET_LOADING_MESSAGES[0]
 
   return (
     <div className="my-2 space-y-2">
@@ -449,6 +569,7 @@ export function WidgetOutputBlock({
             style={{ lineHeight: 0, fontSize: 0 }}
           >
             <iframe
+              key={frameKey}
               ref={iframeRef}
               title={payload.title}
               sandbox="allow-scripts allow-forms"
@@ -458,9 +579,12 @@ export function WidgetOutputBlock({
                 width: 'calc(100% + 1px)',
                 height: `${frameHeight}px`,
                 marginRight: '-1px',
-                verticalAlign: 'top'
+                verticalAlign: 'top',
+                backgroundColor: 'transparent',
+                colorScheme: 'dark'
               }}
             />
+            {payload.kind === 'svg' ? <SvgWidgetCopyButton svg={payload.widgetCode} /> : null}
           </div>
         ) : (
           <div className="flex h-48 items-center justify-center text-xs text-muted-foreground/60">
@@ -913,15 +1037,30 @@ function normalizeSearchMeta(decoded: unknown): SearchOutputMeta {
   }
 }
 
-function parseLegacyGrepMatch(value: unknown): { file: string; line: number; text: string } | null {
+function parseLegacyGrepMatch(
+  value: unknown
+): { file: string; line: number; text: string; kind?: 'match' | 'context' } | null {
   if (typeof value !== 'string') return null
-  const match = value.match(/^(.+?):(\d+):(.*)$/)
+  const match = value.match(/^(.+?)([:-])(\d+)\2(.*)$/)
   if (!match) return null
   return {
     file: match[1],
-    line: Number(match[2]),
-    text: match[3] ?? ''
+    line: Number(match[3]),
+    text: match[4] ?? '',
+    kind: match[2] === '-' ? 'context' : 'match'
   }
+}
+
+function parseGrepTextMatches(
+  text: string
+): Array<{ file: string; line: number; text: string; kind?: 'match' | 'context' }> {
+  return text
+    .split(/\r?\n/)
+    .map((line) => parseLegacyGrepMatch(line))
+    .filter(
+      (item): item is { file: string; line: number; text: string; kind?: 'match' | 'context' } =>
+        !!item
+    )
 }
 
 function getSearchVisualState(meta: SearchOutputMeta, matchCount: number): SearchVisualState {
@@ -973,11 +1112,20 @@ function SearchEmptyState(): React.JSX.Element {
 }
 
 function parseGrepOutput(output: string): {
-  matches: Array<{ file: string; line: number; text: string }>
+  matches: Array<{ file: string; line: number; text: string; kind?: 'match' | 'context' }>
   meta: SearchOutputMeta
+  output?: string
 } | null {
   const decoded = decodeStructuredToolResult(output)
-  if (!decoded) return null
+  if (!decoded) {
+    const matches = parseGrepTextMatches(output)
+    if (matches.length === 0 && output.trim().length === 0) return null
+    return {
+      matches,
+      meta: { truncated: false, timedOut: false, warnings: [] },
+      output
+    }
+  }
 
   if (Array.isArray(decoded)) {
     return {
@@ -997,37 +1145,52 @@ function parseGrepOutput(output: string): {
           if (!file || line == null) return null
           return { file, line, text }
         })
-        .filter((item): item is { file: string; line: number; text: string } => !!item),
+        .filter(
+          (
+            item
+          ): item is { file: string; line: number; text: string; kind?: 'match' | 'context' } =>
+            !!item
+        ),
       meta: { truncated: false, timedOut: false, warnings: [] }
     }
   }
 
   if (!isRecord(decoded)) return null
+  const rawOutput = typeof decoded.output === 'string' ? decoded.output : undefined
   const matchesSource = Array.isArray(decoded.matches)
     ? decoded.matches
     : Array.isArray(decoded.results)
       ? decoded.results
       : []
 
+  const parsedMatches = matchesSource
+    .map((item) => {
+      const legacyMatch = parseLegacyGrepMatch(item)
+      if (legacyMatch) return legacyMatch
+      if (!isRecord(item)) return null
+      const file =
+        typeof item.file === 'string' ? item.file : typeof item.path === 'string' ? item.path : null
+      const line = typeof item.line === 'number' ? item.line : null
+      const text = typeof item.text === 'string' ? item.text : ''
+      if (!file || line == null) return null
+      return {
+        file,
+        line,
+        text,
+        kind: item.kind === 'context' ? 'context' : 'match'
+      }
+    })
+    .filter(
+      (item): item is { file: string; line: number; text: string; kind?: 'match' | 'context' } =>
+        !!item
+    )
+  const outputMatches =
+    parsedMatches.length === 0 && rawOutput ? parseGrepTextMatches(rawOutput) : []
+
   return {
-    matches: matchesSource
-      .map((item) => {
-        const legacyMatch = parseLegacyGrepMatch(item)
-        if (legacyMatch) return legacyMatch
-        if (!isRecord(item)) return null
-        const file =
-          typeof item.file === 'string'
-            ? item.file
-            : typeof item.path === 'string'
-              ? item.path
-              : null
-        const line = typeof item.line === 'number' ? item.line : null
-        const text = typeof item.text === 'string' ? item.text : ''
-        if (!file || line == null) return null
-        return { file, line, text }
-      })
-      .filter((item): item is { file: string; line: number; text: string } => !!item),
-    meta: normalizeSearchMeta(decoded)
+    matches: parsedMatches.length > 0 ? parsedMatches : outputMatches,
+    meta: normalizeSearchMeta(decoded),
+    output: rawOutput
   }
 }
 
@@ -1107,6 +1270,9 @@ function GrepOutputBlock({
 
   if (!parsed) return <OutputBlock output={output} />
   if (parsed.matches.length === 0 && parsed.meta.error) return <OutputBlock output={output} />
+  if (parsed.matches.length === 0 && parsed.output?.trim()) {
+    return <OutputBlock output={parsed.output} />
+  }
 
   const matchCount = parsed.matches.length
   const visualState = getSearchVisualState(parsed.meta, matchCount)
@@ -1391,6 +1557,193 @@ function EditPayloadPane({
   )
 }
 
+function getNumericInputValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function getSubmitReportText(input: Record<string, unknown>): {
+  text: string
+  fullText: string
+  chars: number
+  lines: number
+  truncated: boolean
+} {
+  const fullText =
+    typeof input.report === 'string'
+      ? input.report
+      : typeof input.preview === 'string'
+        ? input.preview
+        : ''
+  const previewText =
+    typeof input.report_preview === 'string'
+      ? input.report_preview
+      : typeof input.preview === 'string'
+        ? input.preview
+        : fullText
+  const text = previewText || fullText
+  const chars = getNumericInputValue(input.report_chars) ?? (fullText.length || text.length)
+  const lines = getNumericInputValue(input.report_lines) ?? (text ? lineCount(text) : 0)
+  const truncated =
+    input.report_truncated === true ||
+    input._truncated === true ||
+    (typeof input.report_preview === 'string' && typeof input.report !== 'string')
+
+  return { text, fullText, chars, lines, truncated }
+}
+
+function extractReportHeadings(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.match(/^#{1,6}\s+(.+?)\s*$/)?.[1]?.trim())
+    .filter((line): line is string => !!line)
+    .slice(0, 4)
+}
+
+function SubmitReportPreviewLine({ line }: { line: string }): React.JSX.Element | null {
+  const trimmed = line.trim()
+  if (!trimmed) return <div className="h-2" />
+
+  const heading = trimmed.match(/^#{1,6}\s+(.+)/)?.[1]?.trim()
+  if (heading) {
+    return (
+      <div className="mt-2 flex items-center gap-2 first:mt-0">
+        <span className="h-4 w-1 rounded-full bg-violet-400/70" />
+        <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground/90">
+          {heading}
+        </span>
+      </div>
+    )
+  }
+
+  const bullet = trimmed.match(/^[-*]\s+(.+)/)?.[1]?.trim()
+  if (bullet) {
+    return (
+      <div className="flex gap-2 text-[11px] leading-5 text-foreground/78">
+        <span className="mt-2 size-1.5 shrink-0 rounded-full bg-emerald-400/70" />
+        <span className="min-w-0 break-words">{bullet}</span>
+      </div>
+    )
+  }
+
+  return (
+    <p className="whitespace-pre-wrap break-words text-[11px] leading-5 text-foreground/78">
+      {line}
+    </p>
+  )
+}
+
+function SubmitReportInputBlock({
+  input,
+  status
+}: {
+  input: Record<string, unknown>
+  status?: ToolCallCardProps['status']
+}): React.JSX.Element {
+  const report = getSubmitReportText(input)
+  const isLive = status === 'streaming' || status === 'running'
+  const isComplete = status === 'completed'
+  const headings = extractReportHeadings(report.text)
+  const visibleLines = report.text.split('\n').slice(0, 18)
+  const density = Math.min(1, Math.max(0.08, report.chars / 6000))
+  const blockCount =
+    headings.length ||
+    report.text
+      .split(/\n\s*\n/)
+      .map((block) => block.trim())
+      .filter(Boolean).length
+  const copyText = report.fullText || report.text
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-violet-500/20 bg-violet-500/[0.04]">
+      <div className="border-b border-violet-500/15 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex size-7 items-center justify-center rounded-lg border border-violet-400/25 bg-violet-400/10 text-violet-300">
+            <FileText className="size-3.5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] font-semibold text-foreground/90">
+                {isComplete ? 'Report submitted' : 'Submitting report'}
+              </span>
+              {isLive ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-violet-400/25 bg-violet-400/10 px-1.5 py-0.5 text-[9px] text-violet-200">
+                  <span className="size-1.5 rounded-full bg-violet-300 animate-pulse" />
+                  live
+                </span>
+              ) : null}
+              {report.truncated ? (
+                <span className="rounded-full border border-border/60 bg-background/60 px-1.5 py-0.5 text-[9px] text-muted-foreground/70">
+                  preview
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-background/70">
+              <div
+                className="h-full rounded-full bg-violet-400/80 transition-[width] duration-300"
+                style={{ width: `${Math.round(density * 100)}%` }}
+              />
+            </div>
+          </div>
+          {copyText ? <CopyBtn text={copyText} title="Copy report" /> : null}
+        </div>
+
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
+          {[
+            ['chars', report.chars.toLocaleString()],
+            ['lines', report.lines.toLocaleString()],
+            ['blocks', blockCount.toLocaleString()]
+          ].map(([label, value]) => (
+            <div
+              key={label}
+              className="rounded-md border border-border/50 bg-background/55 px-2 py-1.5"
+            >
+              <div className="text-[9px] uppercase tracking-wide text-muted-foreground/55">
+                {label}
+              </div>
+              <div className="mt-0.5 text-[12px] font-semibold tabular-nums text-foreground/85">
+                {value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {headings.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {headings.map((heading) => (
+              <span
+                key={heading}
+                className="max-w-[180px] truncate rounded-full border border-violet-400/20 bg-violet-400/10 px-2 py-0.5 text-[10px] text-violet-200/90"
+              >
+                {heading}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="max-h-72 overflow-auto px-3 py-2.5">
+        {report.text ? (
+          <div className="space-y-1">
+            {visibleLines.map((line, index) => (
+              <SubmitReportPreviewLine key={`${index}:${line.slice(0, 16)}`} line={line} />
+            ))}
+            {(report.truncated || report.text.split('\n').length > visibleLines.length) && (
+              <div className="pt-1 text-[10px] text-muted-foreground/60">
+                Preview continues as the report streams in...
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground/65">
+            <span className="size-1.5 rounded-full bg-violet-300 animate-pulse" />
+            Waiting for report text...
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** Structured input field row */
 function InputField({
   label,
@@ -1485,10 +1838,12 @@ function formatStructuredInputValue(value: unknown): { text: string; mono: boole
 /** Render tool input as structured UI instead of raw JSON */
 function StructuredInput({
   name,
-  input
+  input,
+  status
 }: {
   name: string
   input: Record<string, unknown>
+  status?: ToolCallCardProps['status']
 }): React.JSX.Element {
   const { t } = useTranslation('chat')
 
@@ -1682,6 +2037,10 @@ function StructuredInput({
         </div>
       )
     }
+  }
+
+  if (name === 'SubmitReport') {
+    return <SubmitReportInputBlock input={input} status={status} />
   }
 
   // SavePlan: preview-only rendering, always prefer content_preview then content
@@ -2267,7 +2626,7 @@ function ToolCallCardInner({
             <div className="space-y-2 pb-0.5">
               {hideLivePayload ? (
                 <div className="space-y-2">
-                  <StructuredInput name={name} input={input} />
+                  <StructuredInput name={name} input={input} status={status} />
                   <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground/70">
                     Detailed Write/Edit content stays hidden until the tool finishes.
                   </div>
@@ -2335,7 +2694,9 @@ function ToolCallCardInner({
                       )
                     })()}
                   {/* Structured Input — tool-specific rendering */}
-                  {shouldShowStructuredInput && <StructuredInput name={name} input={input} />}
+                  {shouldShowStructuredInput && (
+                    <StructuredInput name={name} input={input} status={status} />
+                  )}
                   {shouldRenderOutputPanels && isTaskTool && (
                     <TaskCard name={name} input={input} output={output} embedded />
                   )}

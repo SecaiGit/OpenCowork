@@ -20,6 +20,10 @@ interface PdfLoadState {
   error: string | null
 }
 
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\/\S+/i.test(value)
+}
+
 export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX.Element {
   const loadKey = `${sshConnectionId ?? 'local'}:${filePath}`
   const [loadState, setLoadState] = useState<PdfLoadState>(() => ({
@@ -35,6 +39,8 @@ export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX
   const loading = !isCurrentLoad || (!loadState.data && !loadState.error)
 
   useEffect(() => {
+    if (isHttpUrl(filePath)) return
+
     let cancelled = false
 
     const channel = sshConnectionId ? IPC.SSH_FS_READ_FILE_BINARY : IPC.FS_READ_FILE_BINARY
@@ -68,6 +74,10 @@ export function PdfViewer({ filePath, sshConnectionId }: ViewerProps): React.JSX
       cancelled = true
     }
   }, [filePath, sshConnectionId, loadKey])
+
+  if (isHttpUrl(filePath)) {
+    return <iframe className="size-full border-0 bg-white" src={filePath} title="PDF Preview" />
+  }
 
   const onDocumentLoadSuccess = ({ numPages: n }: { numPages: number }): void => {
     setNumPages(n)

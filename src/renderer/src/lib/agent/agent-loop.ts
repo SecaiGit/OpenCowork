@@ -11,6 +11,7 @@ import { createProvider } from '../api/provider'
 import { toolRegistry } from './tool-registry'
 import type { AgentEvent, AgentLoopConfig, ToolCallState } from './types'
 import type { ToolContext, ToolHandler } from '../tools/tool-types'
+import { compactBashToolResultContent } from '../tools/bash-output'
 import { decodeStructuredToolResult, encodeToolError } from '../tools/tool-result-format'
 import {
   summarizeToolInputForHistory,
@@ -543,7 +544,9 @@ export async function* runAgentLoop(
         resultEvent: ToolCallState
         resultBlock: ContentBlock
       } => {
-        const { tc, index, output, toolError, startedAt, completedAt } = params
+        const { tc, index, toolError, startedAt, completedAt } = params
+        const output =
+          tc.name === 'Bash' ? compactBashToolResultContent(params.output) : params.output
         const sanitizedInput = summarizeToolInputForHistory(tc.name, tc.input)
         const resultError = toolError ?? extractStructuredToolError(output)
         const resultEvent: ToolCallState = {
@@ -881,14 +884,17 @@ function safeParseJSON(str: string): Record<string, unknown> {
 
 function parseToolInputSnapshot(rawArgs: string, toolName: string): Record<string, unknown> | null {
   const isWriteTool = toolName === 'Write'
+  const isWidgetTool = toolName === 'visualize_show_widget'
   const looseWriteInput = isWriteTool ? parseWriteInputLoosely(rawArgs) : null
+  const looseWidgetInput = isWidgetTool ? parseWidgetInputLoosely(rawArgs) : null
+  const looseInput = looseWidgetInput ?? looseWriteInput
 
   try {
     const parsed = parsePartialJSON(rawArgs, Allow.ALL)
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       const normalizedParsed = normalizeParsedToolInput(parsed as Record<string, unknown>)
-      if (looseWriteInput && Object.keys(looseWriteInput).length > 0) {
-        return { ...looseWriteInput, ...normalizedParsed }
+      if (looseInput && Object.keys(looseInput).length > 0) {
+        return { ...looseInput, ...normalizedParsed }
       }
       return normalizedParsed
     }
@@ -896,8 +902,8 @@ function parseToolInputSnapshot(rawArgs: string, toolName: string): Record<strin
     // Fall through to tool-specific tolerant parsing.
   }
 
-  if (looseWriteInput && Object.keys(looseWriteInput).length > 0) {
-    return looseWriteInput
+  if (looseInput && Object.keys(looseInput).length > 0) {
+    return looseInput
   }
 
   return null
@@ -939,6 +945,16 @@ function parseWriteInputLoosely(rawArgs: string): Record<string, unknown> | null
   const input: Record<string, unknown> = {}
   if (filePath !== null) input.file_path = filePath
   if (content !== null) input.content = content
+  return Object.keys(input).length > 0 ? input : null
+}
+
+function parseWidgetInputLoosely(rawArgs: string): Record<string, unknown> | null {
+  const title = readLooseJsonStringField(rawArgs, 'title')
+  const widgetCode = readLooseJsonStringField(rawArgs, 'widget_code')
+
+  const input: Record<string, unknown> = {}
+  if (title !== null) input.title = title
+  if (widgetCode !== null) input.widget_code = widgetCode
   return Object.keys(input).length > 0 ? input : null
 }
 

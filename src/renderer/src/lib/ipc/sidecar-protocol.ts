@@ -139,6 +139,7 @@ export interface SidecarAgentRunRequest {
   messages: SidecarUnifiedMessage[]
   provider: SidecarProviderConfig
   tools: SidecarToolDefinition[]
+  runId?: string
   sessionId?: string
   workingFolder?: string
   maxIterations: number

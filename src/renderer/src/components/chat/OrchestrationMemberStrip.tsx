@@ -112,7 +112,7 @@ export function OrchestrationMemberStrip({
   onOpenMember
 }: {
   members: OrchestrationMember[]
-  onOpenMember?: (memberId: string) => void
+  onOpenMember?: (member: OrchestrationMember) => void
 }): React.JSX.Element {
   return (
     <div className="space-y-2">
@@ -120,7 +120,7 @@ export function OrchestrationMemberStrip({
         const card = (
           <button
             type="button"
-            onClick={() => onOpenMember?.(member.id)}
+            onClick={() => onOpenMember?.(member)}
             title={`${member.name} · ${getMemberDescription(member)}`}
             className={cn(
               'w-full rounded-[9px] bg-[#1f1f1f] px-3 py-2.5 text-left transition-colors',

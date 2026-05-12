@@ -1,7 +1,7 @@
 import { toolRegistry } from '../agent/tool-registry'
 import { IPC } from '../ipc/channels'
 import { DEFAULT_COMMAND_TIMEOUT_MS, selectCommandExecutor } from './command-executor'
-import { encodeStructuredToolResult } from './tool-result-format'
+import { encodeBashToolResult } from './bash-output'
 import type { ToolHandler } from './tool-types'
 import { useAgentStore } from '@renderer/stores/agent-store'
 
@@ -122,7 +122,7 @@ function buildLivePreviewPayload(
     preview.errorLines.length > 0
       ? `${preview.errorLines.join('\n')}${preview.stderr ? `\n\n[last stderr lines]\n${preview.stderr}` : ''}`
       : preview.stderr
-  return encodeStructuredToolResult({
+  return encodeBashToolResult({
     stdout: preview.stdout,
     stderr,
     ...(metadata?.processId ? { processId: metadata.processId } : {}),
@@ -167,7 +167,7 @@ const bashHandler: ToolHandler = {
   execute: async (input, ctx) => {
     const command = String(input.command ?? '')
     if (!command.trim()) {
-      return encodeStructuredToolResult({ exitCode: 1, stderr: 'Missing command' })
+      return encodeBashToolResult({ exitCode: 1, stderr: 'Missing command' })
     }
 
     const commandExecutor = selectCommandExecutor(ctx)
@@ -211,7 +211,7 @@ const bashHandler: ToolHandler = {
       })) as { id?: string; error?: string }
 
       if (!result?.id) {
-        return encodeStructuredToolResult({
+        return encodeBashToolResult({
           exitCode: 1,
           stderr: result?.error ?? 'Failed to start background process'
         })
@@ -232,7 +232,7 @@ const bashHandler: ToolHandler = {
               : undefined
       })
 
-      return encodeStructuredToolResult({
+      return encodeBashToolResult({
         exitCode: 0,
         background: true,
         autoBackground,
@@ -308,7 +308,7 @@ const bashHandler: ToolHandler = {
         terminalId: result.terminalId
       }
       flushOutput()
-      return encodeStructuredToolResult(result as Record<string, unknown>)
+      return encodeBashToolResult(result as Record<string, unknown>)
     } finally {
       ctx.signal.removeEventListener('abort', abortHandler)
       if (toolUseId) {

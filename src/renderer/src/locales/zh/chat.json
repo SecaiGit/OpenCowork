@@ -632,6 +632,9 @@
     }
   },
   "messageActions": {
+    "fork": "分叉",
+    "forked": "已分叉为新会话",
+    "forkFailed": "分叉失败",
     "translate": "翻译",
     "readAloud": "语音朗读",
     "share": "分享",

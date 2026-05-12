@@ -9,6 +9,8 @@ type SearchLimitReason = 'max_results' | 'max_output_bytes' | 'timeout' | 'max_d
 type SearchBackend = 'local' | 'ssh' | 'cron'
 
 type SearchPathStyle = 'absolute' | 'relative_to_search_root'
+type GrepMatchKind = 'match' | 'context'
+type GrepOutputMode = 'matches' | 'files_with_matches' | 'count'
 
 type SearchMeta = {
   backend: SearchBackend
@@ -19,11 +21,20 @@ type SearchMeta = {
   limitReason: SearchLimitReason
   pattern: string
   include?: string | null
+  exclude?: string | null
+  outputMode?: GrepOutputMode
   hiddenIncluded: boolean
   ignoredDefaultsApplied: boolean
+  respectGitignore?: boolean
+  followSymlinks?: boolean
   searchTime?: number
   warnings?: string[]
   maxDepth?: number | null
+  beforeContext?: number
+  afterContext?: number
+  maxResults?: number
+  maxOutputBytes?: number
+  maxLineLength?: number
 }
 
 type GlobToolResult = {
@@ -35,8 +46,15 @@ type GlobToolResult = {
 
 type GrepToolResult = {
   kind: 'grep'
-  matches: Array<{ path: string; line: number; text: string }>
+  matches: Array<{
+    path: string
+    line?: number
+    text?: string
+    kind?: GrepMatchKind
+    count?: number
+  }>
   meta: SearchMeta
+  output?: string
   error?: string
 }
 
@@ -44,6 +62,8 @@ const PROMPT_SEARCH_MAX_MATCHES = 20
 const PROMPT_SEARCH_FETCH_LIMIT = PROMPT_SEARCH_MAX_MATCHES + 1
 const PROMPT_SEARCH_MAX_OUTPUT_BYTES = 8 * 1024
 const PROMPT_GREP_MAX_LINE_LENGTH = 160
+const PROMPT_GREP_MAX_MATCHES = 200
+const PROMPT_GREP_MAX_OUTPUT_BYTES = 64 * 1024
 const textEncoder = new TextEncoder()
 
 function isAbsolutePath(p: string): boolean {
@@ -81,6 +101,14 @@ function normalizeWarnings(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
 }
 
+function normalizeGrepOutputMode(value: unknown): GrepOutputMode {
+  return value === 'files_with_matches' || value === 'count' ? value : 'matches'
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 function normalizePathValue(
   rawPath: unknown,
   searchRoot: string | undefined,
@@ -93,20 +121,42 @@ function normalizePathValue(
   return joinFsPath(searchRoot, trimmed)
 }
 
+function normalizeGrepPathValue(
+  rawPath: unknown,
+  searchRoot: string | undefined,
+  pathStyle: SearchPathStyle
+): string | null {
+  if (typeof rawPath !== 'string') return null
+  const trimmed = rawPath.trim()
+  if (!trimmed) return null
+  if (pathStyle === 'relative_to_search_root' && !isAbsolutePath(trimmed)) return trimmed
+  if (isAbsolutePath(trimmed) || pathStyle === 'absolute' || !searchRoot) return trimmed
+  return joinFsPath(searchRoot, trimmed)
+}
+
 function createBaseMeta(args: {
   backend: SearchBackend
   pattern: string
   include?: string | null
+  exclude?: string | null
+  outputMode?: GrepOutputMode
   searchRoot?: string
   pathStyle?: SearchPathStyle
   hiddenIncluded?: boolean
   ignoredDefaultsApplied?: boolean
+  respectGitignore?: boolean
+  followSymlinks?: boolean
   truncated?: boolean
   timedOut?: boolean
   limitReason?: SearchLimitReason
   searchTime?: number
   warnings?: string[]
   maxDepth?: number | null
+  beforeContext?: number
+  afterContext?: number
+  maxResults?: number
+  maxOutputBytes?: number
+  maxLineLength?: number
 }): SearchMeta {
   return {
     backend: args.backend,
@@ -117,11 +167,20 @@ function createBaseMeta(args: {
     limitReason: args.limitReason ?? null,
     pattern: args.pattern,
     include: args.include ?? null,
+    exclude: args.exclude ?? null,
+    outputMode: args.outputMode ?? 'matches',
     hiddenIncluded: args.hiddenIncluded ?? true,
     ignoredDefaultsApplied: args.ignoredDefaultsApplied ?? true,
+    respectGitignore: args.respectGitignore ?? true,
+    followSymlinks: args.followSymlinks ?? false,
     searchTime: args.searchTime,
     warnings: args.warnings ?? [],
-    maxDepth: args.maxDepth ?? null
+    maxDepth: args.maxDepth ?? null,
+    beforeContext: args.beforeContext ?? 0,
+    afterContext: args.afterContext ?? 0,
+    maxResults: args.maxResults,
+    maxOutputBytes: args.maxOutputBytes,
+    maxLineLength: args.maxLineLength
   }
 }
 
@@ -215,7 +274,7 @@ function estimatePromptBytes(value: unknown): number {
 function normalizePromptGrepText(text: string): string {
   const normalized = text.trim()
   if (normalized.length <= PROMPT_GREP_MAX_LINE_LENGTH) return normalized
-  return `${normalized.slice(0, PROMPT_GREP_MAX_LINE_LENGTH - 1)}…`
+  return `${normalized.slice(0, Math.max(0, PROMPT_GREP_MAX_LINE_LENGTH - 3))}...`
 }
 
 function limitGlobResultForPrompt(result: GlobToolResult): GlobToolResult {
@@ -252,27 +311,37 @@ function limitGlobResultForPrompt(result: GlobToolResult): GlobToolResult {
 }
 
 function limitGrepResultForPrompt(result: GrepToolResult): GrepToolResult {
-  const matches: Array<{ path: string; line: number; text: string }> = []
+  const matches: GrepToolResult['matches'] = []
   let totalBytes = 2
   let limitReason: SearchLimitReason = null
+  const maxMatches = Math.min(
+    result.meta.maxResults ?? PROMPT_SEARCH_MAX_MATCHES,
+    PROMPT_GREP_MAX_MATCHES
+  )
+  const maxOutputBytes = Math.min(
+    result.meta.maxOutputBytes ?? PROMPT_SEARCH_MAX_OUTPUT_BYTES,
+    PROMPT_GREP_MAX_OUTPUT_BYTES
+  )
 
   for (const item of result.matches) {
-    if (matches.length >= PROMPT_SEARCH_MAX_MATCHES) {
+    if (matches.length >= maxMatches) {
       limitReason = 'max_results'
       break
     }
 
     const normalizedItem = {
       ...item,
-      text: normalizePromptGrepText(item.text)
+      text: typeof item.text === 'string' ? normalizePromptGrepText(item.text) : item.text
     }
     const candidateBytes =
       estimatePromptBytes({
         file: normalizedItem.path,
         line: normalizedItem.line,
-        text: normalizedItem.text
+        text: normalizedItem.text,
+        kind: normalizedItem.kind,
+        count: normalizedItem.count
       }) + 1
-    if (totalBytes + candidateBytes > PROMPT_SEARCH_MAX_OUTPUT_BYTES) {
+    if (totalBytes + candidateBytes > maxOutputBytes) {
       limitReason = 'max_output_bytes'
       break
     }
@@ -317,25 +386,61 @@ function formatGlobResultForPrompt(result: GlobToolResult): Record<string, unkno
   }
 }
 
-function formatGrepResultForPrompt(result: GrepToolResult): Record<string, unknown> | unknown[] {
-  const limitedResult = limitGrepResultForPrompt(result)
-  const compactMatches = limitedResult.matches.map((item) => ({
-    file: item.path,
-    line: item.line,
-    text: item.text
-  }))
+function formatGrepLine(
+  item: GrepToolResult['matches'][number],
+  outputMode: GrepOutputMode
+): string {
+  if (outputMode === 'files_with_matches') return item.path
+  if (outputMode === 'count') return `${item.path}:${item.count ?? 0}`
+  if (typeof item.line !== 'number') return item.path
+  const separator = item.kind === 'context' ? '-' : ':'
+  return `${item.path}${separator}${item.line}${separator}${item.text ?? ''}`
+}
 
-  if (shouldUseCompactSearchPayload(limitedResult.meta, limitedResult.error)) {
-    return compactMatches
+function formatGrepOutput(result: GrepToolResult): string {
+  const outputMode = result.meta.outputMode ?? 'matches'
+  return result.matches.map((item) => formatGrepLine(item, outputMode)).join('\n')
+}
+
+function formatGrepResultForPrompt(result: GrepToolResult): string | Record<string, unknown> {
+  const limitedResult = limitGrepResultForPrompt(result)
+  const output = limitedResult.output ?? formatGrepOutput(limitedResult)
+
+  if (output && shouldUseCompactSearchPayload(limitedResult.meta, limitedResult.error)) {
+    return output
   }
 
   return {
-    matches: compactMatches,
+    output,
+    matches: limitedResult.matches.map((item) => ({
+      file: item.path,
+      line: item.line,
+      text: item.text,
+      kind: item.kind,
+      count: item.count
+    })),
     truncated: limitedResult.meta.truncated,
     timedOut: limitedResult.meta.timedOut,
     limitReason: limitedResult.meta.limitReason,
     warnings: limitedResult.meta.warnings,
     error: limitedResult.error
+  }
+}
+
+function normalizeGrepMatchItem(
+  item: unknown,
+  searchRoot: string | undefined,
+  pathStyle: SearchPathStyle
+): GrepToolResult['matches'][number] | null {
+  if (!isRecord(item)) return null
+  const path = normalizeGrepPathValue(item.path ?? item.file, searchRoot, pathStyle)
+  if (!path) return null
+  return {
+    path,
+    line: typeof item.line === 'number' ? item.line : undefined,
+    text: typeof item.text === 'string' ? item.text : '',
+    kind: item.kind === 'context' ? 'context' : 'match',
+    count: typeof item.count === 'number' ? item.count : undefined
   }
 }
 
@@ -346,29 +451,24 @@ function normalizeGrepResult(
     pattern: string
     searchRoot?: string
     include?: string | null
+    exclude?: string | null
   }
 ): GrepToolResult {
   const fallbackMeta = createBaseMeta({
     backend: options.backend,
     pattern: options.pattern,
     include: options.include,
+    exclude: options.exclude,
     searchRoot: options.searchRoot,
-    pathStyle: 'absolute'
+    pathStyle: 'relative_to_search_root'
   })
 
   if (Array.isArray(raw)) {
     return {
       kind: 'grep',
       matches: raw
-        .map((item) => {
-          if (!isRecord(item)) return null
-          const path = normalizePathValue(item.file ?? item.path, options.searchRoot, 'absolute')
-          const line = typeof item.line === 'number' ? item.line : null
-          const text = typeof item.text === 'string' ? item.text : ''
-          if (!path || line == null) return null
-          return { path, line, text }
-        })
-        .filter((item): item is { path: string; line: number; text: string } => !!item),
+        .map((item) => normalizeGrepMatchItem(item, options.searchRoot, 'absolute'))
+        .filter((item): item is GrepToolResult['matches'][number] => !!item),
       meta: fallbackMeta
     }
   }
@@ -390,6 +490,8 @@ function normalizeGrepResult(
         : options.backend,
     pattern: typeof rawMeta?.pattern === 'string' ? rawMeta.pattern : options.pattern,
     include: typeof rawMeta?.include === 'string' ? rawMeta.include : options.include,
+    exclude: typeof rawMeta?.exclude === 'string' ? rawMeta.exclude : options.exclude,
+    outputMode: normalizeGrepOutputMode(rawMeta?.outputMode),
     searchRoot: typeof rawMeta?.searchRoot === 'string' ? rawMeta.searchRoot : options.searchRoot,
     pathStyle:
       rawMeta?.pathStyle === 'relative_to_search_root' ? 'relative_to_search_root' : 'absolute',
@@ -398,6 +500,8 @@ function normalizeGrepResult(
     limitReason: normalizeLimitReason(rawMeta?.limitReason ?? raw.limitReason),
     hiddenIncluded: rawMeta?.hiddenIncluded !== false,
     ignoredDefaultsApplied: rawMeta?.ignoredDefaultsApplied !== false,
+    respectGitignore: rawMeta?.respectGitignore !== false,
+    followSymlinks: rawMeta?.followSymlinks === true,
     searchTime:
       typeof rawMeta?.searchTime === 'number'
         ? rawMeta.searchTime
@@ -405,7 +509,12 @@ function normalizeGrepResult(
           ? raw.searchTime
           : undefined,
     warnings: normalizeWarnings(rawMeta?.warnings),
-    maxDepth: typeof rawMeta?.maxDepth === 'number' ? rawMeta.maxDepth : null
+    maxDepth: typeof rawMeta?.maxDepth === 'number' ? rawMeta.maxDepth : null,
+    beforeContext: typeof rawMeta?.beforeContext === 'number' ? rawMeta.beforeContext : 0,
+    afterContext: typeof rawMeta?.afterContext === 'number' ? rawMeta.afterContext : 0,
+    maxResults: normalizeOptionalNumber(rawMeta?.maxResults),
+    maxOutputBytes: normalizeOptionalNumber(rawMeta?.maxOutputBytes),
+    maxLineLength: normalizeOptionalNumber(rawMeta?.maxLineLength)
   })
 
   const matchesSource = Array.isArray(raw.matches)
@@ -415,20 +524,14 @@ function normalizeGrepResult(
       : []
 
   const matches = matchesSource
-    .map((item) => {
-      if (!isRecord(item)) return null
-      const path = normalizePathValue(item.path ?? item.file, meta.searchRoot, meta.pathStyle)
-      const line = typeof item.line === 'number' ? item.line : null
-      const text = typeof item.text === 'string' ? item.text : ''
-      if (!path || line == null) return null
-      return { path, line, text }
-    })
-    .filter((item): item is { path: string; line: number; text: string } => !!item)
+    .map((item) => normalizeGrepMatchItem(item, meta.searchRoot, meta.pathStyle))
+    .filter((item): item is GrepToolResult['matches'][number] => !!item)
 
   return {
     kind: 'grep',
     matches,
     meta,
+    output: typeof raw.output === 'string' ? raw.output : undefined,
     error: typeof raw.error === 'string' ? raw.error : undefined
   }
 }
@@ -490,7 +593,8 @@ const globHandler: ToolHandler = {
 const grepHandler: ToolHandler = {
   definition: {
     name: 'Grep',
-    description: 'Search file contents using regular expressions (returns at most 20 matches)',
+    description:
+      'Search file contents with ripgrep-style options. Defaults to grep-like file:line:text output.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -499,7 +603,44 @@ const grepHandler: ToolHandler = {
           type: 'string',
           description: 'Directory to search in (absolute or relative to the working folder)'
         },
-        include: { type: 'string', description: 'File pattern filter, e.g. *.ts' }
+        include: {
+          type: 'string',
+          description: 'Comma-separated file globs to include, e.g. *.ts,*.tsx'
+        },
+        exclude: { type: 'string', description: 'Comma-separated file globs to exclude' },
+        caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching' },
+        smartCase: {
+          type: 'boolean',
+          description: 'Case-sensitive only when the pattern has uppercase'
+        },
+        literal: { type: 'boolean', description: 'Treat pattern as a literal string' },
+        word: { type: 'boolean', description: 'Match whole words only' },
+        line: { type: 'boolean', description: 'Match whole lines only' },
+        invertMatch: { type: 'boolean', description: 'Return non-matching lines' },
+        context: {
+          type: 'number',
+          description: 'Number of context lines before and after each match'
+        },
+        beforeContext: { type: 'number', description: 'Number of context lines before each match' },
+        afterContext: { type: 'number', description: 'Number of context lines after each match' },
+        maxResults: { type: 'number', description: 'Maximum result rows to return (default 20)' },
+        maxOutputBytes: { type: 'number', description: 'Maximum encoded result size' },
+        maxLineLength: { type: 'number', description: 'Maximum text length per result line' },
+        maxDepth: { type: 'number', description: 'Maximum directory depth to search' },
+        hidden: { type: 'boolean', description: 'Include hidden files and directories' },
+        respectGitignore: { type: 'boolean', description: 'Respect .gitignore files' },
+        followSymlinks: { type: 'boolean', description: 'Follow symbolic links' },
+        outputMode: {
+          type: 'string',
+          enum: ['matches', 'files_with_matches', 'count'],
+          description:
+            'matches returns file:line:text, files_with_matches returns paths, count returns file:count'
+        },
+        pathStyle: {
+          type: 'string',
+          enum: ['relative', 'absolute'],
+          description: 'Return relative or absolute paths'
+        }
       },
       required: ['pattern']
     }
@@ -507,41 +648,59 @@ const grepHandler: ToolHandler = {
   execute: async (input, ctx) => {
     const resolvedPath = resolveSearchPath(input.path, ctx.workingFolder)
     const backend: SearchBackend = ctx.sshConnectionId ? 'ssh' : 'local'
-    if (ctx.sshConnectionId) {
-      const result = await ctx.ipc.invoke(IPC.SSH_FS_GREP, {
-        connectionId: ctx.sshConnectionId,
-        pattern: input.pattern,
-        path: resolvedPath,
-        include: input.include,
-        limit: PROMPT_SEARCH_FETCH_LIMIT
-      })
-      return encodeStructuredToolResult(
-        formatGrepResultForPrompt(
-          normalizeGrepResult(result, {
-            backend,
-            pattern: String(input.pattern ?? ''),
-            searchRoot: resolvedPath,
-            include: typeof input.include === 'string' ? input.include : null
-          })
-        )
-      )
-    }
-    const result = await ctx.ipc.invoke(IPC.FS_GREP, {
+    const grepRequest = {
       pattern: input.pattern,
       path: resolvedPath,
       include: input.include,
-      limit: PROMPT_SEARCH_FETCH_LIMIT
-    })
-    return encodeStructuredToolResult(
-      formatGrepResultForPrompt(
+      exclude: input.exclude,
+      caseSensitive: input.caseSensitive,
+      smartCase: input.smartCase,
+      literal: input.literal,
+      word: input.word,
+      line: input.line,
+      invertMatch: input.invertMatch,
+      context: input.context,
+      beforeContext: input.beforeContext,
+      afterContext: input.afterContext,
+      maxResults: input.maxResults,
+      maxOutputBytes: input.maxOutputBytes,
+      maxLineLength: input.maxLineLength,
+      maxDepth: input.maxDepth,
+      hidden: input.hidden,
+      respectGitignore: input.respectGitignore,
+      followSymlinks: input.followSymlinks,
+      outputMode: input.outputMode,
+      pathStyle: input.pathStyle
+    }
+    if (ctx.sshConnectionId) {
+      const result = await ctx.ipc.invoke(IPC.SSH_FS_GREP, {
+        ...grepRequest,
+        connectionId: ctx.sshConnectionId
+      })
+      const formatted = formatGrepResultForPrompt(
         normalizeGrepResult(result, {
           backend,
           pattern: String(input.pattern ?? ''),
           searchRoot: resolvedPath,
-          include: typeof input.include === 'string' ? input.include : null
+          include: typeof input.include === 'string' ? input.include : null,
+          exclude: typeof input.exclude === 'string' ? input.exclude : null
         })
       )
+      return typeof formatted === 'string' ? formatted : encodeStructuredToolResult(formatted)
+    }
+    const result = await ctx.ipc.invoke(IPC.FS_GREP, {
+      ...grepRequest
+    })
+    const formatted = formatGrepResultForPrompt(
+      normalizeGrepResult(result, {
+        backend,
+        pattern: String(input.pattern ?? ''),
+        searchRoot: resolvedPath,
+        include: typeof input.include === 'string' ? input.include : null,
+        exclude: typeof input.exclude === 'string' ? input.exclude : null
+      })
     )
+    return typeof formatted === 'string' ? formatted : encodeStructuredToolResult(formatted)
   },
   requiresApproval: () => false
 }

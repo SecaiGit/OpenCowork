@@ -10,6 +10,7 @@ import {
   type ResponsesWebsocketRequestKind
 } from '../../shared/openai-responses-websocket'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
+import { applyDefaultApiUserAgent } from '../lib/api-user-agent'
 
 const MAX_RESPONSE_BODY_CHARS = 10_000_000
 
@@ -132,6 +133,7 @@ interface APIStreamRequest {
   responsesSessionScope?: string
   websocketUrl?: string
   websocketMode?: ResponsesWebsocketMode
+  httpFallbackBody?: string
 }
 
 interface AccountRateLimitPayload {
@@ -190,15 +192,18 @@ const REQUEST_BODY_MANAGED_HEADERS = new Set([
 
 function buildForwardHeaders(
   headers: Record<string, string>,
-  bodyBuffer: Buffer | null
+  bodyBuffer: Buffer | null,
+  options: { includeContentLength?: boolean } = {}
 ): Record<string, string> {
-  const sanitized = sanitizeHeaders(headers)
+  const sanitized = applyDefaultApiUserAgent(sanitizeHeaders(headers))
   const forwarded: Record<string, string> = {}
   for (const [key, value] of Object.entries(sanitized)) {
     if (REQUEST_BODY_MANAGED_HEADERS.has(key.toLowerCase())) continue
     forwarded[key] = value
   }
-  if (bodyBuffer) forwarded['Content-Length'] = String(bodyBuffer.byteLength)
+  if (bodyBuffer && options.includeContentLength !== false) {
+    forwarded['Content-Length'] = String(bodyBuffer.byteLength)
+  }
   return forwarded
 }
 
@@ -524,7 +529,7 @@ async function requestViaSystemProxy(args: {
   const requestUrl = url.trim()
   const requestSession = allowInsecureTls ? await getInsecureProxySession() : undefined
   const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-  const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
+  const reqHeaders = buildForwardHeaders(headers, bodyBuffer, { includeContentLength: false })
 
   return new Promise((resolve) => {
     let done = false
@@ -596,6 +601,7 @@ export function registerApiProxyHandlers(): void {
       providerId,
       providerBuiltinId
     } = req
+    const requestHeaders = applyDefaultApiUserAgent(sanitizeHeaders(headers))
 
     type AttemptOutcome = {
       statusCode?: number
@@ -610,7 +616,7 @@ export function registerApiProxyHandlers(): void {
       const httpModule = isHttps ? https : http
 
       const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-      const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
+      const reqHeaders = buildForwardHeaders(requestHeaders, bodyBuffer)
 
       return new Promise<AttemptOutcome>((resolve) => {
         const options = {
@@ -658,7 +664,13 @@ export function registerApiProxyHandlers(): void {
       let result: AttemptOutcome = {}
       for (let attempt = 0; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
         result = useSystemProxy
-          ? await requestViaSystemProxy({ url, method, headers, body, allowInsecureTls })
+          ? await requestViaSystemProxy({
+              url,
+              method,
+              headers: requestHeaders,
+              body,
+              allowInsecureTls
+            })
           : await runDirectAttempt()
         const status = result.statusCode ?? 0
         if (status > 0 && isRetryableStatus(status) && attempt < MAX_RETRY_ATTEMPTS) {
@@ -701,12 +713,15 @@ export function registerApiProxyHandlers(): void {
       method,
       headers,
       body,
+      httpFallbackBody,
       useSystemProxy,
       allowInsecureTls,
       providerId,
       providerBuiltinId,
       accountId
     } = req
+    const httpBody = httpFallbackBody ?? body
+    const requestHeaders = applyDefaultApiUserAgent(sanitizeHeaders(headers))
     const circuitKey = buildApiStreamCircuitKey({ url, providerId, providerBuiltinId, accountId })
 
     console.log(`[API Proxy] stream-request[${requestId}] ${method} ${url}`)
@@ -847,13 +862,19 @@ export function registerApiProxyHandlers(): void {
 
         try {
           if (args?.debugInfo) {
-            sendResponsesRequestDebug(getSender(event), req, args.debugInfo)
+            sendResponsesRequestDebug(
+              getSender(event),
+              { ...req, headers: requestHeaders },
+              args.debugInfo
+            )
           }
 
           if (useSystemProxy) {
             const requestUrl = url.trim()
-            const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-            const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
+            const bodyBuffer = httpBody ? Buffer.from(httpBody, 'utf-8') : null
+            const reqHeaders = buildForwardHeaders(requestHeaders, bodyBuffer, {
+              includeContentLength: false
+            })
 
             let idleTimer: ReturnType<typeof setTimeout> | null = null
             const clearIdleTimer = (): void => {
@@ -1012,8 +1033,8 @@ export function registerApiProxyHandlers(): void {
           const isHttps = parsedUrl.protocol === 'https:'
           const httpModule = isHttps ? https : http
 
-          const bodyBuffer = body ? Buffer.from(body, 'utf-8') : null
-          const reqHeaders = buildForwardHeaders(headers, bodyBuffer)
+          const bodyBuffer = httpBody ? Buffer.from(httpBody, 'utf-8') : null
+          const reqHeaders = buildForwardHeaders(requestHeaders, bodyBuffer)
 
           const options = {
             hostname: parsedUrl.hostname,
@@ -1249,7 +1270,7 @@ export function registerApiProxyHandlers(): void {
           sessionScope: req.responsesSessionScope
         }),
         websocketUrl: args.websocketUrl,
-        headers,
+        headers: requestHeaders,
         httpBody: body ?? '',
         useSystemProxy,
         allowInsecureTls,
@@ -1319,7 +1340,7 @@ export function registerApiProxyHandlers(): void {
           transport: 'http',
           url,
           method,
-          body,
+          body: httpBody,
           ...(fallbackReason ? { fallbackReason } : {})
         })
         return
@@ -1335,7 +1356,7 @@ export function registerApiProxyHandlers(): void {
           transport: 'http',
           url,
           method,
-          body,
+          body: httpBody,
           fallbackReason: circuitReason
         })
         return
@@ -1351,7 +1372,7 @@ export function registerApiProxyHandlers(): void {
           transport: 'http',
           url,
           method,
-          body,
+          body: httpBody,
           fallbackReason: wsResult.reason
         })
         return

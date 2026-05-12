@@ -26,6 +26,12 @@ interface ListRunChangesArgs {
   toolUseIds?: string[]
 }
 
+interface ListSessionRunChangesArgs {
+  sessionId: string
+  assistantMessageIds?: string[]
+  toolUseIds?: string[]
+}
+
 export interface FileSnapshot {
   exists: boolean
   text?: string
@@ -366,6 +372,34 @@ function getRunChangeSet(runId: string): RunChangeSet | null {
   return cloneRunChangeSet(changeSet)
 }
 
+function toStringSet(values: unknown): Set<string> {
+  if (!Array.isArray(values)) return new Set()
+  return new Set(
+    values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  )
+}
+
+function runChangeSetHasSession(changeSet: RunChangeSet, sessionId: string): boolean {
+  return (
+    changeSet.sessionId === sessionId ||
+    changeSet.changes.some((change) => change.sessionId === sessionId)
+  )
+}
+
+function countMatchingToolUseIds(changeSet: RunChangeSet, toolUseIds: Set<string>): number {
+  if (toolUseIds.size === 0) return 0
+  let count = 0
+  for (const change of changeSet.changes) {
+    if (change.toolUseId && toolUseIds.has(change.toolUseId)) {
+      count += 1
+    }
+  }
+  return count
+}
+
 function getRunChangeSetByQuery(args: ListRunChangesArgs): RunChangeSet | null {
   const runId = args.runId?.trim()
   if (runId) {
@@ -376,25 +410,17 @@ function getRunChangeSetByQuery(args: ListRunChangesArgs): RunChangeSet | null {
   pruneStaleRunChanges()
 
   const sessionId = args.sessionId?.trim()
-  const rawToolUseIds = Array.isArray(args.toolUseIds) ? args.toolUseIds : []
-  const toolUseIds = new Set(
-    rawToolUseIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
-  )
+  const toolUseIds = toStringSet(args.toolUseIds)
   if (toolUseIds.size === 0 && !runId) return null
 
   let bestMatch: { changeSet: RunChangeSet; score: number } | null = null
 
   for (const changeSet of runChanges.values()) {
-    if (sessionId && changeSet.sessionId !== sessionId) continue
-
     const assistantMessageMatch = Boolean(runId && changeSet.assistantMessageId === runId)
-    let toolMatchCount = 0
-    if (toolUseIds.size > 0) {
-      for (const change of changeSet.changes) {
-        if (change.toolUseId && toolUseIds.has(change.toolUseId)) {
-          toolMatchCount += 1
-        }
-      }
+    const toolMatchCount = countMatchingToolUseIds(changeSet, toolUseIds)
+    const targetedMatch = assistantMessageMatch || toolMatchCount > 0
+    if (sessionId && !runChangeSetHasSession(changeSet, sessionId) && !targetedMatch) {
+      continue
     }
 
     if (!assistantMessageMatch && toolMatchCount === 0) continue
@@ -412,6 +438,35 @@ function getRunChangeSetByQuery(args: ListRunChangesArgs): RunChangeSet | null {
   if (!bestMatch) return null
   touchRunChangeSet(bestMatch.changeSet)
   return cloneRunChangeSet(bestMatch.changeSet)
+}
+
+function getRunChangeSetsBySession(args: ListSessionRunChangesArgs): RunChangeSet[] {
+  const sessionId = args.sessionId?.trim()
+  if (!sessionId) return []
+
+  pruneStaleRunChanges()
+
+  const assistantMessageIds = toStringSet(args.assistantMessageIds)
+  const toolUseIds = toStringSet(args.toolUseIds)
+
+  const matches = Array.from(runChanges.values())
+    .filter((changeSet) => {
+      if (runChangeSetHasSession(changeSet, sessionId)) return true
+      if (
+        assistantMessageIds.has(changeSet.assistantMessageId) ||
+        assistantMessageIds.has(changeSet.runId)
+      ) {
+        return true
+      }
+      return countMatchingToolUseIds(changeSet, toolUseIds) > 0
+    })
+    .sort((left, right) => left.createdAt - right.createdAt)
+
+  for (const changeSet of matches) {
+    touchRunChangeSet(changeSet)
+  }
+
+  return matches.map(cloneRunChangeSet)
 }
 
 function findChange(
@@ -704,6 +759,15 @@ export function registerAgentChangeHandlers(): void {
     try {
       if (!args?.runId) return null
       return getRunChangeSetByQuery(args)
+    } catch (err) {
+      return { error: String(err) }
+    }
+  })
+
+  ipcMain.handle('agent:changes:list-session', async (_event, args: ListSessionRunChangesArgs) => {
+    try {
+      if (!args?.sessionId) return []
+      return getRunChangeSetsBySession(args)
     } catch (err) {
       return { error: String(err) }
     }
