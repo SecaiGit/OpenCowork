@@ -10,6 +10,24 @@ import type {
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import { RESPONSES_SESSION_SCOPE_CONTEXT_COMPRESSION } from '@renderer/lib/api/responses-session-policy'
 import i18n from '@renderer/locales'
+import {
+  DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
+  clampCompressionContextLength,
+  clampCompressionThreshold,
+  resolveCompressionStrategyId,
+  type ContextCompressionStrategyId
+} from './context-compression-config'
+
+export {
+  DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
+  DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
+  MAX_CONTEXT_COMPRESSION_THRESHOLD,
+  MIN_CONTEXT_COMPRESSION_THRESHOLD,
+  clampCompressionContextLength,
+  clampCompressionThreshold,
+  resolveCompressionStrategyId,
+  type ContextCompressionStrategyId
+} from './context-compression-config'
 
 export interface CompressionConfig {
   enabled: boolean
@@ -17,10 +35,18 @@ export interface CompressionConfig {
   contextLength: number
   /** Full compression trigger threshold, clamped to 0.3 ~ 0.9. */
   threshold: number
+  /** Compression strategy. Omitted legacy configs resolve to the default strategy. */
+  strategyId?: ContextCompressionStrategyId
   /** Optional pre-compression trigger threshold before buffer adjustments. */
   preCompressThreshold?: number
   /** Tokens reserved for summary/output headroom before trigger calculations. */
   reservedOutputBudget?: number
+}
+
+export interface CompressionDefaults {
+  defaultContextLength?: number | null
+  defaultThreshold?: number | null
+  strategyId?: ContextCompressionStrategyId | null
 }
 
 export interface CompressionResult {
@@ -30,10 +56,24 @@ export interface CompressionResult {
   messagesSummarized?: number
 }
 
-export const DEFAULT_CONTEXT_COMPRESSION_LIMIT = 200_000
-export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD = 0.8
-export const MIN_CONTEXT_COMPRESSION_THRESHOLD = 0.3
-export const MAX_CONTEXT_COMPRESSION_THRESHOLD = 0.9
+export interface ContextCompressionStrategy {
+  id: ContextCompressionStrategyId
+  shouldCompress: (inputTokens: number, config: CompressionConfig) => boolean
+  shouldPreCompress: (inputTokens: number, config: CompressionConfig) => boolean
+  preCompressMessages: (messages: UnifiedMessage[]) => UnifiedMessage[]
+  compressMessages: (
+    messages: UnifiedMessage[],
+    providerConfig: ProviderConfig,
+    signal?: AbortSignal,
+    preserveCount?: number,
+    focusPrompt?: string,
+    pinnedContext?: string,
+    trigger?: CompactBoundaryMeta['trigger'],
+    preTokens?: number
+  ) => Promise<{ messages: UnifiedMessage[]; result: CompressionResult }>
+}
+
+export const DEFAULT_CONTEXT_COMPRESSION_LIMIT = DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH
 export const DEFAULT_CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS = 20_000
 export const CONTEXT_COMPRESSION_AUTO_BUFFER_TOKENS = 13_000
 export const CONTEXT_COMPRESSION_PRE_BUFFER_TOKENS = 20_000
@@ -67,35 +107,31 @@ export function resetCompressionFailures(): void {
   consecutiveFailures = 0
 }
 
-export function clampCompressionThreshold(value?: number | null): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_CONTEXT_COMPRESSION_THRESHOLD
-  }
-  return Math.min(
-    MAX_CONTEXT_COMPRESSION_THRESHOLD,
-    Math.max(MIN_CONTEXT_COMPRESSION_THRESHOLD, value)
-  )
-}
-
 export function resolveCompressionThreshold(
-  modelConfig?: Pick<AIModelConfig, 'contextCompressionThreshold'> | null
+  modelConfig?: Pick<AIModelConfig, 'contextCompressionThreshold'> | null,
+  defaults?: CompressionDefaults
 ): number {
-  return clampCompressionThreshold(modelConfig?.contextCompressionThreshold)
+  if (typeof modelConfig?.contextCompressionThreshold === 'number') {
+    return clampCompressionThreshold(modelConfig.contextCompressionThreshold)
+  }
+  return clampCompressionThreshold(defaults?.defaultThreshold)
 }
 
 export function resolveCompressionContextLength(
-  modelConfig?: Pick<AIModelConfig, 'contextLength' | 'enableExtendedContextCompression'> | null
+  modelConfig?: Pick<AIModelConfig, 'contextLength' | 'enableExtendedContextCompression'> | null,
+  defaults?: CompressionDefaults
 ): number {
-  const configuredContextLength =
+  const hasModelContextLength =
     typeof modelConfig?.contextLength === 'number' && modelConfig.contextLength > 0
-      ? modelConfig.contextLength
-      : DEFAULT_CONTEXT_COMPRESSION_LIMIT
+  const configuredContextLength = hasModelContextLength
+    ? clampCompressionContextLength(modelConfig.contextLength)
+    : clampCompressionContextLength(defaults?.defaultContextLength)
 
   if (configuredContextLength <= DEFAULT_CONTEXT_COMPRESSION_LIMIT) {
     return configuredContextLength
   }
 
-  if (modelConfig?.enableExtendedContextCompression === false) {
+  if (hasModelContextLength && modelConfig?.enableExtendedContextCompression === false) {
     return DEFAULT_CONTEXT_COMPRESSION_LIMIT
   }
 
@@ -148,17 +184,41 @@ export function getPreCompressionTriggerTokens(config: CompressionConfig): numbe
   return Math.max(1, Math.min(threshold, Math.max(1, fullThreshold - 1)))
 }
 
-export function shouldCompress(inputTokens: number, config: CompressionConfig): boolean {
+function partialSummaryShouldCompress(inputTokens: number, config: CompressionConfig): boolean {
   if (!config.enabled || config.contextLength <= 0) return false
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return false
   return inputTokens >= getCompressionTriggerTokens(config)
 }
 
-export function shouldPreCompress(inputTokens: number, config: CompressionConfig): boolean {
+function partialSummaryShouldPreCompress(inputTokens: number, config: CompressionConfig): boolean {
   if (!config.enabled || config.contextLength <= 0) return false
   const preThreshold = getPreCompressionTriggerTokens(config)
   const fullThreshold = getCompressionTriggerTokens(config)
   return inputTokens >= preThreshold && inputTokens < fullThreshold
+}
+
+const PARTIAL_SUMMARY_STRATEGY: ContextCompressionStrategy = {
+  id: 'partial-summary-v1',
+  shouldCompress: partialSummaryShouldCompress,
+  shouldPreCompress: partialSummaryShouldPreCompress,
+  preCompressMessages: partialSummaryPreCompressMessages,
+  compressMessages: partialSummaryCompressMessages
+}
+
+const COMPRESSION_STRATEGIES: Record<ContextCompressionStrategyId, ContextCompressionStrategy> = {
+  'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY
+}
+
+export function getCompressionStrategy(config: CompressionConfig): ContextCompressionStrategy {
+  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config.strategyId)]
+}
+
+export function shouldCompress(inputTokens: number, config: CompressionConfig): boolean {
+  return getCompressionStrategy(config).shouldCompress(inputTokens, config)
+}
+
+export function shouldPreCompress(inputTokens: number, config: CompressionConfig): boolean {
+  return getCompressionStrategy(config).shouldPreCompress(inputTokens, config)
 }
 
 export function isCompactBoundaryMessage(message: UnifiedMessage): boolean {
@@ -357,7 +417,7 @@ export function createCompactSummaryMessage(args: {
   }
 }
 
-export function preCompressMessages(messages: UnifiedMessage[]): UnifiedMessage[] {
+function partialSummaryPreCompressMessages(messages: UnifiedMessage[]): UnifiedMessage[] {
   if (messages.length <= TOOL_RESULT_KEEP_RECENT) return messages
 
   const cutoff = messages.length - TOOL_RESULT_KEEP_RECENT
@@ -393,7 +453,7 @@ export function preCompressMessages(messages: UnifiedMessage[]): UnifiedMessage[
   })
 }
 
-export async function compressMessages(
+async function partialSummaryCompressMessages(
   messages: UnifiedMessage[],
   providerConfig: ProviderConfig,
   signal?: AbortSignal,
@@ -488,6 +548,32 @@ export async function compressMessages(
     messages,
     result: { compressed: false, originalCount, newCount: originalCount }
   }
+}
+
+export function preCompressMessages(messages: UnifiedMessage[]): UnifiedMessage[] {
+  return PARTIAL_SUMMARY_STRATEGY.preCompressMessages(messages)
+}
+
+export async function compressMessages(
+  messages: UnifiedMessage[],
+  providerConfig: ProviderConfig,
+  signal?: AbortSignal,
+  preserveCount = PRESERVE_RECENT_COUNT,
+  focusPrompt?: string,
+  pinnedContext?: string,
+  trigger: CompactBoundaryMeta['trigger'] = 'manual',
+  preTokens = 0
+): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
+  return PARTIAL_SUMMARY_STRATEGY.compressMessages(
+    messages,
+    providerConfig,
+    signal,
+    preserveCount,
+    focusPrompt,
+    pinnedContext,
+    trigger,
+    preTokens
+  )
 }
 
 function findSafeCompactBoundary(messages: UnifiedMessage[], initialBoundary: number): number {

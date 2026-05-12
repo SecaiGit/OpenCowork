@@ -142,11 +142,21 @@ function ContextRing(): React.JSX.Element | null {
     const provider = s.providers.find((p) => p.id === providerId)
     return provider?.models.find((m) => m.id === modelId) ?? null
   }) as AIModelConfig | null
+  const compressionDefaults = useSettingsStore(
+    useShallow((s) => {
+      return {
+        defaultContextLength: s.contextCompressionDefaultContextLength,
+        defaultThreshold: s.contextCompressionDefaultThreshold,
+        strategyId: s.contextCompressionStrategy
+      }
+    })
+  )
   const compressionConfig = activeModelCfg
     ? {
         enabled: true,
-        contextLength: resolveCompressionContextLength(activeModelCfg),
-        threshold: resolveCompressionThreshold(activeModelCfg),
+        contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
+        threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
+        strategyId: compressionDefaults.strategyId,
         preCompressThreshold: 0.65,
         reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
       }

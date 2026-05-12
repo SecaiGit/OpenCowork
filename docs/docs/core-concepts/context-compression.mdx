@@ -19,7 +19,7 @@ description: OpenCowork 的上下文压缩机制，防止超出 token 限制。
 
 ### 完整压缩（Full Compress）
 
-当 token 数超过阈值时触发：
+当 token 数超过有效触发线时触发：
 
 1. 调用 LLM 对历史对话生成摘要
 2. 用摘要替换旧消息
@@ -27,10 +27,25 @@ description: OpenCowork 的上下文压缩机制，防止超出 token 限制。
 
 ## 触发条件 / Triggers
 
+压缩会先确定本轮使用的上下文长度和阈值：
+
+- **模型上下文长度优先**：模型配置了 `contextLength` 时，优先使用模型自己的窗口。
+- **未知模型使用全局默认**：模型没有上下文长度时，使用设置页里的默认上下文长度。
+- **模型阈值优先于全局默认**：模型配置了 `contextCompressionThreshold` 时，优先使用模型阈值；否则使用全局默认压缩阈值。
+
 ```typescript
-// token 阈值（可配置）
-const COMPRESS_THRESHOLD = 100_000 // 触发完整压缩
-const PRE_COMPRESS_THRESHOLD = 80_000 // 触发预压缩
+const effectiveWindow = contextLength - reservedOutputBudget
+
+const trigger = Math.min(
+  Math.floor(effectiveWindow * threshold),
+  effectiveWindow - autoBufferTokens
+)
+
+const preCompressTrigger = Math.min(
+  Math.floor(effectiveWindow * preCompressThreshold),
+  effectiveWindow - preCompressBufferTokens,
+  trigger - preCompressGapTokens
+)
 ```
 
 ## 时间戳过滤 / Timestamp Filtering

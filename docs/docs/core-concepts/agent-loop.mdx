@@ -70,7 +70,7 @@ controller.abort()
 
 ## 上下文压缩 / Context Compression
 
-当对话历史超过 token 阈值时，Agent 循环会自动触发压缩：
+当对话历史超过有效 token 阈值时，Agent 循环会自动触发压缩；模型配置的上下文长度和压缩阈值优先于全局默认，未知模型则使用全局默认值。
 
 - **预压缩**（pre-compress）：清除过期工具结果
 - **完整压缩**：调用 LLM 对历史进行摘要

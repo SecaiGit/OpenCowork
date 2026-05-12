@@ -110,11 +110,21 @@ export function ContextPanel(): React.JSX.Element {
   const fallbackModel = useSettingsStore((s) => s.model)
   const provider = activeProvider?.name ?? fallbackProvider
   const model = activeModelCfg?.name ?? fallbackModel
+  const compressionDefaults = useSettingsStore(
+    useShallow((s) => {
+      return {
+        defaultContextLength: s.contextCompressionDefaultContextLength,
+        defaultThreshold: s.contextCompressionDefaultThreshold,
+        strategyId: s.contextCompressionStrategy
+      }
+    })
+  )
   const compressionConfig = activeModelCfg
     ? {
         enabled: true,
-        contextLength: resolveCompressionContextLength(activeModelCfg),
-        threshold: resolveCompressionThreshold(activeModelCfg),
+        contextLength: resolveCompressionContextLength(activeModelCfg, compressionDefaults),
+        threshold: resolveCompressionThreshold(activeModelCfg, compressionDefaults),
+        strategyId: compressionDefaults.strategyId,
         preCompressThreshold: 0.65,
         reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelCfg)
       }

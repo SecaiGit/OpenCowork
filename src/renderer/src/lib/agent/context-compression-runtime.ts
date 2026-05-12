@@ -34,15 +34,20 @@ export function buildRuntimeCompressionConfig(
   if (!settings.contextCompressionEnabled) return null
 
   const modelConfig = findModelConfig(providerConfig)
-  if (!modelConfig?.contextLength) return null
+  const defaults = {
+    defaultContextLength: settings.contextCompressionDefaultContextLength,
+    defaultThreshold: settings.contextCompressionDefaultThreshold,
+    strategyId: settings.contextCompressionStrategy
+  }
 
-  const contextLength = resolveCompressionContextLength(modelConfig)
+  const contextLength = resolveCompressionContextLength(modelConfig, defaults)
   if (!contextLength || contextLength <= 0) return null
 
   return {
     enabled: true,
     contextLength,
-    threshold: resolveCompressionThreshold(modelConfig),
+    threshold: resolveCompressionThreshold(modelConfig, defaults),
+    strategyId: defaults.strategyId,
     preCompressThreshold: 0.65,
     reservedOutputBudget: resolveCompressionReservedOutputBudget(modelConfig)
   }

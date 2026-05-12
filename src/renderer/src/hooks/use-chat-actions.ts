@@ -2156,6 +2156,12 @@ async function canUseSidecarForAgentRun(args: {
   hasChannels: boolean
   hasMcps: boolean
 }): Promise<boolean> {
+  if (args.compression?.enabled) {
+    // Main-process runInteractiveAgentLoop does not support context compression yet.
+    // Keep compressed runs on the renderer node loop so the runtime config is honored.
+    return false
+  }
+
   const maxParallelTools = getConfiguredMaxParallelTools()
   const sidecarRequest = buildSidecarAgentRunRequest({
     messages: args.messages,
@@ -3342,8 +3348,13 @@ export function useChatActions(): {
             providerBuiltinId: agentProviderConfig.providerBuiltinId,
             model: agentProviderConfig.model
           })
+          const compressionDefaults = {
+            defaultContextLength: settings.contextCompressionDefaultContextLength,
+            defaultThreshold: settings.contextCompressionDefaultThreshold,
+            strategyId: settings.contextCompressionStrategy
+          }
           let compressionContextLength = resolvedModelConfig?.contextLength
-            ? resolveCompressionContextLength(resolvedModelConfig)
+            ? resolveCompressionContextLength(resolvedModelConfig, compressionDefaults)
             : 0
           let compressionConfig: CompressionConfig | null = null
 
@@ -3418,12 +3429,22 @@ export function useChatActions(): {
             if (compressionContextLength <= 0) {
               compressionContextLength = findPersistedContextLength(messagesToSend)
             }
+            if (compressionContextLength <= 0) {
+              compressionContextLength = resolveCompressionContextLength(
+                resolvedModelConfig,
+                compressionDefaults
+              )
+            }
             compressionConfig =
               settings.contextCompressionEnabled && compressionContextLength > 0
                 ? {
                     enabled: true,
                     contextLength: compressionContextLength,
-                    threshold: resolveCompressionThreshold(resolvedModelConfig),
+                    threshold: resolveCompressionThreshold(
+                      resolvedModelConfig,
+                      compressionDefaults
+                    ),
+                    strategyId: settings.contextCompressionStrategy,
                     preCompressThreshold: 0.65,
                     reservedOutputBudget:
                       resolveCompressionReservedOutputBudget(resolvedModelConfig)

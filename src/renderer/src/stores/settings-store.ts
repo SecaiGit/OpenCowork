@@ -13,6 +13,14 @@ import {
   LEFT_SIDEBAR_DEFAULT_WIDTH,
   clampLeftSidebarWidth
 } from '@renderer/components/layout/right-panel-defs'
+import {
+  DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
+  DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
+  clampCompressionContextLength,
+  clampCompressionThreshold,
+  resolveCompressionStrategyId,
+  type ContextCompressionStrategyId
+} from '@renderer/lib/agent/context-compression-config'
 
 export interface ModelBinding {
   providerId: string
@@ -181,6 +189,9 @@ interface SettingsStore {
   teamToolsEnabled: boolean
   builtinBrowserEnabled: boolean
   contextCompressionEnabled: boolean
+  contextCompressionDefaultContextLength: number
+  contextCompressionDefaultThreshold: number
+  contextCompressionStrategy: ContextCompressionStrategyId
   editorWorkspaceEnabled: boolean
   editorRemoteLanguageServiceEnabled: boolean
   maxParallelToolCalls: number
@@ -272,6 +283,9 @@ export const useSettingsStore = create<SettingsStore>()(
       teamToolsEnabled: false,
       builtinBrowserEnabled: true,
       contextCompressionEnabled: true,
+      contextCompressionDefaultContextLength: DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
+      contextCompressionDefaultThreshold: DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
+      contextCompressionStrategy: resolveCompressionStrategyId(),
       editorWorkspaceEnabled: false,
       editorRemoteLanguageServiceEnabled: false,
       maxParallelToolCalls: DEFAULT_MAX_PARALLEL_TOOL_CALLS,
@@ -325,7 +339,28 @@ export const useSettingsStore = create<SettingsStore>()(
           ...patch,
           ...(patch.maxParallelToolCalls === undefined
             ? {}
-            : { maxParallelToolCalls: clampMaxParallelToolCalls(patch.maxParallelToolCalls) })
+            : { maxParallelToolCalls: clampMaxParallelToolCalls(patch.maxParallelToolCalls) }),
+          ...(patch.contextCompressionDefaultContextLength === undefined
+            ? {}
+            : {
+                contextCompressionDefaultContextLength: clampCompressionContextLength(
+                  patch.contextCompressionDefaultContextLength
+                )
+              }),
+          ...(patch.contextCompressionDefaultThreshold === undefined
+            ? {}
+            : {
+                contextCompressionDefaultThreshold: clampCompressionThreshold(
+                  patch.contextCompressionDefaultThreshold
+                )
+              }),
+          ...(patch.contextCompressionStrategy === undefined
+            ? {}
+            : {
+                contextCompressionStrategy: resolveCompressionStrategyId(
+                  patch.contextCompressionStrategy
+                )
+              })
         }),
       pushRecentWorkingTarget: (target) =>
         set((state) => ({
@@ -342,7 +377,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'opencowork-settings',
-      version: 19,
+      version: 20,
       storage: createJSONStorage(() => ipcStorage),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>
@@ -486,6 +521,29 @@ export const useSettingsStore = create<SettingsStore>()(
           state.editorRemoteLanguageServiceEnabled = false
         }
         if (
+          state.contextCompressionDefaultContextLength === undefined ||
+          typeof state.contextCompressionDefaultContextLength !== 'number'
+        ) {
+          state.contextCompressionDefaultContextLength = DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH
+        } else {
+          state.contextCompressionDefaultContextLength = clampCompressionContextLength(
+            state.contextCompressionDefaultContextLength
+          )
+        }
+        if (
+          state.contextCompressionDefaultThreshold === undefined ||
+          typeof state.contextCompressionDefaultThreshold !== 'number'
+        ) {
+          state.contextCompressionDefaultThreshold = DEFAULT_CONTEXT_COMPRESSION_THRESHOLD
+        } else {
+          state.contextCompressionDefaultThreshold = clampCompressionThreshold(
+            state.contextCompressionDefaultThreshold
+          )
+        }
+        state.contextCompressionStrategy = resolveCompressionStrategyId(
+          state.contextCompressionStrategy
+        )
+        if (
           state.maxParallelToolCalls === undefined ||
           typeof state.maxParallelToolCalls !== 'number'
         ) {
@@ -530,6 +588,13 @@ export const useSettingsStore = create<SettingsStore>()(
         reasoningEffortByModel: state.reasoningEffortByModel,
         teamToolsEnabled: state.teamToolsEnabled,
         contextCompressionEnabled: state.contextCompressionEnabled,
+        contextCompressionDefaultContextLength: clampCompressionContextLength(
+          state.contextCompressionDefaultContextLength
+        ),
+        contextCompressionDefaultThreshold: clampCompressionThreshold(
+          state.contextCompressionDefaultThreshold
+        ),
+        contextCompressionStrategy: resolveCompressionStrategyId(state.contextCompressionStrategy),
         editorWorkspaceEnabled: state.editorWorkspaceEnabled,
         editorRemoteLanguageServiceEnabled: state.editorRemoteLanguageServiceEnabled,
         maxParallelToolCalls: clampMaxParallelToolCalls(state.maxParallelToolCalls),

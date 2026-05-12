@@ -96,6 +96,14 @@ import {
   DEFAULT_APP_THEME_PRESET,
   DEFAULT_SSH_TERMINAL_THEME_PRESET
 } from '@renderer/lib/theme-presets'
+import {
+  CONTEXT_COMPRESSION_STRATEGY_IDS,
+  MAX_CONTEXT_COMPRESSION_THRESHOLD,
+  MIN_CONTEXT_COMPRESSION_THRESHOLD,
+  clampCompressionContextLength,
+  clampCompressionThreshold,
+  resolveCompressionStrategyId
+} from '@renderer/lib/agent/context-compression-config'
 
 const DEFAULT_GLOBAL_MEMORY_TEMPLATES = {
   soul: `# SOUL.md
@@ -426,6 +434,14 @@ function GeneralPanel(): React.JSX.Element {
   ]
 
   const clampFontSize = (value: number): number => Math.min(20, Math.max(12, value))
+  const contextCompressionThresholdPercent = Math.round(
+    clampCompressionThreshold(settings.contextCompressionDefaultThreshold) * 100
+  )
+  const contextCompressionDefaultContextLength = clampCompressionContextLength(
+    settings.contextCompressionDefaultContextLength
+  )
+  const contextCompressionStrategy =
+    settings.contextCompressionStrategy ?? CONTEXT_COMPRESSION_STRATEGY_IDS[0]
 
   const checkForUpdates = useCallback(async () => {
     setCheckingUpdate(true)
@@ -1100,9 +1116,95 @@ function GeneralPanel(): React.JSX.Element {
           />
         </div>
         {settings.contextCompressionEnabled && (
-          <p className="text-xs text-muted-foreground/70">
-            {t('general.contextCompressionEnabled')}
-          </p>
+          <div className="max-w-lg space-y-4 rounded-lg border border-border/60 bg-muted/20 p-4">
+            <p className="text-xs text-muted-foreground/70">
+              {t('general.contextCompressionEnabled')}
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">
+                {t('general.contextCompressionDefaultContextLength')}
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                {t('general.contextCompressionDefaultContextLengthDesc')}
+              </p>
+              <Input
+                type="number"
+                min={1}
+                step={1000}
+                value={contextCompressionDefaultContextLength}
+                onChange={(e) => {
+                  const nextValue = Number.parseInt(e.target.value, 10)
+                  if (!Number.isFinite(nextValue)) return
+                  settings.updateSettings({
+                    contextCompressionDefaultContextLength: clampCompressionContextLength(nextValue)
+                  })
+                }}
+                className="max-w-40 text-xs"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <label className="text-xs font-medium">
+                    {t('general.contextCompressionDefaultThreshold')}
+                  </label>
+                  <p className="text-[11px] text-muted-foreground">
+                    {t('general.contextCompressionDefaultThresholdDesc')}
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs font-mono text-muted-foreground">
+                  {contextCompressionThresholdPercent}%
+                </span>
+              </div>
+              <Slider
+                value={[contextCompressionThresholdPercent]}
+                onValueChange={([value]) =>
+                  settings.updateSettings({
+                    contextCompressionDefaultThreshold: clampCompressionThreshold(value / 100)
+                  })
+                }
+                min={Math.round(MIN_CONTEXT_COMPRESSION_THRESHOLD * 100)}
+                max={Math.round(MAX_CONTEXT_COMPRESSION_THRESHOLD * 100)}
+                step={1}
+              />
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground/60">
+                <span>{Math.round(MIN_CONTEXT_COMPRESSION_THRESHOLD * 100)}%</span>
+                <span>{Math.round(MAX_CONTEXT_COMPRESSION_THRESHOLD * 100)}%</span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">
+                {t('general.contextCompressionStrategy')}
+              </label>
+              <p className="text-[11px] text-muted-foreground">
+                {t('general.contextCompressionStrategyDesc')}
+              </p>
+              <Select
+                value={contextCompressionStrategy}
+                onValueChange={(value) =>
+                  settings.updateSettings({
+                    contextCompressionStrategy: resolveCompressionStrategyId(value)
+                  })
+                }
+              >
+                <SelectTrigger className="w-80 max-w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CONTEXT_COMPRESSION_STRATEGY_IDS.map((strategyId) => (
+                    <SelectItem key={strategyId} value={strategyId} className="text-xs">
+                      {strategyId === 'partial-summary-v1'
+                        ? t('general.contextCompressionStrategyPartialSummary')
+                        : strategyId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
         )}
       </section>
 
