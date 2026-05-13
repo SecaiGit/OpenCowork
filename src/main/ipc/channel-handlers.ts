@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as os from 'os'
+import { getAppDataDir } from '../app-data-paths'
 import { FeishuApi } from '../channels/providers/feishu/feishu-api'
 import { nanoid } from 'nanoid'
 import { ChannelManager } from '../channels/channel-manager'
@@ -21,7 +21,7 @@ import {
   DEFAULT_WEIXIN_BASE_URL
 } from '../channels/providers/weixin/weixin-login'
 
-const DATA_DIR = path.join(os.homedir(), '.open-cowork')
+const DATA_DIR = getAppDataDir()
 const PLUGINS_FILE = path.join(DATA_DIR, 'plugins.json')
 let activeChannelManager: ChannelManager | null = null
 

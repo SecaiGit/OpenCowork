@@ -2159,7 +2159,6 @@ async function canUseSidecarForAgentRun(args: {
     })
   ) {
     // Main-process runInteractiveAgentLoop does not support context compression yet.
-    // Only route to the renderer node loop when the current request already needs it.
     return false
   }
 
@@ -2422,31 +2421,27 @@ function createSubAgentEventBuffer(sessionId: string): {
       entry.timer = undefined
     }
     if (entry.thinking) {
-      if (isSessionForeground(sessionId)) {
-        useAgentStore.getState().handleSubAgentEvent(
-          {
-            type: 'sub_agent_thinking_delta',
-            subAgentName: entry.subAgentName,
-            toolUseId,
-            thinking: entry.thinking
-          },
-          sessionId
-        )
-      }
+      useAgentStore.getState().handleSubAgentEvent(
+        {
+          type: 'sub_agent_thinking_delta',
+          subAgentName: entry.subAgentName,
+          toolUseId,
+          thinking: entry.thinking
+        },
+        sessionId
+      )
       entry.thinking = ''
     }
     if (entry.text) {
-      if (isSessionForeground(sessionId)) {
-        useAgentStore.getState().handleSubAgentEvent(
-          {
-            type: 'sub_agent_text_delta',
-            subAgentName: entry.subAgentName,
-            toolUseId,
-            text: entry.text
-          },
-          sessionId
-        )
-      }
+      useAgentStore.getState().handleSubAgentEvent(
+        {
+          type: 'sub_agent_text_delta',
+          subAgentName: entry.subAgentName,
+          toolUseId,
+          text: entry.text
+        },
+        sessionId
+      )
       entry.text = ''
     }
   }
@@ -2491,9 +2486,7 @@ function createSubAgentEventBuffer(sessionId: string): {
       }
 
       flushBeforeBoundary(event)
-      if (isSessionForeground(sessionId)) {
-        useAgentStore.getState().handleSubAgentEvent(event, sessionId)
-      }
+      useAgentStore.getState().handleSubAgentEvent(event, sessionId)
     },
     dispose: () => {
       flushAll()

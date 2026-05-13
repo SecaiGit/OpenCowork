@@ -1,11 +1,11 @@
 import { ipcMain } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as os from 'os'
+import { getAppDataDir } from '../app-data-paths'
 import { McpManager } from '../mcp/mcp-manager'
 import type { McpServerConfig } from '../mcp/mcp-types'
 
-const DATA_DIR = path.join(os.homedir(), '.open-cowork')
+const DATA_DIR = getAppDataDir()
 const MCP_FILE = path.join(DATA_DIR, 'mcp-servers.json')
 
 // ── Persistence helpers ──

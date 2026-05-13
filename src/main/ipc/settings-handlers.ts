@@ -1,9 +1,9 @@
 import { ipcMain, session } from 'electron'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as os from 'os'
+import { getAppDataDir } from '../app-data-paths'
 
-const DATA_DIR = path.join(os.homedir(), '.open-cowork')
+const DATA_DIR = getAppDataDir()
 const SETTINGS_FILE = 'settings.json'
 const FLUSH_DEBOUNCE_MS = 2000
 

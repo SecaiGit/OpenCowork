@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron'
 import * as fs from 'fs'
-import * as os from 'os'
 import * as path from 'path'
 import { nanoid } from 'nanoid'
+import { getAppDataDir } from '../app-data-paths'
 import type {
   AppendTeamRuntimeMessageArgs,
   ConsumeTeamRuntimeMessagesArgs,
@@ -17,7 +17,7 @@ import type {
   UpdateTeamRuntimeMemberArgs
 } from '../../shared/team-runtime-types'
 
-const DATA_DIR = path.join(os.homedir(), '.open-cowork')
+const DATA_DIR = getAppDataDir()
 const TEAMS_DIR = path.join(DATA_DIR, 'teams')
 const TEAM_FILE = 'team.json'
 const MESSAGES_FILE = 'messages.json'

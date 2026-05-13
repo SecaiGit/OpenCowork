@@ -69,6 +69,7 @@ import { writeCrashLog, getCrashLogDir } from './crash-logger'
 import { setupAutoUpdater } from './updater'
 import { safeSendToWindow } from './window-ipc'
 import * as sessionsDao from './db/sessions-dao'
+import { getAppDataDir, getElectronUserDataDirOverride } from './app-data-paths'
 
 import { createFeishuService } from './channels/providers/feishu/feishu-service'
 import { FeishuApi } from './channels/providers/feishu/feishu-api'
@@ -341,6 +342,7 @@ function attachWindowCrashLogging(window: BrowserWindow): void {
   let attemptedOomReload = false
   let lastOomReloadAt = 0
 
+
   webContents.on('render-process-gone', (_event, details) => {
     const crashInfo = {
       ...getWindowDiagnosticContext(window),
@@ -401,6 +403,21 @@ function attachWindowCrashLogging(window: BrowserWindow): void {
     }
     console.error('[Main] Renderer preload error:', preloadInfo)
     recordCrash('window_preload_error', preloadInfo)
+  })
+}
+
+function configureAppIdentityAndDataPaths(): void {
+  app.setName(app.isPackaged ? 'OpenCoWork' : 'OpenCoWork-dev')
+
+  const userDataDir = getElectronUserDataDirOverride()
+  if (userDataDir) {
+    mkdirSync(userDataDir, { recursive: true })
+    app.setPath('userData', userDataDir)
+  }
+
+  console.log('[Main] Data paths configured:', {
+    appDataDir: getAppDataDir(),
+    userDataDir: app.getPath('userData')
   })
 }
 
@@ -845,15 +862,9 @@ app.on('before-quit', () => {
   flushSettingsSync()
 })
 
+configureAppIdentityAndDataPaths()
 configureChromiumCachePaths()
 configureRendererHeapLimit()
-
-// 防止dev环境和生产环境冲突，导致无法启动
-if (!app.isPackaged) {
-  app.setName('OpenCoWork-dev')
-} else {
-  app.setName('OpenCoWork')
-}
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {

@@ -3,9 +3,10 @@ import * as path from 'path'
 import * as os from 'os'
 import * as fs from 'fs'
 import { nanoid } from 'nanoid'
+import { getAppDataDir } from '../app-data-paths'
 import { readSettings } from '../ipc/settings-handlers'
 
-const DATA_DIR = path.join(os.homedir(), '.open-cowork')
+const DATA_DIR = getAppDataDir()
 const DB_PATH = path.join(DATA_DIR, 'data.db')
 
 let db: Database.Database | null = null

@@ -161,7 +161,6 @@ export async function runSharedAgentRuntime(
       tools: loopConfig.tools,
       compression: loopConfig.contextCompression?.config ?? null
     })
-
     const handleApproval = async (toolCall: ToolCallState): Promise<boolean> => {
       if (isReadOnlyTool?.(toolCall.name)) return true
       if (onApprovalNeeded) return await onApprovalNeeded(toolCall)
