@@ -325,6 +325,21 @@ export function getCompactSummaryDisplayText(message: UnifiedMessage): string {
   return blocks.slice(startIndex).join('\n\n').trim() || text
 }
 
+function findFallbackPreservedHeadId(
+  compressedMessages: UnifiedMessage[],
+  summaryIndex: number
+): string | null {
+  for (let index = summaryIndex + 1; index < compressedMessages.length; index += 1) {
+    const message = compressedMessages[index]
+    if (message?.meta?.postCompactState === true) {
+      continue
+    }
+    return message?.id ?? null
+  }
+
+  return null
+}
+
 export function mergeCompressedMessagesIntoConversation(
   currentMessages: UnifiedMessage[],
   compressedMessages?: UnifiedMessage[] | null
@@ -343,7 +358,7 @@ export function mergeCompressedMessagesIntoConversation(
   const boundaryMessage = compressedMessages.find((message) => isCompactBoundaryMessage(message))
   const preservedHeadId =
     boundaryMessage?.meta?.compactBoundary?.preservedSegment?.headId ??
-    compressedMessages[summaryIndex + 1]?.id ??
+    findFallbackPreservedHeadId(compressedMessages, summaryIndex) ??
     null
 
   const compressedIndexById = new Map(

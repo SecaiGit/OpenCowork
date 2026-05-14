@@ -27,7 +27,10 @@ export interface FormatPostCompactStateContextArgs {
 }
 
 function formatTimestamp(timestamp: number): string {
-  return new Date(timestamp).toISOString()
+  const date = new Date(timestamp)
+  return Number.isFinite(timestamp) && !Number.isNaN(date.getTime())
+    ? date.toISOString()
+    : 'invalid-timestamp'
 }
 
 export function formatPostCompactStateContext(args: FormatPostCompactStateContextArgs): string {
