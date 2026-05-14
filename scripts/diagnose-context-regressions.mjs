@@ -55,13 +55,17 @@ if (routingBlocksAllEnabledCompression) {
   pass('compression routing only falls back to renderer loop near compression thresholds')
 }
 
+const legacyCompressionEnabledNullHistoryPattern =
+  /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/
+const unguardedCompressionEnabledNullHistoryPattern =
+  /contextCompressionEnabled[\s\S]{0,200}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/
+const thresholdRoutedRendererCompressionPattern =
+  /shouldUseRendererLoopForCompression[\s\S]{0,240}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/
+
 if (
-  /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/.test(
-    chatActionsSource
-  ) ||
-  /contextCompressionEnabled[\s\S]{0,200}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/.test(
-    chatActionsSource
-  )
+  legacyCompressionEnabledNullHistoryPattern.test(chatActionsSource) ||
+  (unguardedCompressionEnabledNullHistoryPattern.test(chatActionsSource) &&
+    !thresholdRoutedRendererCompressionPattern.test(chatActionsSource))
 ) {
   fail('compression-enabled requests force full history loading', [
     'src/renderer/src/hooks/use-chat-actions.ts still contains a compression-enabled requestContextMaxMessages=null path',

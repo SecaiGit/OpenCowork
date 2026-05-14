@@ -3482,6 +3482,7 @@ export function useChatActions(): {
                 .getState()
                 .getSessionMessagesForRequest(sessionId, {
                   includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
+                  // Full transcript reload only for the threshold-routed renderer compression loop.
                   requestContextMaxMessages: null
                 })
               messagesToSend = ensureRequestContainsExpectedUserMessage(
