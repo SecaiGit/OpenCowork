@@ -55,13 +55,20 @@ if (routingBlocksAllEnabledCompression) {
   pass('compression routing only falls back to renderer loop near compression thresholds')
 }
 
-if (/requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/.test(chatActionsSource)) {
-  fail('compression-enabled requests load unbounded message history before threshold routing', [
-    'src/renderer/src/hooks/use-chat-actions.ts sets requestContextMaxMessages to null whenever compression is enabled',
-    'only load full history after the threshold decision requires renderer compression'
+if (
+  /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/.test(
+    chatActionsSource
+  ) ||
+  /contextCompressionEnabled[\s\S]{0,200}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/.test(
+    chatActionsSource
+  )
+) {
+  fail('compression-enabled requests force full history loading', [
+    'src/renderer/src/hooks/use-chat-actions.ts still contains a compression-enabled requestContextMaxMessages=null path',
+    'compression-enabled requests should not force full-history loading before threshold routing decides it is necessary'
   ])
 } else {
-  pass('compression-enabled requests do not unconditionally load full history')
+  pass('compression enabled requests do not force full history loading')
 }
 
 function hasRuntimeDebugInfoWrite(source) {

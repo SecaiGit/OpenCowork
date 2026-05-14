@@ -5452,10 +5452,7 @@ async function runSimpleChat(
 ): Promise<void> {
   const chatStore = useChatStore.getState()
   const chatModelConfig = findProviderModel(config.providerId, config.model).modelConfig
-  const requestContextMaxMessages =
-    useSettingsStore.getState().contextCompressionEnabled && chatModelConfig?.contextLength
-      ? null
-      : undefined
+  const requestContextMaxMessages = undefined
   const requestMessages = ensureRequestContainsExpectedUserMessage(
     await chatStore.getSessionMessagesForRequest(sessionId, {
       includeTrailingAssistantPlaceholder: options?.includeTrailingAssistantPlaceholder ?? false,
