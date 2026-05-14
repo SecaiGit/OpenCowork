@@ -23,9 +23,13 @@ import {
   shouldPreCompress,
   preCompressMessages
 } from './context-compression'
+import { buildContextBudgetSnapshot, estimateMessagesTokens } from './context-budget'
 import { trySwitchProviderAccount } from '../auth/provider-auth'
 import { ConcurrencyLimiter } from './concurrency-limiter'
-import { compactToolResultForContext } from './context-payload-compaction'
+import {
+  compactRecentToolPayloads,
+  compactToolResultForContext
+} from './context-payload-compaction'
 
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
@@ -104,7 +108,8 @@ export async function* runAgentLoop(
   if (config.contextCompression) {
     resetCompressionFailures()
   }
-  let lastInputTokens = config.contextCompression ? findRecentContextUsage(messages) : 0
+  let lastObservedContextTokens = config.contextCompression ? findRecentContextUsage(messages) : 0
+  let estimatedReplayTokens = config.contextCompression ? estimateMessagesTokens(conversationMessages) : 0
   const hasIterationLimit = Number.isFinite(config.maxIterations) && config.maxIterations > 0
   const buildLoopEndEvent = (
     reason: 'completed' | 'max_iterations' | 'aborted' | 'error'
@@ -126,9 +131,21 @@ export async function* runAgentLoop(
       }
 
       // --- Context management (between iterations) ---
-      if (lastInputTokens > 0 && config.contextCompression) {
+      if (config.contextCompression) {
         const cc = config.contextCompression
-        if (shouldCompress(lastInputTokens, cc.config)) {
+        const compactedPayloads = compactRecentToolPayloads(conversationMessages, cc.config)
+        if (compactedPayloads.compactedCount > 0) {
+          conversationMessages = [...compactedPayloads.messages]
+        }
+
+        const budgetSnapshot = buildContextBudgetSnapshot(conversationMessages, cc.config)
+        estimatedReplayTokens = budgetSnapshot.estimatedTokens
+        const tokensForCompressionDecision = Math.max(
+          lastObservedContextTokens,
+          estimatedReplayTokens
+        )
+
+        if (shouldCompress(tokensForCompressionDecision, cc.config)) {
           if (config.signal.aborted) {
             yield buildLoopEndEvent('aborted')
             return
@@ -141,9 +158,15 @@ export async function* runAgentLoop(
           }
           try {
             const originalCount = conversationMessages.length
-            const compressedMessages = await cc.compressFn(conversationMessages)
+            const compressedMessages = await cc.compressFn(
+              conversationMessages,
+              'auto',
+              tokensForCompressionDecision
+            )
             // Keep loop-local history mutable even if external stores freeze shared arrays.
             conversationMessages = [...compressedMessages]
+            estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+            lastObservedContextTokens = 0
             fullCompressionApplied = true
             yield {
               type: 'context_compressed',
@@ -151,13 +174,13 @@ export async function* runAgentLoop(
               newCount: conversationMessages.length,
               messages: [...conversationMessages]
             }
-            lastInputTokens = 0
           } catch (compErr) {
             console.error('[Agent Loop] Context compression failed:', compErr)
           }
-        } else if (shouldPreCompress(lastInputTokens, cc.config)) {
+        } else if (shouldPreCompress(tokensForCompressionDecision, cc.config)) {
           // Lightweight pre-compression: clear stale tool results + thinking blocks (no API call)
           conversationMessages = [...preCompressMessages(conversationMessages, cc.config)]
+          estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
         }
       }
       if (config.signal.aborted) {
@@ -389,7 +412,7 @@ export async function* runAgentLoop(
               case 'message_end':
                 if (event.usage) {
                   assistantUsage = event.usage
-                  lastInputTokens = readContextUsage(event.usage)
+                  lastObservedContextTokens = readContextUsage(event.usage)
                 }
                 if (event.providerResponseId) {
                   providerResponseId = event.providerResponseId
@@ -767,6 +790,9 @@ export async function* runAgentLoop(
         createdAt: Date.now()
       }
       conversationMessages.push(toolResultMsg)
+      if (config.contextCompression) {
+        estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+      }
       startedAtByToolId.clear()
 
       // Notify UI about tool results so it can sync to chat store

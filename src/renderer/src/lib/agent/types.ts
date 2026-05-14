@@ -86,7 +86,11 @@ export interface AgentLoopConfig {
   contextCompression?: {
     config: CompressionConfig
     /** Compress messages using the main model. Returns the compressed message array. */
-    compressFn: (messages: UnifiedMessage[]) => Promise<UnifiedMessage[]>
+    compressFn: (
+      messages: UnifiedMessage[],
+      trigger?: 'auto' | 'manual',
+      preTokens?: number
+    ) => Promise<UnifiedMessage[]>
   }
   /** Force all tool calls through the approval callback, even if the tool declares requiresApproval=false.
    *  Used by plugin auto-reply to enforce security permissions on all tools. */
