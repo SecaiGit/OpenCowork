@@ -13,6 +13,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "diagnose:context-regressions": "node ./scripts/diagnose-context-regressions.mjs",
+    "diagnose:long-task-compression": "node ./scripts/diagnose-long-task-context-compression.mjs",
     "test:agent-context": "vitest run src/renderer/src/lib/agent/__tests__/long-task-context.test.ts",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
