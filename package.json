@@ -13,6 +13,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "diagnose:context-regressions": "node ./scripts/diagnose-context-regressions.mjs",
+    "test:agent-context": "vitest run src/renderer/src/lib/agent/__tests__/long-task-context.test.ts",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
@@ -111,7 +112,8 @@
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
     "typescript": "^5.9.3",
-    "vite": "^7.2.6"
+    "vite": "^7.2.6",
+    "vitest": "^3.2.4"
   },
   "overrides": {
     "cpu-features": "npm:noop2@1.0.0"
