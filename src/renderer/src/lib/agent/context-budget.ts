@@ -11,6 +11,10 @@ const APPROX_CHARS_PER_TOKEN = 4
 const IMAGE_APPROX_TOKENS = 2_000
 const FALLBACK_CONTEXT_LENGTH = 200_000
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled content block variant: ${JSON.stringify(value)}`)
+}
+
 export interface ContextBudgetSnapshot {
   estimatedTokens: number
   effectiveWindow: number
@@ -36,11 +40,15 @@ export function serializeToolResultContent(content: ToolResultContent): string {
 
   return content
     .map((block) => {
-      if (block.type === 'text') return block.text
-      if (block.type === 'image') return '[image]'
-      return ''
+      switch (block.type) {
+        case 'text':
+          return block.text
+        case 'image':
+          return '[image]'
+        default:
+          return assertNever(block)
+      }
     })
-    .filter(Boolean)
     .join('\n')
 }
 
@@ -48,9 +56,14 @@ export function estimateToolResultChars(content: ToolResultContent): number {
   if (typeof content === 'string') return content.length
 
   return content.reduce((total, block) => {
-    if (block.type === 'text') return total + block.text.length
-    if (block.type === 'image') return total + IMAGE_APPROX_TOKENS * APPROX_CHARS_PER_TOKEN
-    return total
+    switch (block.type) {
+      case 'text':
+        return total + block.text.length
+      case 'image':
+        return total + IMAGE_APPROX_TOKENS * APPROX_CHARS_PER_TOKEN
+      default:
+        return total + assertNever(block)
+    }
   }, 0)
 }
 
@@ -70,7 +83,7 @@ export function estimateContentBlockTokens(block: ContentBlock): number {
     case 'agent_error':
       return estimateTextTokens(block.message)
     default:
-      return 0
+      return assertNever(block)
   }
 }
 
@@ -151,9 +164,12 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
   const groups: ApiRoundGroup[] = []
   let start = 0
   let current: UnifiedMessage[] = []
+  let currentToolUseIds = new Set<string>()
   let pendingToolUseIds = new Set<string>()
+  let answeredToolUseIds = new Set<string>()
   let currentHasAssistant = false
   let currentHasToolUse = false
+  let currentToolRoundInvalid = false
 
   const flush = (end: number): void => {
     if (current.length === 0) return
@@ -161,9 +177,12 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
     groups.push({ start, end, messages: current })
     start = end
     current = []
+    currentToolUseIds = new Set<string>()
     pendingToolUseIds = new Set<string>()
+    answeredToolUseIds = new Set<string>()
     currentHasAssistant = false
     currentHasToolUse = false
+    currentToolRoundInvalid = false
   }
 
   messages.forEach((message, index) => {
@@ -175,21 +194,47 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
     if (message.role === 'assistant') {
       currentHasAssistant = true
       if (toolUseIds.length > 0) currentHasToolUse = true
-      for (const id of toolUseIds) pendingToolUseIds.add(id)
+      for (const id of toolUseIds) {
+        currentToolUseIds.add(id)
+        pendingToolUseIds.add(id)
+      }
     }
 
-    for (const id of toolResultIds) {
-      pendingToolUseIds.delete(id)
+    let canCloseAnsweredToolUseBatch = false
+
+    if (message.role === 'user' && toolResultIds.length > 0) {
+      let hasUnknownToolUseId = false
+      let hasDuplicateToolResult = false
+      const seenInMessage = new Set<string>()
+
+      for (const id of toolResultIds) {
+        if (!currentToolUseIds.has(id)) {
+          hasUnknownToolUseId = true
+          continue
+        }
+
+        if (seenInMessage.has(id) || answeredToolUseIds.has(id)) {
+          hasDuplicateToolResult = true
+          continue
+        }
+
+        seenInMessage.add(id)
+        answeredToolUseIds.add(id)
+        pendingToolUseIds.delete(id)
+      }
+
+      if (hasUnknownToolUseId || hasDuplicateToolResult) {
+        currentToolRoundInvalid = true
+      }
+
+      canCloseAnsweredToolUseBatch =
+        !currentToolRoundInvalid && currentHasAssistant && currentHasToolUse && pendingToolUseIds.size === 0
     }
 
     const assistantWithoutToolsClosedRound =
       message.role === 'assistant' && toolUseIds.length === 0 && pendingToolUseIds.size === 0
     const answeredToolUseBatchClosedRound =
-      currentHasAssistant &&
-      currentHasToolUse &&
-      pendingToolUseIds.size === 0 &&
-      message.role === 'user' &&
-      toolResultIds.length > 0
+      message.role === 'user' && toolResultIds.length > 0 && canCloseAnsweredToolUseBatch
 
     if (assistantWithoutToolsClosedRound || answeredToolUseBatchClosedRound) {
       flush(index + 1)
