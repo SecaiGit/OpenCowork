@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -189,7 +190,9 @@ if (failures.length > 0) {
       console.error(`  - ${detail}`)
     }
   }
-  console.error(`[FAIL] long-task context compression diagnostics failed: ${failures.length} failure(s)`)
+  console.error(
+    `[FAIL] long-task context compression diagnostics failed: ${failures.length} failure(s)`
+  )
   process.exit(1)
 }
 

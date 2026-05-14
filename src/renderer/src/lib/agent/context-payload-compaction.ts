@@ -215,7 +215,7 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
   let changed = imageCount > 0
   let keptChars = 0
   let toolResultTooLarge = false
-  let imagePayloadOmitted = imageCount > 0
+  const imagePayloadOmitted = imageCount > 0
 
   type TextBudgetAllocation = {
     block: Extract<ContentBlock, { type: 'text' }>
