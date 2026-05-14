@@ -209,7 +209,6 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
 
   const imageCount = args.content.filter((block) => block.type === 'image').length
   const textBlocks = args.content.filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
-  const textOriginalChars = textBlocks.reduce((sum, block) => sum + block.text.length, 0)
   const imagePlaceholderChars = imageCount * IMAGE_OMITTED_TEXT.length
   const remainingTextBudget = Math.max(0, maxChars - imagePlaceholderChars)
 
@@ -218,14 +217,57 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
   let toolResultTooLarge = false
   let imagePayloadOmitted = imageCount > 0
 
-  const oversizedTextBlocks = textBlocks.filter((block) => block.text.length > remainingTextBudget)
-  const textBudgetDenominator = oversizedTextBlocks.length > 0
-    ? oversizedTextBlocks.reduce((sum, block) => sum + block.text.length, 0)
-    : Math.max(1, textOriginalChars)
-  let textBudgetRemaining = remainingTextBudget
-  let oversizedTextRemaining = oversizedTextBlocks.length > 0
-    ? oversizedTextBlocks.reduce((sum, block) => sum + block.text.length, 0)
-    : 0
+  type TextBudgetAllocation = {
+    block: Extract<ContentBlock, { type: 'text' }>
+    budget: number
+    preserveWhole: boolean
+  }
+
+  const textAllocations = new Map<Extract<ContentBlock, { type: 'text' }>, TextBudgetAllocation>()
+  const sortedTextBlocks = [...textBlocks].sort((a, b) => a.text.length - b.text.length)
+  const preservedWholeTextBlocks = new Set<Extract<ContentBlock, { type: 'text' }>>()
+  let unallocatedTextBudget = remainingTextBudget
+  let remainingUnallocatedCount = sortedTextBlocks.length
+
+  for (const block of sortedTextBlocks) {
+    if (remainingUnallocatedCount <= 0) break
+
+    const fairShare = Math.floor(unallocatedTextBudget / remainingUnallocatedCount)
+    if (block.text.length <= fairShare) {
+      textAllocations.set(block, {
+        block,
+        budget: block.text.length,
+        preserveWhole: true
+      })
+      preservedWholeTextBlocks.add(block)
+      unallocatedTextBudget = Math.max(0, unallocatedTextBudget - block.text.length)
+    }
+
+    remainingUnallocatedCount -= 1
+  }
+
+  const oversizedTextBlocks = textBlocks.filter((block) => !preservedWholeTextBlocks.has(block))
+  const oversizedTotalChars = oversizedTextBlocks.reduce((sum, block) => sum + block.text.length, 0)
+  let oversizedBudgetRemaining = unallocatedTextBudget
+  let oversizedCharsRemaining = oversizedTotalChars
+
+  for (const block of textBlocks) {
+    if (textAllocations.has(block)) continue
+
+    const requestedBudget = oversizedCharsRemaining > 0
+      ? Math.floor((oversizedBudgetRemaining * block.text.length) / oversizedCharsRemaining)
+      : 0
+    const budget = Math.max(1, Math.min(oversizedBudgetRemaining, requestedBudget || oversizedBudgetRemaining))
+
+    textAllocations.set(block, {
+      block,
+      budget,
+      preserveWhole: false
+    })
+
+    oversizedBudgetRemaining = Math.max(0, oversizedBudgetRemaining - budget)
+    oversizedCharsRemaining = Math.max(0, oversizedCharsRemaining - block.text.length)
+  }
 
   const blocks: Array<Extract<ContentBlock, { type: 'text' | 'image' }>> = args.content.map((block) => {
     if (block.type === 'image') {
@@ -233,19 +275,18 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
       return { type: 'text', text: IMAGE_OMITTED_TEXT }
     }
 
-    const shouldProportionByOversized = oversizedTextBlocks.length > 0 && block.text.length > remainingTextBudget
-    const proportionalBase = shouldProportionByOversized
-      ? Math.max(1, oversizedTextRemaining)
-      : Math.max(1, textBudgetDenominator)
-    const requestedBudget = shouldProportionByOversized
-      ? Math.floor((textBudgetRemaining * block.text.length) / proportionalBase)
-      : Math.floor((remainingTextBudget * block.text.length) / proportionalBase)
-    const blockBudget = Math.max(1, Math.min(textBudgetRemaining, requestedBudget || block.text.length))
-    const compacted = compactLongTextForContext(block.text, {
-      toolName: args.toolName,
-      maxChars: blockBudget,
-      isError: args.isError
-    })
+    const allocation = textAllocations.get(block) ?? {
+      block,
+      budget: 0,
+      preserveWhole: block.text.length <= remainingTextBudget
+    }
+    const compacted = allocation.preserveWhole
+      ? { text: block.text, compacted: false, keptChars: block.text.length }
+      : compactLongTextForContext(block.text, {
+          toolName: args.toolName,
+          maxChars: allocation.budget,
+          isError: args.isError
+        })
 
     if (compacted.compacted) {
       changed = true
@@ -253,10 +294,6 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
     }
 
     keptChars += compacted.keptChars
-    textBudgetRemaining = Math.max(0, textBudgetRemaining - compacted.keptChars)
-    if (shouldProportionByOversized) {
-      oversizedTextRemaining = Math.max(0, oversizedTextRemaining - block.text.length)
-    }
 
     return { ...block, text: compacted.text }
   })
