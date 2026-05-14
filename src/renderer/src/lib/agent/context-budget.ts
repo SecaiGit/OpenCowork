@@ -169,9 +169,12 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
   let answeredToolUseIds = new Set<string>()
   let currentHasAssistant = false
   let currentHasToolUse = false
+  let currentHasUserText = false
+  let currentHasToolResult = false
   let currentToolRoundInvalid = false
+  let previousGroupClosedWithAnsweredToolUseBatch = false
 
-  const flush = (end: number): void => {
+  const flush = (end: number, closedWithAnsweredToolUseBatch = false): void => {
     if (current.length === 0) return
 
     groups.push({ start, end, messages: current })
@@ -182,7 +185,10 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
     answeredToolUseIds = new Set<string>()
     currentHasAssistant = false
     currentHasToolUse = false
+    currentHasUserText = false
+    currentHasToolResult = false
     currentToolRoundInvalid = false
+    previousGroupClosedWithAnsweredToolUseBatch = closedWithAnsweredToolUseBatch
   }
 
   messages.forEach((message, index) => {
@@ -197,6 +203,18 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
       for (const id of toolUseIds) {
         currentToolUseIds.add(id)
         pendingToolUseIds.add(id)
+      }
+    }
+
+    if (message.role === 'user') {
+      if (toolResultIds.length > 0) {
+        currentHasToolResult = true
+      }
+
+      if (typeof message.content === 'string') {
+        currentHasUserText = currentHasUserText || message.content.trim().length > 0
+      } else if (message.content.some((block) => block.type !== 'tool_result')) {
+        currentHasUserText = true
       }
     }
 
@@ -232,12 +250,20 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
     }
 
     const assistantWithoutToolsClosedRound =
-      message.role === 'assistant' && toolUseIds.length === 0 && pendingToolUseIds.size === 0
+      message.role === 'assistant' &&
+      toolUseIds.length === 0 &&
+      pendingToolUseIds.size === 0 &&
+      (currentHasUserText || currentHasToolResult || previousGroupClosedWithAnsweredToolUseBatch)
     const answeredToolUseBatchClosedRound =
       message.role === 'user' && toolResultIds.length > 0 && canCloseAnsweredToolUseBatch
 
-    if (assistantWithoutToolsClosedRound || answeredToolUseBatchClosedRound) {
+    if (assistantWithoutToolsClosedRound) {
       flush(index + 1)
+      return
+    }
+
+    if (answeredToolUseBatchClosedRound) {
+      flush(index + 1, true)
     }
   })
 
