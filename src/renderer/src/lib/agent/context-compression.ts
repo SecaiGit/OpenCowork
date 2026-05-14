@@ -217,14 +217,14 @@ const PARTIAL_SUMMARY_STRATEGY: ContextCompressionStrategy = {
   compressMessages: partialSummaryCompressMessages
 }
 
-const COMPRESSION_STRATEGIES: Record<ContextCompressionStrategyId, ContextCompressionStrategy> = {
+const COMPRESSION_STRATEGIES: Partial<Record<ContextCompressionStrategyId, ContextCompressionStrategy>> = {
   'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY
 }
 
 export function getCompressionStrategy(
   config?: Pick<CompressionConfig, 'strategyId'> | null
 ): ContextCompressionStrategy {
-  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config?.strategyId)]
+  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config?.strategyId)] ?? PARTIAL_SUMMARY_STRATEGY
 }
 
 export function shouldCompress(inputTokens: number, config: CompressionConfig): boolean {

@@ -2,7 +2,10 @@ export const DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH = 200_000
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLD = 0.8
 export const MIN_CONTEXT_COMPRESSION_THRESHOLD = 0.3
 export const MAX_CONTEXT_COMPRESSION_THRESHOLD = 0.9
-export const CONTEXT_COMPRESSION_STRATEGY_IDS = ['partial-summary-v1'] as const
+export const CONTEXT_COMPRESSION_STRATEGY_IDS = [
+  'partial-summary-v1',
+  'claude-code-compact-v1'
+] as const
 
 export type ContextCompressionStrategyId = (typeof CONTEXT_COMPRESSION_STRATEGY_IDS)[number]
 
