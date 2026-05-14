@@ -17,6 +17,10 @@ import {
   resolveCompressionStrategyId,
   type ContextCompressionStrategyId
 } from './context-compression-config'
+import {
+  CLAUDE_COMPACT_AUTO_BUFFER_TOKENS,
+  CLAUDE_COMPACT_RESERVED_OUTPUT_CAP
+} from './claude-compact-budget'
 import { groupMessagesByApiRound } from './context-budget'
 
 export {
@@ -86,8 +90,8 @@ export interface ContextCompressionStrategy {
 }
 
 export const DEFAULT_CONTEXT_COMPRESSION_LIMIT = DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH
-export const DEFAULT_CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS = 20_000
-export const CONTEXT_COMPRESSION_AUTO_BUFFER_TOKENS = 13_000
+export const DEFAULT_CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS = CLAUDE_COMPACT_RESERVED_OUTPUT_CAP
+export const CONTEXT_COMPRESSION_AUTO_BUFFER_TOKENS = CLAUDE_COMPACT_AUTO_BUFFER_TOKENS
 export const CONTEXT_COMPRESSION_PRE_BUFFER_TOKENS = 20_000
 export const CONTEXT_COMPRESSION_PRE_GAP_TOKENS = 8_000
 

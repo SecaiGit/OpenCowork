@@ -28,6 +28,11 @@ import {
   isContextCompressionStrategyId,
   resolveCompressionStrategyId
 } from '../context-compression-config'
+import {
+  CLAUDE_COMPACT_AUTO_BUFFER_TOKENS,
+  CLAUDE_COMPACT_RESERVED_OUTPUT_CAP,
+  getClaudeCompactBudget
+} from '../claude-compact-budget'
 
 let nextMessageId = 0
 
@@ -70,5 +75,47 @@ describe('claude-code-compact-v1 registration', () => {
     expect(CONTEXT_COMPRESSION_STRATEGY_IDS).toContain('claude-code-compact-v1')
     expect(isContextCompressionStrategyId('claude-code-compact-v1')).toBe(true)
     expect(resolveCompressionStrategyId('claude-code-compact-v1')).toBe('claude-code-compact-v1')
+  })
+})
+
+describe('getClaudeCompactBudget', () => {
+  it('uses model context minus min(reserved output budget, 20000), then subtracts the 13000 auto buffer', () => {
+    expect(
+      getClaudeCompactBudget({
+        contextLength: 200_000,
+        reservedOutputBudget: 32_000
+      })
+    ).toEqual({
+      contextLength: 200_000,
+      reservedOutputTokens: CLAUDE_COMPACT_RESERVED_OUTPUT_CAP,
+      effectiveContextWindow: 180_000,
+      autoCompactThreshold: 167_000,
+      autoBufferTokens: CLAUDE_COMPACT_AUTO_BUFFER_TOKENS
+    })
+  })
+
+  it('uses smaller reserved output budget when below 20000', () => {
+    expect(
+      getClaudeCompactBudget({
+        contextLength: 64_000,
+        reservedOutputBudget: 8_192
+      })
+    ).toMatchObject({
+      reservedOutputTokens: 8_192,
+      effectiveContextWindow: 55_808,
+      autoCompactThreshold: 42_808
+    })
+  })
+
+  it('never returns negative thresholds for small test models', () => {
+    expect(
+      getClaudeCompactBudget({
+        contextLength: 4_096,
+        reservedOutputBudget: 8_192
+      })
+    ).toMatchObject({
+      effectiveContextWindow: 1,
+      autoCompactThreshold: 1
+    })
   })
 })
