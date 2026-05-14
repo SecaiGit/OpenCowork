@@ -130,9 +130,18 @@ export async function* runAgentLoop(
         return
       }
 
+      // Drain message queue before preflight so the budget covers the actual next request.
+      if (config.messageQueue) {
+        const injected = config.messageQueue.drain()
+        for (const msg of injected) {
+          conversationMessages.push(msg)
+        }
+      }
+
       // --- Context management (between iterations) ---
       if (config.contextCompression) {
         const cc = config.contextCompression
+        // First shrink oversized recent payloads; preCompressMessages below only clears stale history.
         const compactedPayloads = compactRecentToolPayloads(conversationMessages, cc.config)
         if (compactedPayloads.compactedCount > 0) {
           conversationMessages = [...compactedPayloads.messages]
@@ -140,12 +149,9 @@ export async function* runAgentLoop(
 
         const budgetSnapshot = buildContextBudgetSnapshot(conversationMessages, cc.config)
         estimatedReplayTokens = budgetSnapshot.estimatedTokens
-        const tokensForCompressionDecision = Math.max(
-          lastObservedContextTokens,
-          estimatedReplayTokens
-        )
+        const conservativeContextTokens = Math.max(lastObservedContextTokens, estimatedReplayTokens)
 
-        if (shouldCompress(tokensForCompressionDecision, cc.config)) {
+        if (shouldCompress(conservativeContextTokens, cc.config)) {
           if (config.signal.aborted) {
             yield buildLoopEndEvent('aborted')
             return
@@ -161,7 +167,7 @@ export async function* runAgentLoop(
             const compressedMessages = await cc.compressFn(
               conversationMessages,
               'auto',
-              tokensForCompressionDecision
+              conservativeContextTokens
             )
             // Keep loop-local history mutable even if external stores freeze shared arrays.
             conversationMessages = [...compressedMessages]
@@ -175,9 +181,10 @@ export async function* runAgentLoop(
               messages: [...conversationMessages]
             }
           } catch (compErr) {
+            // The compression strategy tracks consecutive failures and opens its circuit breaker.
             console.error('[Agent Loop] Context compression failed:', compErr)
           }
-        } else if (shouldPreCompress(tokensForCompressionDecision, cc.config)) {
+        } else if (shouldPreCompress(conservativeContextTokens, cc.config)) {
           // Lightweight pre-compression: clear stale tool results + thinking blocks (no API call)
           conversationMessages = [...preCompressMessages(conversationMessages, cc.config)]
           estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
@@ -186,15 +193,6 @@ export async function* runAgentLoop(
       if (config.signal.aborted) {
         yield buildLoopEndEvent('aborted')
         return
-      }
-
-      // Drain message queue: inject messages received between turns
-      // (e.g. from lead or other teammates via teamEvents)
-      if (config.messageQueue) {
-        const injected = config.messageQueue.drain()
-        for (const msg of injected) {
-          conversationMessages.push(msg)
-        }
       }
 
       iteration++
@@ -794,6 +792,7 @@ export async function* runAgentLoop(
         estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
       }
       startedAtByToolId.clear()
+      const toolNameById = new Map(toolCalls.map((tc) => [tc.id, tc.name]))
 
       // Notify UI about tool results so it can sync to chat store
       yield {
@@ -806,7 +805,7 @@ export async function* runAgentLoop(
           )
           .map((block) => ({
             toolUseId: block.toolUseId,
-            toolName: toolCalls.find((tc) => tc.id === block.toolUseId)?.name,
+            toolName: toolNameById.get(block.toolUseId),
             content: block.content,
             isError: block.isError
           }))
