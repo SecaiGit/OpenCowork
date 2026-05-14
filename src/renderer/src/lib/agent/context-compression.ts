@@ -596,16 +596,15 @@ async function partialSummaryCompressMessages(
       consecutiveFailures = 0
 
       const trimmedPostCompactContext = postCompactContext?.trim() ?? ''
-      const postCompactContextMessage =
-        trimmedPostCompactContext && dedupedMessagesToPreserve.length > 0
-          ? ({
-              id: nanoid(),
-              role: 'user' as const,
-              content: trimmedPostCompactContext,
-              createdAt: Date.now(),
-              meta: { postCompactState: true }
-            } satisfies UnifiedMessage)
-          : null
+      const postCompactContextMessage = trimmedPostCompactContext
+        ? ({
+            id: nanoid(),
+            role: 'user' as const,
+            content: trimmedPostCompactContext,
+            createdAt: Date.now(),
+            meta: { postCompactState: true }
+          } satisfies UnifiedMessage)
+        : null
       const compressedMessages = [
         boundaryMessage,
         summaryMessage,
