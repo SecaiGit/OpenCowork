@@ -1,14 +1,27 @@
-/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 
-const root = process.cwd()
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const root = path.resolve(scriptDir, '..')
 const failures = []
 const passes = []
 
 function read(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), 'utf8')
+  const absolutePath = path.join(root, relativePath)
+  try {
+    return fs.readFileSync(absolutePath, 'utf8')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    fail(`missing diagnostic input: ${relativePath}`, [
+      `Expected file: ${absolutePath}`,
+      `Script root: ${root}`,
+      `Current working directory: ${process.cwd()}`,
+      message
+    ])
+    return ''
+  }
 }
 
 function fail(message, details = []) {
@@ -29,6 +42,16 @@ function check(condition, passMessage, failMessage, details = []) {
 
 function hasAll(source, tokens) {
   return tokens.every((token) => source.includes(token))
+}
+
+function hasCompressionEnabledNullHistoryRegression(source) {
+  const compactSource = source.replace(/\s+/g, ' ')
+  return (
+    /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled\s*&&\s*compressionContextLength\s*>\s*0\s*\?\s*null\s*:\s*undefined/.test(
+      source
+    ) ||
+    /contextCompressionEnabled[^;{}]{0,240}\?\s*null\s*:\s*undefined/.test(compactSource)
+  )
 }
 
 const agentLoop = read('src/renderer/src/lib/agent/agent-loop.ts')
@@ -149,8 +172,7 @@ check(
 )
 
 check(
-  !/contextCompressionEnabled[\s\S]{0,180}\?\s*null\s*:\s*undefined/.test(chatActions) &&
-    !/requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]{0,180}\?\s*null\s*:\s*undefined/.test(chatActions),
+  !hasCompressionEnabledNullHistoryRegression(chatActions),
   'chat action does not full-load history solely for compression',
   'chat action still full-loads history when compression is enabled',
   ['use-chat-actions.ts must not set requestContextMaxMessages=null just because compression is enabled']
@@ -167,7 +189,8 @@ if (failures.length > 0) {
       console.error(`  - ${detail}`)
     }
   }
+  console.error(`[FAIL] long-task context compression diagnostics failed: ${failures.length} failure(s)`)
   process.exit(1)
 }
 
-console.log('[PASS] long-task context compression diagnostics passed')
+console.log(`[PASS] long-task context compression diagnostics passed (${passes.length} checks)`)
