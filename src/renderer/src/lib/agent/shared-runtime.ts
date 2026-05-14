@@ -8,6 +8,7 @@ import { registerSidecarApprovalHandler } from '../ipc/sidecar-approval-registry
 import { runAgentViaSidecar } from './run-agent-via-sidecar'
 import { runAgentLoop } from './agent-loop'
 import { shouldUseRendererLoopForCompression } from './context-compression-routing'
+import { compactToolResultForContext } from './context-payload-compaction'
 
 export type SharedAgentRuntimeReason = LoopEndReason | 'shutdown'
 
@@ -452,14 +453,28 @@ export function mergeTokenUsage(target: TokenUsage, usage: TokenUsage): void {
 }
 
 export function buildToolResultMessage(
-  toolResults: { toolUseId: string; content: ToolResultContent; isError?: boolean }[]
+  toolResults: {
+    toolUseId: string
+    toolName?: string
+    content: ToolResultContent
+    isError?: boolean
+  }[]
 ): UnifiedMessage {
-  const content: ContentBlock[] = toolResults.map((result) => ({
-    type: 'tool_result',
-    toolUseId: result.toolUseId,
-    content: result.content,
-    ...(result.isError ? { isError: true } : {})
-  }))
+  const content: ContentBlock[] = toolResults.map((result) => {
+    const toolName = result.toolName ?? `unknown:${result.toolUseId.slice(0, 8)}`
+    const compacted = compactToolResultForContext({
+      toolName,
+      content: result.content,
+      isError: result.isError
+    })
+
+    return {
+      type: 'tool_result',
+      toolUseId: result.toolUseId,
+      content: compacted.content,
+      ...(result.isError ? { isError: true } : {})
+    }
+  })
 
   return {
     id: nanoid(),

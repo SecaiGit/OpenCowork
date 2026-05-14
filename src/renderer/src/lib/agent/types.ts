@@ -152,7 +152,12 @@ export type AgentEvent =
   | {
       type: 'iteration_end'
       stopReason: string
-      toolResults?: { toolUseId: string; content: ToolResultContent; isError?: boolean }[]
+      toolResults?: {
+        toolUseId: string
+        toolName?: string
+        content: ToolResultContent
+        isError?: boolean
+      }[]
     }
   | {
       type: 'loop_end'

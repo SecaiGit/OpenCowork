@@ -25,6 +25,7 @@ import {
 } from './context-compression'
 import { trySwitchProviderAccount } from '../auth/provider-auth'
 import { ConcurrencyLimiter } from './concurrency-limiter'
+import { compactToolResultForContext } from './context-payload-compaction'
 
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
@@ -528,7 +529,8 @@ export async function* runAgentLoop(
       }
 
       // 3. Execute tool calls
-      const toolResults: Array<ContentBlock | undefined> = new Array(toolCalls.length)
+      const toolDisplayResults: Array<ContentBlock | undefined> = new Array(toolCalls.length)
+      const toolContextResults: Array<ContentBlock | undefined> = new Array(toolCalls.length)
       let shouldStopForUserReview = false
       const runnableToolCalls: Array<{ tc: ToolCallState; index: number }> = []
       const startedAtByToolId = new Map<string, number>()
@@ -542,32 +544,47 @@ export async function* runAgentLoop(
         completedAt: number
       }): {
         resultEvent: ToolCallState
-        resultBlock: ContentBlock
+        displayResultBlock: ContentBlock
+        contextResultBlock: ContentBlock
       } => {
         const { tc, index, toolError, startedAt, completedAt } = params
-        const output =
+        const displayOutput =
           tc.name === 'Bash' ? compactBashToolResultContent(params.output) : params.output
+        const resultError = toolError ?? extractStructuredToolError(displayOutput)
+        const compactedOutput = compactToolResultForContext({
+          toolName: tc.name,
+          content: displayOutput,
+          isError: !!resultError,
+          config: config.contextCompression?.config ?? null
+        })
+        const contextOutput = compactedOutput.content
         const sanitizedInput = summarizeToolInputForHistory(tc.name, tc.input)
-        const resultError = toolError ?? extractStructuredToolError(output)
         const resultEvent: ToolCallState = {
           ...tc,
           input: sanitizedInput,
           status: resultError ? 'error' : 'completed',
-          output,
+          output: displayOutput,
           ...(resultError ? { error: resultError } : {}),
           startedAt,
           completedAt
         }
 
-        const resultBlock: ContentBlock = {
+        const displayResultBlock: ContentBlock = {
           type: 'tool_result',
           toolUseId: tc.id,
-          content: output,
+          content: displayOutput,
           ...(resultError ? { isError: true } : {})
         }
-        toolResults[index] = resultBlock
-        shouldStopForUserReview ||= isAwaitingUserReviewToolResult(output)
-        return { resultEvent, resultBlock }
+        const contextResultBlock: ContentBlock = {
+          type: 'tool_result',
+          toolUseId: tc.id,
+          content: contextOutput,
+          ...(resultError ? { isError: true } : {})
+        }
+        toolDisplayResults[index] = displayResultBlock
+        toolContextResults[index] = contextResultBlock
+        shouldStopForUserReview ||= isAwaitingUserReviewToolResult(displayOutput)
+        return { resultEvent, displayResultBlock, contextResultBlock }
       }
 
       for (const [index, tc] of toolCalls.entries()) {
@@ -745,7 +762,7 @@ export async function* runAgentLoop(
       const toolResultMsg: UnifiedMessage = {
         id: nanoid(),
         role: 'user',
-        content: toolResults.filter((block): block is ContentBlock => Boolean(block)),
+        content: toolContextResults.filter((block): block is ContentBlock => Boolean(block)),
         createdAt: Date.now()
       }
       conversationMessages.push(toolResultMsg)
@@ -755,13 +772,14 @@ export async function* runAgentLoop(
       yield {
         type: 'iteration_end',
         stopReason: 'tool_use',
-        toolResults: toolResults
+        toolResults: toolDisplayResults
           .filter(
             (block): block is Extract<ContentBlock, { type: 'tool_result' }> =>
               block !== undefined && block.type === 'tool_result'
           )
           .map((block) => ({
             toolUseId: block.toolUseId,
+            toolName: toolCalls.find((tc) => tc.id === block.toolUseId)?.name,
             content: block.content,
             isError: block.isError
           }))
