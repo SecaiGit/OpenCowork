@@ -97,6 +97,7 @@ import {
   resolveCompressionThreshold
 } from '@renderer/lib/agent/context-compression'
 import { shouldUseRendererLoopForCompression } from '@renderer/lib/agent/context-compression-routing'
+import { buildPostCompactStateContext } from '@renderer/lib/agent/context-state-attachments'
 import { runAgentLoop } from '@renderer/lib/agent/agent-loop'
 import {
   liveToolInputSignature,
@@ -3675,39 +3676,6 @@ export function useChatActions(): {
                 executionPath: 'node'
               })
 
-              const loopConfig: AgentLoopConfig = {
-                maxIterations: DEFAULT_AGENT_MAX_ITERATIONS,
-                provider: agentProviderConfig,
-                tools: effectiveToolDefs,
-                systemPrompt: agentSystemPrompt,
-                workingFolder: sessionWorkingFolder,
-                signal: abortController.signal,
-                enableParallelToolExecution: true,
-                maxParallelTools,
-                forceApproval: false,
-                ...(compressionConfig && compressionContextLength > 0
-                  ? {
-                      contextCompression: {
-                        config: compressionConfig,
-                        compressFn: async (msgs: UnifiedMessage[]) => {
-                          const { messages: compressed } = await compressMessages(
-                            msgs,
-                            agentProviderConfig,
-                            abortController.signal,
-                            undefined,
-                            undefined,
-                            undefined,
-                            'manual',
-                            0,
-                            compressionConfig
-                          )
-                          return compressed
-                        }
-                      }
-                    }
-                  : {})
-              }
-
               const toolCtx: ToolContext = {
                 sessionId,
                 workingFolder: sessionWorkingFolder,
@@ -3724,6 +3692,49 @@ export function useChatActions(): {
                 pluginSenderId: session?.pluginSenderId,
                 pluginSenderName: session?.pluginSenderName,
                 sharedState: {}
+              }
+
+              const loopConfig: AgentLoopConfig = {
+                maxIterations: DEFAULT_AGENT_MAX_ITERATIONS,
+                provider: agentProviderConfig,
+                tools: effectiveToolDefs,
+                systemPrompt: agentSystemPrompt,
+                workingFolder: sessionWorkingFolder,
+                signal: abortController.signal,
+                enableParallelToolExecution: true,
+                maxParallelTools,
+                forceApproval: false,
+                ...(compressionConfig && compressionContextLength > 0
+                  ? {
+                      contextCompression: {
+                        config: compressionConfig,
+                        compressFn: async (
+                          msgs: UnifiedMessage[],
+                          trigger: 'auto' | 'manual' = 'auto',
+                          preTokens = 0
+                        ) => {
+                          const postCompactContext = buildPostCompactStateContext({
+                            sessionId,
+                            workingFolder: sessionWorkingFolder,
+                            readFileHistory: toolCtx.readFileHistory
+                          })
+                          const { messages: compressed } = await compressMessages(
+                            msgs,
+                            agentProviderConfig,
+                            abortController.signal,
+                            undefined,
+                            undefined,
+                            undefined,
+                            trigger,
+                            preTokens,
+                            compressionConfig,
+                            postCompactContext
+                          )
+                          return compressed
+                        }
+                      }
+                    }
+                  : {})
               }
 
               const handleApproval = async (tc: ToolCallState): Promise<boolean> => {
@@ -5208,6 +5219,10 @@ export function useChatActions(): {
         preCompressThreshold: 0.65,
         reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelConfig)
       }
+      const postCompactContext = buildPostCompactStateContext({
+        sessionId,
+        workingFolder: resolveSessionWorkingFolder(compressSession)
+      })
       const { messages: compressed, result } = await compressMessages(
         messages,
         config,
@@ -5217,7 +5232,8 @@ export function useChatActions(): {
         undefined,
         'manual',
         0,
-        manualCompressionConfig
+        manualCompressionConfig,
+        postCompactContext
       )
       if (!result.compressed) {
         toast.warning('无需压缩', {

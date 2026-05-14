@@ -80,7 +80,8 @@ export interface ContextCompressionStrategy {
     focusPrompt?: string,
     pinnedContext?: string,
     trigger?: CompactBoundaryMeta['trigger'],
-    preTokens?: number
+    preTokens?: number,
+    postCompactContext?: string
   ) => Promise<{ messages: UnifiedMessage[]; result: CompressionResult }>
 }
 
@@ -507,7 +508,8 @@ async function partialSummaryCompressMessages(
   focusPrompt?: string,
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
-  preTokens = 0
+  preTokens = 0,
+  postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
     return {
@@ -536,6 +538,9 @@ async function partialSummaryCompressMessages(
   const boundaryIndex = findSafeCompactBoundary(messages, messages.length - preserveCount)
   const messagesToCompress = messages.slice(0, boundaryIndex)
   const messagesToPreserve = messages.slice(boundaryIndex)
+  const dedupedMessagesToPreserve = messagesToPreserve.filter(
+    (message) => message.meta?.postCompactState !== true
+  )
 
   if (messagesToCompress.length < 2) {
     return {
@@ -576,12 +581,12 @@ async function partialSummaryCompressMessages(
         trigger,
         preTokens,
         messagesSummarized: messagesToCompress.length,
-        preservedMessages: messagesToPreserve
+        preservedMessages: dedupedMessagesToPreserve
       })
       const summaryMessage = createCompactSummaryMessage({
         summary: formattedSummary,
         messagesSummarized: messagesToCompress.length,
-        recentMessagesPreserved: messagesToPreserve.length > 0
+        recentMessagesPreserved: dedupedMessagesToPreserve.length > 0
       })
 
       if (boundaryMessage.meta?.compactBoundary?.preservedSegment) {
@@ -590,7 +595,23 @@ async function partialSummaryCompressMessages(
 
       consecutiveFailures = 0
 
-      const compressedMessages = [boundaryMessage, summaryMessage, ...messagesToPreserve]
+      const trimmedPostCompactContext = postCompactContext?.trim() ?? ''
+      const postCompactContextMessage =
+        trimmedPostCompactContext && dedupedMessagesToPreserve.length > 0
+          ? ({
+              id: nanoid(),
+              role: 'user' as const,
+              content: trimmedPostCompactContext,
+              createdAt: Date.now(),
+              meta: { postCompactState: true }
+            } satisfies UnifiedMessage)
+          : null
+      const compressedMessages = [
+        boundaryMessage,
+        summaryMessage,
+        ...(postCompactContextMessage ? [postCompactContextMessage] : []),
+        ...dedupedMessagesToPreserve
+      ]
       return {
         messages: compressedMessages,
         result: {
@@ -644,7 +665,8 @@ export async function compressMessages(
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0,
-  config?: Pick<CompressionConfig, 'strategyId'> | null
+  config?: Pick<CompressionConfig, 'strategyId'> | null,
+  postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
   return getCompressionStrategy(config).compressMessages(
     messages,
@@ -654,7 +676,8 @@ export async function compressMessages(
     focusPrompt,
     pinnedContext,
     trigger,
-    preTokens
+    preTokens,
+    postCompactContext
   )
 }
 

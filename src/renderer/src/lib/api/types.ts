@@ -195,6 +195,7 @@ export interface CompactSummaryMeta {
 export interface MessageMeta {
   compactBoundary?: CompactBoundaryMeta
   compactSummary?: CompactSummaryMeta
+  postCompactState?: true
 }
 
 export interface UnifiedMessage {
