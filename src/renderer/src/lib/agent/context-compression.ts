@@ -17,6 +17,7 @@ import {
   resolveCompressionStrategyId,
   type ContextCompressionStrategyId
 } from './context-compression-config'
+import { groupMessagesByApiRound } from './context-budget'
 
 export {
   DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
@@ -465,6 +466,39 @@ function partialSummaryPreCompressMessages(messages: UnifiedMessage[]): UnifiedM
   })
 }
 
+export function isPromptTooLongError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /prompt.?too.?long|context.?length|maximum context|too many tokens|413/i.test(message)
+}
+
+export function truncateHeadForPromptTooLongRetry(
+  messages: UnifiedMessage[],
+  attempt: number
+): UnifiedMessage[] | null {
+  const groups = groupMessagesByApiRound(messages)
+  if (groups.length < 2) return null
+
+  const dropRatio = Math.min(0.6, Math.max(0.2, attempt * 0.2))
+  const dropCount = Math.min(Math.max(1, Math.floor(groups.length * dropRatio)), groups.length - 1)
+  const kept = groups.slice(dropCount).flatMap((group) => group.messages)
+  if (kept.length < 2) return null
+
+  if (kept[0]?.role === 'assistant') {
+    return [
+      {
+        id: nanoid(),
+        role: 'user',
+        content:
+          '[Earlier messages were dropped from this compaction attempt because the summarizer prompt was too long.]',
+        createdAt: Date.now()
+      },
+      ...kept
+    ]
+  }
+
+  return kept
+}
+
 async function partialSummaryCompressMessages(
   messages: UnifiedMessage[],
   providerConfig: ProviderConfig,
@@ -515,11 +549,17 @@ async function partialSummaryCompressMessages(
     }
   }
 
+  const baseMessages = messagesToCompress
   let lastError: Error | null = null
   for (let attempt = 0; attempt <= MAX_COMPRESS_RETRIES; attempt += 1) {
     try {
       const inputMessages =
-        attempt === 0 ? messagesToCompress : truncateOldestMessages(messagesToCompress, attempt)
+        attempt === 0
+          ? baseMessages
+          : lastError && isPromptTooLongError(lastError)
+            ? (truncateHeadForPromptTooLongRetry(baseMessages, attempt) ??
+              truncateOldestMessages(baseMessages, attempt))
+            : truncateOldestMessages(baseMessages, attempt)
       const originalTaskMessage = findOriginalTaskMessage(inputMessages)
       const serialized = serializeCompressionInput(
         inputMessages,
@@ -563,7 +603,7 @@ async function partialSummaryCompressMessages(
     } catch (error) {
       lastError = error as Error
       console.error(`[Context Compression] Attempt ${attempt + 1} failed:`, error)
-      if (attempt < MAX_COMPRESS_RETRIES) {
+      if (attempt < MAX_COMPRESS_RETRIES && !isPromptTooLongError(error)) {
         await new Promise((resolve) =>
           setTimeout(resolve, BASE_RETRY_DELAY_MS * Math.pow(2, attempt))
         )
@@ -583,7 +623,7 @@ async function partialSummaryCompressMessages(
       compressed: false,
       originalCount,
       newCount: originalCount,
-      reason: 'summarizer_failed'
+      reason: isPromptTooLongError(lastError) ? 'summarizer_prompt_too_long' : 'summarizer_failed'
     }
   }
 }
