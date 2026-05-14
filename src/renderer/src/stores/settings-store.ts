@@ -520,6 +520,9 @@ export const useSettingsStore = create<SettingsStore>()(
         if (state.editorRemoteLanguageServiceEnabled === undefined) {
           state.editorRemoteLanguageServiceEnabled = false
         }
+        if (typeof state.contextCompressionEnabled !== 'boolean') {
+          state.contextCompressionEnabled = true
+        }
         if (
           state.contextCompressionDefaultContextLength === undefined ||
           typeof state.contextCompressionDefaultContextLength !== 'number'

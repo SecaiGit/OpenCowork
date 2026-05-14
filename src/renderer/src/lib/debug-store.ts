@@ -11,6 +11,8 @@ export interface RequestTraceInfo {
 
 const MAX_DEBUG_STORE_ENTRIES = 80
 const MAX_DEBUG_BODY_CHARS = 2_000
+const MAX_DEBUG_DISPLAY_BODY_CHARS = 8_000
+const MAX_DEBUG_PERSISTENCE_BODY_CHARS = 8_000
 
 /**
  * Lightweight in-memory store for per-message request metadata.
@@ -27,22 +29,34 @@ function evictOldest(): void {
   }
 }
 
-function stripLargeBody(info: RequestDebugInfo): RequestDebugInfo {
-  if (!info.body || info.body.length <= MAX_DEBUG_BODY_CHARS) return info
-  return {
-    ...info,
-    body: `${info.body.slice(0, MAX_DEBUG_BODY_CHARS)}\n... [truncated, ${info.body.length} chars total]`
-  }
+function truncateDebugString(value: string, max: number): string {
+  if (value.length <= max) return value
+  return `${value.slice(0, max)}\n... [truncated, ${value.length} chars total]`
 }
 
-/** Shrink request body before persisting to usage DB — full bodies are UI-only in dev mode. */
-export function truncateRequestDebugForPersistence(info: RequestDebugInfo): RequestDebugInfo {
-  const max = 8_000
-  if (!info.body || info.body.length <= max) return info
-  return {
-    ...info,
-    body: `${info.body.slice(0, max)}\n... [truncated, ${info.body.length} chars total]`
+export function truncateRequestDebugPayloads(
+  info: RequestDebugInfo,
+  max: number
+): RequestDebugInfo {
+  let next = info
+  for (const key of ['body', 'contextWindowBody'] as const) {
+    const value = next[key]
+    if (!value || value.length <= max) continue
+    next = {
+      ...next,
+      [key]: truncateDebugString(value, max)
+    }
   }
+  return next
+}
+
+function stripLargeBody(info: RequestDebugInfo): RequestDebugInfo {
+  return truncateRequestDebugPayloads(info, MAX_DEBUG_BODY_CHARS)
+}
+
+/** Shrink request debug payloads before persisting to usage DB. */
+export function truncateRequestDebugForPersistence(info: RequestDebugInfo): RequestDebugInfo {
+  return truncateRequestDebugPayloads(info, MAX_DEBUG_PERSISTENCE_BODY_CHARS)
 }
 
 function mergeTraceIntoDebugInfo(msgId: string, info: RequestDebugInfo): RequestDebugInfo {
@@ -84,7 +98,9 @@ export function getRequestTraceInfo(msgId: string): RequestTraceInfo | undefined
 export function setLastDebugInfo(msgId: string, info: RequestDebugInfo): void {
   const devMode = useSettingsStore.getState().devMode
   const merged = mergeTraceIntoDebugInfo(msgId, info)
-  const debugInfo = devMode ? merged : stripLargeBody(merged)
+  const debugInfo = devMode
+    ? truncateRequestDebugPayloads(merged, MAX_DEBUG_DISPLAY_BODY_CHARS)
+    : stripLargeBody(merged)
   if (devMode) {
     stripDebugInfoFromOtherMessages(msgId)
   }

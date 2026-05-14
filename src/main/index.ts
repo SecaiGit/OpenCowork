@@ -14,7 +14,7 @@ import {
 import { join, extname } from 'path'
 import { pathToFileURL } from 'url'
 import { mkdirSync, writeFileSync } from 'fs'
-import { homedir, hostname, release, totalmem } from 'os'
+import { homedir, hostname, release } from 'os'
 import { randomUUID } from 'crypto'
 import { spawn } from 'child_process'
 
@@ -436,18 +436,6 @@ function configureChromiumCachePaths(): void {
   }
 }
 
-/** Remove V8 old-space cap and disable Chromium memory-pressure OOM kills. */
-function configureRendererHeapLimit(): void {
-  try {
-    const systemMemMb = Math.floor(totalmem() / (1024 * 1024))
-    app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${systemMemMb}`)
-    app.commandLine.appendSwitch('disable-features', 'MemoryPressureBasedSourceBufferGC')
-    app.commandLine.appendSwitch('memory-pressure-off')
-  } catch (error) {
-    console.warn('[Main] Failed to set renderer heap limit:', error)
-  }
-}
-
 function showMainWindow(): void {
   if (!mainWindow) {
     createWindow()
@@ -864,7 +852,6 @@ app.on('before-quit', () => {
 
 configureAppIdentityAndDataPaths()
 configureChromiumCachePaths()
-configureRendererHeapLimit()
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {

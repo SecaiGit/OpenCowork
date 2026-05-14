@@ -447,16 +447,26 @@ function toFiniteNumber(value: unknown): number | null {
   return null
 }
 
+const DEBUG_BODY_FORMAT_MAX_CHARS = 8_000
+
+function formatDebugBodyForDisplay(body?: string): string | null {
+  if (!body) return null
+  if (body.length > DEBUG_BODY_FORMAT_MAX_CHARS) {
+    return `${body.slice(0, DEBUG_BODY_FORMAT_MAX_CHARS)}\n... [truncated, ${body.length} chars total]`
+  }
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2)
+  } catch {
+    return body
+  }
+}
+
 function DebugToggleButton({ debugInfo }: { debugInfo: RequestDebugInfo }): React.JSX.Element {
   const [show, setShow] = useState(false)
-  const bodyFormatted = (() => {
-    if (!debugInfo.body) return null
-    try {
-      return JSON.stringify(JSON.parse(debugInfo.body), null, 2)
-    } catch {
-      return debugInfo.body
-    }
-  })()
+  const bodyFormatted = useMemo(
+    () => (show ? formatDebugBodyForDisplay(debugInfo.body) : null),
+    [debugInfo.body, show]
+  )
 
   return (
     <>

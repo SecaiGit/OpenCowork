@@ -17,23 +17,17 @@ function pass(message) {
   passes.push(message)
 }
 
-function extractSection(source, startMarker, endMarker) {
-  const start = source.indexOf(startMarker)
-  if (start === -1) return ''
-  const end = source.indexOf(endMarker, start)
-  if (end === -1) return source.slice(start)
-  return source.slice(start, end)
-}
-
 const failures = []
 const passes = []
 
 const routingSource = read('src/renderer/src/lib/agent/context-compression-routing.ts')
 const chatActionsSource = read('src/renderer/src/hooks/use-chat-actions.ts')
-const sharedRuntimeSource = read('src/renderer/src/lib/agent/shared-runtime.ts')
 const jsRuntimeSource = read('src/main/ipc/js-agent-runtime.ts')
 const mainIndexSource = read('src/main/index.ts')
 const appDataPathsSource = read('src/main/app-data-paths.ts')
+const debugStoreSource = read('src/renderer/src/lib/debug-store.ts')
+const assistantMessageSource = read('src/renderer/src/components/chat/AssistantMessage.tsx')
+const agentStoreSource = read('src/renderer/src/stores/agent-store.ts')
 
 const mainRuntimeSupportsCompression =
   /contextCompression\s*:/.test(jsRuntimeSource) ||
@@ -42,43 +36,87 @@ const mainRuntimeSupportsCompression =
 const routingBlocksAllEnabledCompression = /if \(!config\?\.enabled\) return false\s+return true/.test(
   routingSource
 )
+const routingUsesThresholdDecision =
+  /shouldCompress\(/.test(routingSource) &&
+  /shouldPreCompress\(/.test(routingSource) &&
+  /estimateRequestContextTokens/.test(routingSource)
 
-if (!mainRuntimeSupportsCompression && !routingBlocksAllEnabledCompression) {
-  fail('compression enabled runs can still enter sidecar while main runtime lacks compression support', [
+if (routingBlocksAllEnabledCompression) {
+  fail('compression routing forces every enabled compression run onto the renderer loop', [
+    'src/renderer/src/lib/agent/context-compression-routing.ts has unconditional enabled => true routing',
+    'restore token/threshold routing so sidecar stays enabled below compression thresholds'
+  ])
+} else if (!mainRuntimeSupportsCompression && !routingUsesThresholdDecision) {
+  fail('compression routing lacks threshold checks while main runtime still lacks compression support', [
     'src/main/ipc/js-agent-runtime.ts has no contextCompression handling',
-    'src/renderer/src/lib/agent/context-compression-routing.ts does not return true for all enabled compression configs'
+    'src/renderer/src/lib/agent/context-compression-routing.ts should use request token estimates plus shouldCompress/shouldPreCompress'
   ])
 } else {
-  pass('compression enabled runs are not routed to unsupported sidecar compression path')
+  pass('compression routing only falls back to renderer loop near compression thresholds')
 }
 
-const chatSidecarNullCount = (chatActionsSource.match(/compression:\s*null/g) ?? []).length
-const sharedSidecarNullCount = (sharedRuntimeSource.match(/compression:\s*null/g) ?? []).length
-if (!mainRuntimeSupportsCompression && !routingBlocksAllEnabledCompression) {
-  if (chatSidecarNullCount > 0 || sharedSidecarNullCount > 0) {
-    fail('sidecar requests drop compression config on a path that can still be selected', [
-      `src/renderer/src/hooks/use-chat-actions.ts compression:null count=${chatSidecarNullCount}`,
-      `src/renderer/src/lib/agent/shared-runtime.ts compression:null count=${sharedSidecarNullCount}`
-    ])
+if (/requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/.test(chatActionsSource)) {
+  fail('compression-enabled requests load unbounded message history before threshold routing', [
+    'src/renderer/src/hooks/use-chat-actions.ts sets requestContextMaxMessages to null whenever compression is enabled',
+    'only load full history after the threshold decision requires renderer compression'
+  ])
+} else {
+  pass('compression-enabled requests do not unconditionally load full history')
+}
+
+function hasRuntimeDebugInfoWrite(source) {
+  let index = source.indexOf('updateRuntimeMessage(')
+  while (index !== -1) {
+    const callPrefix = source.slice(index, index + 1_000)
+    const callEnd = callPrefix.indexOf('})')
+    const call = callEnd === -1 ? callPrefix : callPrefix.slice(0, callEnd)
+    if (/debugInfo\s*:|\{\s*debugInfo[\s,}]/.test(call)) return true
+    index = source.indexOf('updateRuntimeMessage(', index + 1)
   }
-} else {
-  pass('sidecar compression config drop is unreachable for enabled compression, or main runtime supports it')
+  return false
 }
 
-const subAgentBuffer = extractSection(
-  chatActionsSource,
-  'function createSubAgentEventBuffer',
-  'export type ManualCompressionResult'
-)
-if (!subAgentBuffer) {
-  fail('could not locate createSubAgentEventBuffer for sub-agent event routing diagnosis')
-} else if (/isSessionForeground\(sessionId\)[\s\S]*handleSubAgentEvent/.test(subAgentBuffer)) {
-  fail('sub-agent events are gated by foreground session before reaching agent-store', [
-    'background session events can be dropped before sessionSubAgentLiveCache/runningSubAgentSessionIdsSig update',
-    'src/renderer/src/hooks/use-chat-actions.ts createSubAgentEventBuffer still checks isSessionForeground(sessionId) around handleSubAgentEvent'
+if (hasRuntimeDebugInfoWrite(chatActionsSource)) {
+  fail('request_debug writes debug payloads into chat Zustand message state', [
+    'src/renderer/src/hooks/use-chat-actions.ts should keep request bodies in the bounded debug store only',
+    'avoid updateRuntimeMessage(..., { debugInfo }) for request_debug events'
   ])
 } else {
-  pass('sub-agent events reach agent-store regardless of foreground session')
+  pass('request_debug does not write debug payloads into chat message state')
+}
+
+if (!/contextWindowBody/.test(debugStoreSource) || !/truncateRequestDebugPayloads/.test(debugStoreSource)) {
+  fail('debug payload truncation does not cover contextWindowBody', [
+    'src/renderer/src/lib/debug-store.ts must truncate both body and contextWindowBody before display/persistence'
+  ])
+} else {
+  pass('debug payload truncation covers contextWindowBody')
+}
+
+if (/const bodyFormatted = \(\(\) =>/.test(assistantMessageSource)) {
+  fail('debug request body is formatted during render even when the dialog is closed', [
+    'src/renderer/src/components/chat/AssistantMessage.tsx should parse/format only after show === true',
+    'large request bodies must also be capped before JSON.parse/JSON.stringify'
+  ])
+} else {
+  pass('debug request body formatting is lazy')
+}
+
+if (/last\.thinking \+= thinking/.test(agentStoreSource) || /last\.text \+= text/.test(agentStoreSource)) {
+  fail('sub-agent transcript text/thinking blocks can grow without a character cap', [
+    'src/renderer/src/stores/agent-store.ts appendThinkingToSubAgent/appendTextToSubAgent should truncate block text'
+  ])
+} else {
+  pass('sub-agent transcript text/thinking blocks are bounded')
+}
+
+if (/memory-pressure-off/.test(mainIndexSource) || /--max-old-space-size=\$\{systemMemMb\}/.test(mainIndexSource)) {
+  fail('Electron renderer memory pressure protections are disabled or old-space is set to physical memory', [
+    'src/main/index.ts should not append memory-pressure-off',
+    'src/main/index.ts should not set renderer --max-old-space-size to total system memory'
+  ])
+} else {
+  pass('Electron renderer memory pressure protections remain enabled')
 }
 
 if (!/getAppDataDir/.test(appDataPathsSource) || !/OPEN_COWORK_DATA_DIR/.test(appDataPathsSource)) {

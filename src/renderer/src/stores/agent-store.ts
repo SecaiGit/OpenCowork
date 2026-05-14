@@ -27,6 +27,7 @@ const MAX_TRACKED_SUBAGENT_TOOL_CALLS = 80
 const MAX_COMPLETED_SUBAGENTS = 30
 const MAX_SUBAGENT_HISTORY = 50
 const MAX_STREAMING_TEXT_CHARS = 8_000
+const MAX_SUBAGENT_TRANSCRIPT_BLOCK_CHARS = 8_000
 const MAX_TOOL_INPUT_PREVIEW_CHARS = 6_000
 const MAX_TOOL_OUTPUT_TEXT_CHARS = 8_000
 const MAX_TOOL_ERROR_CHARS = 2_000
@@ -51,6 +52,10 @@ function trimSubAgentTranscript(sa: { transcript: UnifiedMessage[] }): void {
   if (sa.transcript.length <= MAX_SUBAGENT_TRANSCRIPT_MESSAGES) return
   const excess = sa.transcript.length - MAX_SUBAGENT_TRANSCRIPT_MESSAGES
   sa.transcript.splice(0, excess)
+}
+
+function appendBoundedText(current: string, next: string, max: number): string {
+  return truncateText(`${current}${next}`, max)
 }
 
 function normalizeToolInput(
@@ -383,10 +388,17 @@ function appendThinkingToSubAgent(sa: SubAgentState, thinking: string): void {
   if (!blocks) return
   const last = blocks[blocks.length - 1]
   if (last?.type === 'thinking') {
-    last.thinking += thinking
+    last.thinking = appendBoundedText(
+      last.thinking,
+      thinking,
+      MAX_SUBAGENT_TRANSCRIPT_BLOCK_CHARS
+    )
     return
   }
-  blocks.push({ type: 'thinking', thinking })
+  blocks.push({
+    type: 'thinking',
+    thinking: truncateText(thinking, MAX_SUBAGENT_TRANSCRIPT_BLOCK_CHARS)
+  })
 }
 
 function appendThinkingEncryptedToSubAgent(
@@ -431,10 +443,13 @@ function appendTextToSubAgent(sa: SubAgentState, text: string): void {
   if (!blocks) return
   const last = blocks[blocks.length - 1]
   if (last?.type === 'text') {
-    last.text += text
+    last.text = appendBoundedText(last.text, text, MAX_SUBAGENT_TRANSCRIPT_BLOCK_CHARS)
     return
   }
-  blocks.push({ type: 'text', text })
+  blocks.push({
+    type: 'text',
+    text: truncateText(text, MAX_SUBAGENT_TRANSCRIPT_BLOCK_CHARS)
+  })
 }
 
 function appendBlockToSubAgent(sa: SubAgentState, block: ContentBlock): void {

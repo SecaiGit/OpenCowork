@@ -62,7 +62,11 @@ import type {
   ToolDefinition,
   ToolResultContent
 } from '@renderer/lib/api/types'
-import { setLastDebugInfo, setRequestTraceInfo } from '@renderer/lib/debug-store'
+import {
+  setLastDebugInfo,
+  setRequestTraceInfo,
+  truncateRequestDebugForPersistence
+} from '@renderer/lib/debug-store'
 import { estimateTokens } from '@renderer/lib/format-tokens'
 import {
   QUEUED_IMAGE_ONLY_TEXT,
@@ -739,6 +743,7 @@ interface ContextEstimatePayloadInfo {
 const CONTEXT_ESTIMATE_BASE64_DATA_URL_PATTERN = /^data:([^;,]+);base64,/i
 const CONTEXT_ESTIMATE_BASE64_VALUE_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/
 const CONTEXT_ESTIMATE_BASE64_MIN_LENGTH = 256
+const CONTEXT_ESTIMATE_JSON_SANITIZE_MAX_CHARS = 300_000
 const CONTEXT_ESTIMATE_BASE64_PLACEHOLDER = '[base64 omitted]'
 const CONTEXT_ESTIMATE_DATA_URL_PLACEHOLDER = '[image omitted]'
 const CONTEXT_ESTIMATE_BINARY_KEYS = new Set(['data', 'result'])
@@ -819,19 +824,31 @@ function sanitizeContextEstimateValue(
   return { sanitized: value, hadBase64Payload: false }
 }
 
+function limitContextEstimateSerialized(value: string): string {
+  if (value.length <= CONTEXT_ESTIMATE_JSON_SANITIZE_MAX_CHARS) return value
+  return value.slice(0, CONTEXT_ESTIMATE_JSON_SANITIZE_MAX_CHARS)
+}
+
 function serializeContextEstimatePayload(value: unknown): ContextEstimatePayloadInfo {
   if (typeof value === 'string') {
+    if (value.length > CONTEXT_ESTIMATE_JSON_SANITIZE_MAX_CHARS) {
+      return {
+        serialized: limitContextEstimateSerialized(value),
+        hadBase64Payload: false
+      }
+    }
+
     try {
       const parsed = JSON.parse(value) as unknown
       const sanitized = sanitizeContextEstimateValue(parsed)
       return {
-        serialized: JSON.stringify(sanitized.sanitized),
+        serialized: limitContextEstimateSerialized(JSON.stringify(sanitized.sanitized)),
         hadBase64Payload: sanitized.hadBase64Payload
       }
     } catch {
       const sanitized = sanitizeContextEstimateString({ value })
       return {
-        serialized: sanitized.sanitized,
+        serialized: limitContextEstimateSerialized(sanitized.sanitized),
         hadBase64Payload: sanitized.hadBase64Payload
       }
     }
@@ -840,12 +857,12 @@ function serializeContextEstimatePayload(value: unknown): ContextEstimatePayload
   try {
     const sanitized = sanitizeContextEstimateValue(value)
     return {
-      serialized: JSON.stringify(sanitized.sanitized),
+      serialized: limitContextEstimateSerialized(JSON.stringify(sanitized.sanitized)),
       hadBase64Payload: sanitized.hadBase64Payload
     }
   } catch {
     return {
-      serialized: String(value ?? ''),
+      serialized: limitContextEstimateSerialized(String(value ?? '')),
       hadBase64Payload: false
     }
   }
@@ -3369,6 +3386,7 @@ export function useChatActions(): {
           let currentUsageProviderId = agentProviderConfig.providerId ?? null
           let currentUsageModelId = agentProviderConfig.model ?? null
           let lastRequestDebugInfo: RequestDebugInfo | undefined
+          let lastContextEstimateDebugInfo: RequestDebugInfo | undefined
           let preciseContextTokens: number | null = null
           let preciseContextTokenRequestSeq = 0
 
@@ -3416,13 +3434,10 @@ export function useChatActions(): {
           }
 
           try {
-            const requestContextMaxMessages =
-              settings.contextCompressionEnabled && compressionContextLength > 0 ? null : undefined
             let messagesToSend = await useChatStore
               .getState()
               .getSessionMessagesForRequest(sessionId, {
-                includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
-                requestContextMaxMessages
+                includeTrailingAssistantPlaceholder: !!existingAssistantMessage
               })
             messagesToSend = ensureRequestContainsExpectedUserMessage(
               messagesToSend,
@@ -3453,6 +3468,27 @@ export function useChatActions(): {
                       resolveCompressionReservedOutputBudget(resolvedModelConfig)
                   }
                 : null
+
+            if (
+              compressionConfig &&
+              shouldUseRendererLoopForCompression({
+                messages: messagesToSend,
+                provider: agentProviderConfig,
+                tools: effectiveToolDefs,
+                compression: compressionConfig
+              })
+            ) {
+              messagesToSend = await useChatStore
+                .getState()
+                .getSessionMessagesForRequest(sessionId, {
+                  includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
+                  requestContextMaxMessages: null
+                })
+              messagesToSend = ensureRequestContainsExpectedUserMessage(
+                messagesToSend,
+                expectedUserRequestMessage
+              )
+            }
 
             // Build and inject a runtime reminder into the last user message
             const sessionSnapshot = useChatStore.getState().sessions.find((s) => s.id === sessionId)
@@ -4316,8 +4352,10 @@ export function useChatActions(): {
                   if (isSessionForeground(sessionId!)) {
                     setGeneratingImageWithSync(assistantMsgId, false)
                   }
-                  const debugContextEstimate = shouldUseEstimatedContextTokens(lastRequestDebugInfo)
-                    ? estimateContextTokensFromDebugInfo(lastRequestDebugInfo)
+                  const debugInfoForContextEstimate =
+                    lastContextEstimateDebugInfo ?? lastRequestDebugInfo
+                  const debugContextEstimate = shouldUseEstimatedContextTokens(debugInfoForContextEstimate)
+                    ? estimateContextTokensFromDebugInfo(debugInfoForContextEstimate)
                     : null
                   const estimatedContextTokens =
                     preciseContextTokens && preciseContextTokens > 0
@@ -4422,7 +4460,7 @@ export function useChatActions(): {
                 case 'request_debug': {
                   streamDeltaBuffer.flushNow()
                   if (event.debugInfo) {
-                    lastRequestDebugInfo = {
+                    const requestDebugInfo = {
                       ...event.debugInfo,
                       providerId: event.debugInfo.providerId ?? agentProviderConfig.providerId,
                       providerBuiltinId:
@@ -4431,16 +4469,15 @@ export function useChatActions(): {
                       executionPath:
                         event.debugInfo.executionPath ?? (useSidecar ? 'sidecar' : 'node')
                     }
+                    lastContextEstimateDebugInfo = requestDebugInfo
+                    lastRequestDebugInfo = truncateRequestDebugForPersistence(requestDebugInfo)
                     currentUsageProviderId =
-                      lastRequestDebugInfo.providerId ?? currentUsageProviderId
-                    currentUsageModelId = lastRequestDebugInfo.model ?? currentUsageModelId
-                    setLastDebugInfo(assistantMsgId, lastRequestDebugInfo)
-                    updateRuntimeMessage(sessionId!, assistantMsgId, {
-                      debugInfo: lastRequestDebugInfo
-                    })
-                    if (shouldUseEstimatedContextTokens(lastRequestDebugInfo)) {
+                      requestDebugInfo.providerId ?? currentUsageProviderId
+                    currentUsageModelId = requestDebugInfo.model ?? currentUsageModelId
+                    setLastDebugInfo(assistantMsgId, requestDebugInfo)
+                    if (shouldUseEstimatedContextTokens(requestDebugInfo)) {
                       const debugContextEstimate =
-                        estimateContextTokensFromDebugInfo(lastRequestDebugInfo)
+                        estimateContextTokensFromDebugInfo(requestDebugInfo)
                       const provisionalContextTokens =
                         debugContextEstimate.tokenCount ||
                         estimateCurrentIterationContextTokens({
@@ -4462,13 +4499,13 @@ export function useChatActions(): {
 
                     if (
                       shouldRequestPreciseResponsesContextTokens({
-                        debugInfo: lastRequestDebugInfo,
+                        debugInfo: requestDebugInfo,
                         providerConfig: agentProviderConfig
                       })
                     ) {
                       const requestSeq = ++preciseContextTokenRequestSeq
                       void requestPreciseResponsesContextTokens({
-                        debugInfo: lastRequestDebugInfo,
+                        debugInfo: requestDebugInfo,
                         providerConfig: agentProviderConfig
                       })
                         .then((exactContextTokens) => {
@@ -4583,7 +4620,6 @@ export function useChatActions(): {
               if (err instanceof ApiStreamError) {
                 const debugInfo = err.debugInfo as RequestDebugInfo
                 setLastDebugInfo(assistantMsgId, debugInfo)
-                updateRuntimeMessage(sessionId!, assistantMsgId, { debugInfo })
               }
             }
           } finally {
@@ -5509,6 +5545,7 @@ async function runSimpleChat(
     let thinkingDone = false
     let hasThinkingDelta = false
     let lastRequestDebugInfo: RequestDebugInfo | undefined
+    let lastContextEstimateDebugInfo: RequestDebugInfo | undefined
     let preciseContextTokens: number | null = null
     let preciseContextTokenRequestSeq = 0
     for await (const event of stream) {
@@ -5610,8 +5647,9 @@ async function runSimpleChat(
           }
           setGeneratingImageWithSync(assistantMsgId, false)
           if (event.usage) {
-            const debugContextEstimate = shouldUseEstimatedContextTokens(lastRequestDebugInfo)
-              ? estimateContextTokensFromDebugInfo(lastRequestDebugInfo)
+            const debugInfoForContextEstimate = lastContextEstimateDebugInfo ?? lastRequestDebugInfo
+            const debugContextEstimate = shouldUseEstimatedContextTokens(debugInfoForContextEstimate)
+              ? estimateContextTokensFromDebugInfo(debugInfoForContextEstimate)
               : null
             const contextTokensOverride =
               preciseContextTokens && preciseContextTokens > 0
@@ -5661,20 +5699,17 @@ async function runSimpleChat(
         case 'request_debug': {
           streamDeltaBuffer.flushNow()
           if (event.debugInfo) {
-            lastRequestDebugInfo = {
+            const requestDebugInfo = {
               ...event.debugInfo,
               providerId: config.providerId,
               providerBuiltinId: config.providerBuiltinId,
               model: config.model
             }
-            setLastDebugInfo(assistantMsgId, {
-              ...lastRequestDebugInfo
-            })
-            updateRuntimeMessage(sessionId, assistantMsgId, {
-              debugInfo: lastRequestDebugInfo
-            })
-            if (shouldUseEstimatedContextTokens(lastRequestDebugInfo)) {
-              const debugContextEstimate = estimateContextTokensFromDebugInfo(lastRequestDebugInfo)
+            lastContextEstimateDebugInfo = requestDebugInfo
+            lastRequestDebugInfo = truncateRequestDebugForPersistence(requestDebugInfo)
+            setLastDebugInfo(assistantMsgId, requestDebugInfo)
+            if (shouldUseEstimatedContextTokens(requestDebugInfo)) {
+              const debugContextEstimate = estimateContextTokensFromDebugInfo(requestDebugInfo)
               const provisionalUsage = buildStreamingContextUsage(
                 debugContextEstimate.tokenCount ||
                   estimateContextTokensForRequest({
@@ -5693,13 +5728,13 @@ async function runSimpleChat(
 
             if (
               shouldRequestPreciseResponsesContextTokens({
-                debugInfo: lastRequestDebugInfo,
+                debugInfo: requestDebugInfo,
                 providerConfig: config
               })
             ) {
               const requestSeq = ++preciseContextTokenRequestSeq
               void requestPreciseResponsesContextTokens({
-                debugInfo: lastRequestDebugInfo,
+                debugInfo: requestDebugInfo,
                 providerConfig: config
               })
                 .then((exactContextTokens) => {
@@ -5775,7 +5810,6 @@ async function runSimpleChat(
           model: config.model
         }
         setLastDebugInfo(assistantMsgId, debugInfo)
-        updateRuntimeMessage(sessionId, assistantMsgId, { debugInfo })
       }
     }
   } finally {
