@@ -1076,7 +1076,7 @@ export interface CompactBoundaryMeta {
 }
 ```
 
-- [ ] **Step 4: Extend skip reasons in `context-compression.ts`**
+- [ ] **Step 4: Extend skip reasons and strategy config forwarding in `context-compression.ts`**
 
 Change the `CompressionSkipReason` type to:
 
@@ -1093,6 +1093,23 @@ export type CompressionSkipReason =
   | 'unsafe_summary_output'
   | 'cancelled'
   | 'unknown'
+```
+
+Change the `ContextCompressionStrategy.compressMessages` signature so concrete strategies receive the active config before post-compact state:
+
+```ts
+  compressMessages: (
+    messages: UnifiedMessage[],
+    providerConfig: ProviderConfig,
+    signal?: AbortSignal,
+    preserveCount?: number,
+    focusPrompt?: string,
+    pinnedContext?: string,
+    trigger?: CompactBoundaryMeta['trigger'],
+    preTokens?: number,
+    config?: CompressionConfig | null,
+    postCompactContext?: string
+  ) => Promise<{ messages: UnifiedMessage[]; result: CompressionResult }>
 ```
 
 - [ ] **Step 5: Create the engine module**
@@ -1254,10 +1271,9 @@ async function claudeCompressMessages(
   _pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0,
-  postCompactContext?: string,
-  config?: Pick<CompressionConfig, 'strategyId'> | null
+  config?: CompressionConfig | null,
+  postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
-  void config
   if (claudeCompactFailures >= MAX_CLAUDE_COMPACT_FAILURES) {
     return {
       messages,
@@ -1293,7 +1309,7 @@ async function claudeCompressMessages(
 
   for (let attempt = 0; attempt <= MAX_CLAUDE_COMPACT_RETRIES; attempt += 1) {
     try {
-      const sanitizedMessages = sanitizeMessagesForClaudeCompact(compressibleMessages)
+      const sanitizedMessages = sanitizeMessagesForClaudeCompact(compressibleMessages, config)
       const rawSummary = await callClaudeCompactSummarizer({
         providerConfig,
         systemPrompt: buildClaudeCompactSystemPrompt(),
@@ -1399,6 +1415,36 @@ const CLAUDE_CODE_COMPACT_STRATEGY = createClaudeCodeCompactStrategy()
 const COMPRESSION_STRATEGIES: Record<ContextCompressionStrategyId, ContextCompressionStrategy> = {
   'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY,
   'claude-code-compact-v1': CLAUDE_CODE_COMPACT_STRATEGY
+}
+```
+
+Update the exported `compressMessages` wrapper so it accepts a full `CompressionConfig` and forwards it to the selected strategy before `postCompactContext`:
+
+```ts
+export async function compressMessages(
+  messages: UnifiedMessage[],
+  providerConfig: ProviderConfig,
+  signal?: AbortSignal,
+  preserveCount = PRESERVE_RECENT_COUNT,
+  focusPrompt?: string,
+  pinnedContext?: string,
+  trigger: CompactBoundaryMeta['trigger'] = 'manual',
+  preTokens = 0,
+  config?: CompressionConfig | null,
+  postCompactContext?: string
+): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
+  return getCompressionStrategy(config).compressMessages(
+    messages,
+    providerConfig,
+    signal,
+    preserveCount,
+    focusPrompt,
+    pinnedContext,
+    trigger,
+    preTokens,
+    config,
+    postCompactContext
+  )
 }
 ```
 
