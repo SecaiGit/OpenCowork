@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
+// Cross-file regression sentinel for context/compression behavior across renderer/main files.
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -33,9 +34,19 @@ const mainRuntimeSupportsCompression =
   /contextCompression\s*:/.test(jsRuntimeSource) ||
   /params\.compression/.test(jsRuntimeSource) ||
   /compression\?\s*:/.test(jsRuntimeSource)
-const routingBlocksAllEnabledCompression = /if \(!config\?\.enabled\) return false\s+return true/.test(
-  routingSource
-)
+
+function routingForcesRendererFallbackWhenEnabled(source) {
+  const hasReturnTrue = /return\s+true\b/.test(source)
+  const mentionsCompressionEnabled = /!config\?\.enabled|config\?\.enabled/.test(source)
+  const hasThresholdRoutingSignals =
+    /shouldCompress\(/.test(source) ||
+    /shouldPreCompress\(/.test(source) ||
+    /estimateRequestContextTokens/.test(source)
+
+  return hasReturnTrue && mentionsCompressionEnabled && !hasThresholdRoutingSignals
+}
+
+const routingBlocksAllEnabledCompression = routingForcesRendererFallbackWhenEnabled(routingSource)
 const routingUsesThresholdDecision =
   /shouldCompress\(/.test(routingSource) &&
   /shouldPreCompress\(/.test(routingSource) &&
@@ -57,15 +68,66 @@ if (routingBlocksAllEnabledCompression) {
 
 const legacyCompressionEnabledNullHistoryPattern =
   /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/
-const unguardedCompressionEnabledNullHistoryPattern =
-  /contextCompressionEnabled[\s\S]{0,200}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/
-const thresholdRoutedRendererCompressionPattern =
-  /shouldUseRendererLoopForCompression[\s\S]{0,240}requestContextMaxMessages\s*[:=][\s\S]{0,80}null/
+
+function findMatchingBraceIndex(source, openBraceIndex) {
+  let depth = 0
+  for (let index = openBraceIndex; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '{') depth += 1
+    else if (char === '}') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
+function findIfBlockContainingIndex(source, targetIndex) {
+  let searchIndex = 0
+  while (searchIndex < source.length) {
+    const ifIndex = source.indexOf('if', searchIndex)
+    if (ifIndex === -1) return null
+
+    const openBraceIndex = source.indexOf('{', ifIndex)
+    if (openBraceIndex === -1) return null
+
+    const closeBraceIndex = findMatchingBraceIndex(source, openBraceIndex)
+    if (closeBraceIndex === -1) return null
+
+    if (targetIndex >= ifIndex && targetIndex <= closeBraceIndex) {
+      return source.slice(ifIndex, closeBraceIndex + 1)
+    }
+
+    searchIndex = ifIndex + 2
+  }
+
+  return null
+}
+
+function hasThresholdProtectedNullHistoryRequest(source) {
+  const nullHistoryPattern = /requestContextMaxMessages\s*:\s*null/g
+
+  for (const match of source.matchAll(nullHistoryPattern)) {
+    const matchIndex = match.index ?? -1
+    if (matchIndex < 0) continue
+    const ifBlock = findIfBlockContainingIndex(source, matchIndex)
+    if (ifBlock && /shouldUseRendererLoopForCompression/.test(ifBlock)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+const hasCompressionEnabledNullHistoryRequest =
+  /contextCompressionEnabled[\s\S]*requestContextMaxMessages\s*[:=][\s\S]*null/.test(
+    chatActionsSource
+  )
+const hasThresholdProtectedNullHistory = hasThresholdProtectedNullHistoryRequest(chatActionsSource)
 
 if (
   legacyCompressionEnabledNullHistoryPattern.test(chatActionsSource) ||
-  (unguardedCompressionEnabledNullHistoryPattern.test(chatActionsSource) &&
-    !thresholdRoutedRendererCompressionPattern.test(chatActionsSource))
+  (hasCompressionEnabledNullHistoryRequest && !hasThresholdProtectedNullHistory)
 ) {
   fail('compression-enabled requests force full history loading', [
     'src/renderer/src/hooks/use-chat-actions.ts still contains a compression-enabled requestContextMaxMessages=null path',
@@ -75,12 +137,26 @@ if (
   pass('compression enabled requests do not force full history loading')
 }
 
+function findMatchingParenIndex(source, openParenIndex) {
+  let depth = 0
+  for (let index = openParenIndex; index < source.length; index += 1) {
+    const char = source[index]
+    if (char === '(') depth += 1
+    else if (char === ')') {
+      depth -= 1
+      if (depth === 0) return index
+    }
+  }
+  return -1
+}
+
 function hasRuntimeDebugInfoWrite(source) {
   let index = source.indexOf('updateRuntimeMessage(')
   while (index !== -1) {
-    const callPrefix = source.slice(index, index + 1_000)
-    const callEnd = callPrefix.indexOf('})')
-    const call = callEnd === -1 ? callPrefix : callPrefix.slice(0, callEnd)
+    const openParenIndex = source.indexOf('(', index)
+    if (openParenIndex === -1) return false
+    const closeParenIndex = findMatchingParenIndex(source, openParenIndex)
+    const call = closeParenIndex === -1 ? source.slice(index) : source.slice(index, closeParenIndex + 1)
     if (/debugInfo\s*:|\{\s*debugInfo[\s,}]/.test(call)) return true
     index = source.indexOf('updateRuntimeMessage(', index + 1)
   }

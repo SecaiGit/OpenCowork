@@ -2162,7 +2162,6 @@ async function canUseSidecarForAgentRun(args: {
   forceApproval: boolean
   compression?: CompressionConfig | null
   isPlanMode: boolean
-  sessionMode: string
   desktopControlMode: string
   hasChannels: boolean
   hasMcps: boolean
@@ -2175,7 +2174,8 @@ async function canUseSidecarForAgentRun(args: {
       compression: args.compression
     })
   ) {
-    // Main-process runInteractiveAgentLoop does not support context compression yet.
+    // Sidecar/main runtime still does not support compression yet; keep the
+    // renderer loop as a threshold-triggered exception when compression is needed.
     return false
   }
 
@@ -3482,7 +3482,8 @@ export function useChatActions(): {
                 .getState()
                 .getSessionMessagesForRequest(sessionId, {
                   includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
-                  // Full transcript reload only for the threshold-routed renderer compression loop.
+                  // Sidecar/main runtime still does not support compression, so keep
+                  // the renderer loop exception only after threshold routing says it is needed.
                   requestContextMaxMessages: null
                 })
               messagesToSend = ensureRequestContainsExpectedUserMessage(
@@ -3493,12 +3494,16 @@ export function useChatActions(): {
 
             // Build and inject a runtime reminder into the last user message
             const sessionSnapshot = useChatStore.getState().sessions.find((s) => s.id === sessionId)
-            const sessionMode = sessionSnapshot?.mode ?? uiStore.mode
             const shouldInjectContext =
-              sessionMode === 'clarify' ||
-              sessionMode === 'cowork' ||
-              sessionMode === 'code' ||
-              sessionMode === 'acp'
+              sessionSnapshot?.mode === 'clarify' ||
+              sessionSnapshot?.mode === 'cowork' ||
+              sessionSnapshot?.mode === 'code' ||
+              sessionSnapshot?.mode === 'acp' ||
+              (!sessionSnapshot?.mode &&
+                (uiStore.mode === 'clarify' ||
+                  uiStore.mode === 'cowork' ||
+                  uiStore.mode === 'code' ||
+                  uiStore.mode === 'acp'))
 
             if (source !== 'continue' && shouldInjectContext && messagesToSend.length > 0) {
               const { buildRuntimeReminder } = await import('@renderer/lib/agent/dynamic-context')
@@ -3601,7 +3606,6 @@ export function useChatActions(): {
               forceApproval: false,
               compression: compressionConfig,
               isPlanMode,
-              sessionMode: mode,
               desktopControlMode,
               hasChannels: scopedActiveChannels.length > 0,
               hasMcps: activeMcps.length > 0
@@ -4601,7 +4605,6 @@ export function useChatActions(): {
               const errMsg = normalizeContinuationErrorMessage(
                 err instanceof Error ? err.message : String(err)
               )
-              console.error('[Agent Loop Exception]', err)
               if (!shouldSuppressTransientRuntimeError(errMsg)) {
                 if (isSessionForeground(sessionId!)) {
                   toast.error('Agent failed', { description: errMsg })
