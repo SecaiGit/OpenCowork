@@ -550,6 +550,7 @@ export async function* runAgentLoop(
         const { tc, index, toolError, startedAt, completedAt } = params
         const displayOutput =
           tc.name === 'Bash' ? compactBashToolResultContent(params.output) : params.output
+        // Keep review/error state aligned with the output surfaced to UI.
         const resultError = toolError ?? extractStructuredToolError(displayOutput)
         const compactedOutput = compactToolResultForContext({
           toolName: tc.name,

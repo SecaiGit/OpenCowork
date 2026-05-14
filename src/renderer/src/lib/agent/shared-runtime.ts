@@ -8,6 +8,7 @@ import { registerSidecarApprovalHandler } from '../ipc/sidecar-approval-registry
 import { runAgentViaSidecar } from './run-agent-via-sidecar'
 import { runAgentLoop } from './agent-loop'
 import { shouldUseRendererLoopForCompression } from './context-compression-routing'
+import type { CompressionConfig } from './context-compression'
 import { compactToolResultForContext } from './context-payload-compaction'
 
 export type SharedAgentRuntimeReason = LoopEndReason | 'shutdown'
@@ -107,7 +108,8 @@ export async function runSharedAgentRuntime(
   const buildHookArgs = (event: AgentEvent): SharedAgentRuntimeHookArgs => ({
     event,
     state,
-    buildToolResultMessage
+    buildToolResultMessage: (toolResults) =>
+      buildToolResultMessage(toolResults, loopConfig.contextCompression?.config ?? null)
   })
 
   const applyControl = (control?: SharedAgentRuntimeControl | void): boolean => {
@@ -405,7 +407,7 @@ export async function requestFallbackReport(options: {
     maxIterations: 1,
     // Do not recurse fallback capture.
     captureFinalMessages: undefined,
-    // Skip context compression on the follow-up; the transcript is already final.
+    // Skip another compression pass; capturedMessages may already contain compacted replay payloads.
     contextCompression: undefined,
     // Drop any pending message queue so teammate messages do not pollute the report.
     messageQueue: undefined
@@ -458,14 +460,16 @@ export function buildToolResultMessage(
     toolName?: string
     content: ToolResultContent
     isError?: boolean
-  }[]
+  }[],
+  config?: CompressionConfig | null
 ): UnifiedMessage {
   const content: ContentBlock[] = toolResults.map((result) => {
     const toolName = result.toolName ?? `unknown:${result.toolUseId.slice(0, 8)}`
     const compacted = compactToolResultForContext({
       toolName,
       content: result.content,
-      isError: result.isError
+      isError: result.isError,
+      config
     })
 
     return {
