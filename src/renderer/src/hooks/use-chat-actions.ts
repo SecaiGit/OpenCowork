@@ -125,7 +125,10 @@ import {
   installSessionControlSyncListener,
   type SessionControlSyncEvent
 } from '@renderer/lib/session-control-sync'
-import type { CompressionConfig } from '@renderer/lib/agent/context-compression'
+import type {
+  CompressionConfig,
+  CompressionResult
+} from '@renderer/lib/agent/context-compression'
 import { useChannelStore } from '@renderer/stores/channel-store'
 import { useAppPluginStore } from '@renderer/stores/app-plugin-store'
 import { confirm } from '@renderer/components/ui/confirm-dialog'
@@ -2516,6 +2519,27 @@ function createSubAgentEventBuffer(sessionId: string): {
 }
 
 export type ManualCompressionResult = 'compressed' | 'skipped' | 'blocked' | 'failed'
+
+function getManualCompressionSkipDescription(reason?: CompressionResult['reason']): string {
+  switch (reason) {
+    case 'insufficient_messages':
+      return i18n.t('contextCompression.manualSkippedInsufficientMessages', { ns: 'agent' })
+    case 'insufficient_compressible_messages':
+      return i18n.t('contextCompression.manualSkippedInsufficientCompressibleMessages', {
+        ns: 'agent'
+      })
+    case 'recent_segment_too_large':
+    case 'single_tool_result_too_large':
+      return i18n.t('contextCompression.manualSkippedRecentPayloadTooLarge', { ns: 'agent' })
+    case 'circuit_breaker_open':
+      return i18n.t('contextCompression.manualSkippedCircuitBreaker', { ns: 'agent' })
+    case 'summarizer_prompt_too_long':
+      return i18n.t('contextCompression.manualSkippedPromptTooLong', { ns: 'agent' })
+    case 'summarizer_failed':
+    default:
+      return i18n.t('contextCompression.manualSkippedSummarizerFailed', { ns: 'agent' })
+  }
+}
 
 export function useChatActions(): {
   sendMessage: (
@@ -5196,7 +5220,9 @@ export function useChatActions(): {
         manualCompressionConfig
       )
       if (!result.compressed) {
-        toast.warning('无需压缩', { description: '当前消息数量不足以进行有效压缩' })
+        toast.warning('无需压缩', {
+          description: getManualCompressionSkipDescription(result.reason)
+        })
         return 'skipped'
       }
       chatStore.replaceSessionMessages(sessionId, compressed)

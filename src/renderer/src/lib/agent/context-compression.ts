@@ -49,11 +49,21 @@ export interface CompressionDefaults {
   strategyId?: ContextCompressionStrategyId | null
 }
 
+export type CompressionSkipReason =
+  | 'insufficient_messages'
+  | 'insufficient_compressible_messages'
+  | 'recent_segment_too_large'
+  | 'single_tool_result_too_large'
+  | 'summarizer_prompt_too_long'
+  | 'summarizer_failed'
+  | 'circuit_breaker_open'
+
 export interface CompressionResult {
   compressed: boolean
   originalCount: number
   newCount: number
   messagesSummarized?: number
+  reason?: CompressionSkipReason
 }
 
 export interface ContextCompressionStrategy {
@@ -465,11 +475,27 @@ async function partialSummaryCompressMessages(
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
+  if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+    return {
+      messages,
+      result: {
+        compressed: false,
+        originalCount: messages.length,
+        newCount: messages.length,
+        reason: 'circuit_breaker_open'
+      }
+    }
+  }
   const originalCount = messages.length
   if (originalCount < preserveCount + 2) {
     return {
       messages,
-      result: { compressed: false, originalCount, newCount: originalCount }
+      result: {
+        compressed: false,
+        originalCount,
+        newCount: originalCount,
+        reason: 'insufficient_messages'
+      }
     }
   }
 
@@ -480,7 +506,12 @@ async function partialSummaryCompressMessages(
   if (messagesToCompress.length < 2) {
     return {
       messages,
-      result: { compressed: false, originalCount, newCount: originalCount }
+      result: {
+        compressed: false,
+        originalCount,
+        newCount: originalCount,
+        reason: 'insufficient_compressible_messages'
+      }
     }
   }
 
@@ -548,7 +579,12 @@ async function partialSummaryCompressMessages(
 
   return {
     messages,
-    result: { compressed: false, originalCount, newCount: originalCount }
+    result: {
+      compressed: false,
+      originalCount,
+      newCount: originalCount,
+      reason: 'summarizer_failed'
+    }
   }
 }
 
