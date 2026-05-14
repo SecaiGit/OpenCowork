@@ -30,6 +30,24 @@ export interface ApiRoundGroup {
   messages: UnifiedMessage[]
 }
 
+export type ToolUseResultProtocolIssueKind =
+  | 'orphaned_tool_result'
+  | 'duplicate_tool_result'
+  | 'interleaved_user_text_before_tool_result'
+  | 'assistant_tool_use_after_user_text'
+  | 'unanswered_tool_use'
+
+export interface ToolUseResultProtocolIssue {
+  kind: ToolUseResultProtocolIssueKind
+  messageIndex: number
+  toolUseId?: string
+}
+
+export interface ToolUseResultProtocolValidation {
+  valid: boolean
+  issues: ToolUseResultProtocolIssue[]
+}
+
 export function estimateTextTokens(value: string): number {
   if (!value) return 0
   return Math.ceil(value.length / APPROX_CHARS_PER_TOKEN)
@@ -158,6 +176,91 @@ function collectToolResultIds(message: UnifiedMessage): string[] {
       (block): block is Extract<ContentBlock, { type: 'tool_result' }> => block.type === 'tool_result'
     )
     .map((block) => block.toolUseId)
+}
+
+export function validateToolUseResultProtocol(
+  messages: UnifiedMessage[]
+): ToolUseResultProtocolValidation {
+  const issues: ToolUseResultProtocolIssue[] = []
+  const pendingToolUseIds = new Set<string>()
+  const answeredToolUseIds = new Set<string>()
+
+  messages.forEach((message, messageIndex) => {
+    if (message.role === 'assistant') {
+      const toolUseIds = collectToolUseIds(message)
+
+      if (pendingToolUseIds.size > 0 && toolUseIds.length > 0) {
+        for (const id of toolUseIds) {
+          issues.push({
+            kind: 'assistant_tool_use_after_user_text',
+            messageIndex,
+            toolUseId: id
+          })
+        }
+      }
+
+      for (const id of toolUseIds) {
+        pendingToolUseIds.add(id)
+      }
+
+      return
+    }
+
+    if (message.role !== 'user') return
+
+    if (typeof message.content === 'string') {
+      if (pendingToolUseIds.size > 0 && message.content.trim().length > 0) {
+        issues.push({
+          kind: 'interleaved_user_text_before_tool_result',
+          messageIndex
+        })
+      }
+      return
+    }
+
+    let sawNonToolResultContent = false
+
+    for (const block of message.content) {
+      if (block.type !== 'tool_result') {
+        sawNonToolResultContent = true
+        continue
+      }
+
+      const toolUseId = block.toolUseId
+
+      if (!pendingToolUseIds.has(toolUseId)) {
+        issues.push({
+          kind: answeredToolUseIds.has(toolUseId) ? 'duplicate_tool_result' : 'orphaned_tool_result',
+          messageIndex,
+          toolUseId
+        })
+        continue
+      }
+
+      pendingToolUseIds.delete(toolUseId)
+      answeredToolUseIds.add(toolUseId)
+    }
+
+    if (pendingToolUseIds.size > 0 && sawNonToolResultContent) {
+      issues.push({
+        kind: 'interleaved_user_text_before_tool_result',
+        messageIndex
+      })
+    }
+  })
+
+  for (const toolUseId of pendingToolUseIds) {
+    issues.push({
+      kind: 'unanswered_tool_use',
+      messageIndex: messages.length - 1,
+      toolUseId
+    })
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues
+  }
 }
 
 export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGroup[] {

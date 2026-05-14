@@ -33,6 +33,8 @@ import {
   CLAUDE_COMPACT_RESERVED_OUTPUT_CAP,
   getClaudeCompactBudget
 } from '../claude-compact-budget'
+import { selectClaudeCompactRanges } from '../claude-compact-rounds'
+import { validateToolUseResultProtocol } from '../context-budget'
 
 let nextMessageId = 0
 
@@ -117,5 +119,63 @@ describe('getClaudeCompactBudget', () => {
       effectiveContextWindow: 1,
       autoCompactThreshold: 1
     })
+  })
+})
+
+describe('selectClaudeCompactRanges', () => {
+  it('preserves the most recent complete API round and compresses only older complete rounds', () => {
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a')]),
+      message('assistant', 'first result'),
+      message('user', 'second task'),
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b')]),
+      message('assistant', 'second result')
+    ]
+
+    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+
+    expect(selection.ok).toBe(true)
+    expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-1', 'm-2', 'm-3', 'm-4'])
+    expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
+    expect(selection.compressedRange).toEqual({ start: 0, end: 4 })
+    expect(selection.preservedRange).toEqual({ start: 4, end: 8 })
+    expect(validateToolUseResultProtocol(selection.preservedMessages).valid).toBe(true)
+  })
+
+  it('refuses to compact when the preserved tail would start with an orphaned tool result', () => {
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', 'first result'),
+      message('user', [toolResult('orphan')]),
+      message('assistant', 'tail')
+    ]
+
+    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+
+    expect(selection.ok).toBe(false)
+    expect(selection.reason).toBe('unsafe_boundary')
+    expect(selection.compressibleMessages).toEqual([])
+    expect(selection.preservedMessages).toEqual(messages)
+  })
+
+  it('keeps an unanswered tool_use inside the preserved tail instead of splitting it into the summary span', () => {
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', 'first result'),
+      message('user', 'inspect file'),
+      message('assistant', [toolUse('pending')])
+    ]
+
+    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+
+    expect(selection.ok).toBe(true)
+    expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-1', 'm-2'])
+    expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-3', 'm-4'])
+    expect(validateToolUseResultProtocol(selection.preservedMessages).issues.map((issue) => issue.kind)).toEqual([
+      'unanswered_tool_use'
+    ])
   })
 })
