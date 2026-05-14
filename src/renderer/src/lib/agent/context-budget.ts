@@ -196,6 +196,8 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
 
     const toolUseIds = collectToolUseIds(message)
     const toolResultIds = collectToolResultIds(message)
+    const nextMessage = messages[index + 1]
+    const nextMessageToolUseIds = nextMessage ? collectToolUseIds(nextMessage) : []
 
     if (message.role === 'assistant') {
       currentHasAssistant = true
@@ -249,10 +251,14 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
         !currentToolRoundInvalid && currentHasAssistant && currentHasToolUse && pendingToolUseIds.size === 0
     }
 
+    const nextAssistantContinuesPlainAssistantSegment =
+      nextMessage?.role === 'assistant' && nextMessageToolUseIds.length === 0
+
     const assistantWithoutToolsClosedRound =
       message.role === 'assistant' &&
       toolUseIds.length === 0 &&
       pendingToolUseIds.size === 0 &&
+      !nextAssistantContinuesPlainAssistantSegment &&
       (currentHasUserText || currentHasToolResult || previousGroupClosedWithAnsweredToolUseBatch)
     const answeredToolUseBatchClosedRound =
       message.role === 'user' && toolResultIds.length > 0 && canCloseAnsweredToolUseBatch
