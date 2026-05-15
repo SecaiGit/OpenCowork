@@ -38,7 +38,7 @@ function normalizeNonNegativeInteger(value: number): number {
   return Math.max(0, Math.floor(value))
 }
 
-function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+function normalizePositiveInteger(value: number, fallback: number): number {
   if (!Number.isFinite(value)) {
     return fallback
   }
@@ -54,7 +54,7 @@ export function classifyClaudeContextGate(args: {
 }): ClaudeContextGateResult {
   const inputTokens = normalizeNonNegativeInteger(args.inputTokens)
   const budget = getClaudeCompactBudget(args.config)
-  const preCompressGapTokens = normalizePositiveInteger(args.preCompressGapTokens, 8_000)
+  const preCompressGapTokens = normalizePositiveInteger(args.preCompressGapTokens ?? 8_000, 8_000)
   const preCompressThreshold = Math.max(1, budget.autoCompactThreshold - preCompressGapTokens)
 
   const base = {
