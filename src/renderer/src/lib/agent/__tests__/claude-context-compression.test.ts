@@ -10,6 +10,7 @@ vi.mock('@renderer/locales', () => ({
       if (key === 'contextCompression.imageAttachment') return '[Image attachment]'
       if (key === 'contextCompression.emptyResultError') return 'empty summary'
       if (key === 'contextCompression.postCompactStateTitle') return 'Current working state after compaction'
+      if (key === 'contextCompression.compressRequest') return String(options?.content ?? '')
       return key
     }
   }
@@ -394,6 +395,47 @@ describe('legacy compact summary extraction safety', () => {
     } finally {
       setTimeoutSpy.mockRestore()
     }
+  })
+
+  it('redacts secrets from legacy summarizer input and stored summary output', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Keep token=summary-secret-token and continue.</summary>'
+    )
+    const messages = [
+      message('user', 'first task api_key=sk-user-secret'),
+      message('assistant', [toolUse('legacy-a')]),
+      message('user', [toolResult('legacy-a', 'Authorization: Bearer result-secret-token')]),
+      message('assistant', 'Cookie: session=assistant-secret'),
+      message('user', 'tail task'),
+      message('assistant', 'tail result')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      2,
+      undefined,
+      'client_secret=pinned-secret',
+      'manual',
+      100,
+      { strategyId: 'partial-summary-v1' }
+    )
+
+    const summarizerPayload = JSON.stringify(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0])
+    const storedSummary = String(result.messages[1]?.content ?? '')
+
+    expect(result.result.compressed).toBe(true)
+    expect(String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)).toContain(
+      'Security boundary'
+    )
+    expect(summarizerPayload).toContain('[REDACTED')
+    expect(summarizerPayload).not.toContain('sk-user-secret')
+    expect(summarizerPayload).not.toContain('result-secret-token')
+    expect(summarizerPayload).not.toContain('assistant-secret')
+    expect(summarizerPayload).not.toContain('pinned-secret')
+    expect(storedSummary).toContain('[REDACTED')
+    expect(storedSummary).not.toContain('summary-secret-token')
   })
 })
 
