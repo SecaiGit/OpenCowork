@@ -34,6 +34,10 @@ import {
   supportsOpenAIImageParts
 } from '../../shared/openai-message-support'
 import { compactShellOutputPayload, compactShellText } from '../../shared/shell-output-compactor'
+import {
+  maybeCompactMainRuntimeContext,
+  type MainRuntimeCompressionConfig
+} from './context-compression-runtime'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
 import { applyDefaultApiUserAgent } from '../lib/api-user-agent'
 
@@ -200,6 +204,7 @@ interface UnifiedMessage {
   usage?: TokenUsage
   providerResponseId?: string
   source?: string | null
+  meta?: Record<string, unknown>
 }
 
 interface ToolDefinition {
@@ -391,6 +396,10 @@ export interface AgentLoopConfig {
   onApprovalNeeded?: (toolCall: ToolCallState) => Promise<boolean>
   messageQueue?: MessageQueueLike
   captureFinalMessages?: boolean
+  contextCompression?: {
+    config: MainRuntimeCompressionConfig
+    buildPostCompactContext?: () => string
+  }
 }
 
 interface AgentDefinition {
@@ -3715,6 +3724,41 @@ async function* sendProviderMessage(
   yield* sendOpenAIChat(messages, tools, config, signal)
 }
 
+async function runMainCompactTextRequest(args: {
+  provider: ProviderConfig
+  systemPrompt: string
+  userPrompt: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const compactProvider: ProviderConfig = {
+    ...args.provider,
+    systemPrompt: args.systemPrompt,
+    thinkingEnabled: false
+  }
+  let text = ''
+  for await (const event of sendProviderMessage(
+    [
+      {
+        id: 'main-claude-compact-request',
+        role: 'user',
+        content: args.userPrompt,
+        createdAt: Date.now()
+      }
+    ],
+    [],
+    compactProvider,
+    args.signal
+  )) {
+    if (event.type === 'text_delta') {
+      text += event.text ?? ''
+    }
+    if (event.type === 'error') {
+      throw new Error(event.error?.message ?? 'Main compact summarizer failed')
+    }
+  }
+  return text
+}
+
 class ProviderRequestError extends Error {
   statusCode?: number
   errorType?: string
@@ -3732,7 +3776,7 @@ async function* runAgentLoop(
   toolCtx: ToolContext
 ): AsyncGenerator<InteractiveAgentEvent> {
   yield { type: 'loop_start' }
-  const conversationMessages = [...messages]
+  let conversationMessages = [...messages]
   let iteration = 0
   const hasIterationLimit = Number.isFinite(config.maxIterations) && config.maxIterations > 0
   const buildLoopEndEvent = (
@@ -3753,6 +3797,36 @@ async function* runAgentLoop(
       for (const message of injected) {
         conversationMessages.push(message)
       }
+    }
+
+    if (config.contextCompression) {
+      const contextState = await maybeCompactMainRuntimeContext({
+        messages: conversationMessages,
+        config: config.contextCompression.config,
+        trigger: 'auto',
+        postCompactContext: config.contextCompression.buildPostCompactContext?.(),
+        signal: config.signal,
+        summarize: async ({ systemPrompt, userPrompt, signal }) =>
+          runMainCompactTextRequest({
+            provider: config.provider,
+            systemPrompt,
+            userPrompt,
+            signal
+          }),
+        createId: nanoid,
+        now: Date.now
+      })
+      if (contextState.compressed) {
+        for (const event of contextState.events) {
+          yield event as unknown as InteractiveAgentEvent
+        }
+      }
+      conversationMessages = contextState.messages as UnifiedMessage[]
+    }
+
+    if (config.signal.aborted) {
+      yield buildLoopEndEvent('aborted')
+      return
     }
 
     iteration += 1
