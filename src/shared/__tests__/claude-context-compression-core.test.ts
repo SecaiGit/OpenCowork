@@ -9,7 +9,8 @@ import {
   sanitizeMessagesForClaudeCompact,
   selectClaudeCompactRanges,
   type ClaudeCompactContentBlock,
-  type ClaudeCompactMessage
+  type ClaudeCompactMessage,
+  classifyClaudeContextGate
 } from '../claude-context-compression'
 
 let nextMessageId = 0
@@ -39,6 +40,150 @@ function toolResult(
 }
 
 describe('shared Claude compact core', () => {
+  describe('shared Claude context gate classification', () => {
+    const gateConfig = {
+      enabled: true,
+      contextLength: 200_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1' as const,
+      reservedOutputBudget: 20_000
+    }
+
+    it('classifies ordinary, pre-compress, and auto-compact pressure', () => {
+      expect(classifyClaudeContextGate({ inputTokens: 100_000, config: gateConfig })).toMatchObject({
+        kind: 'ok',
+        blocking: false
+      })
+      expect(classifyClaudeContextGate({ inputTokens: 160_000, config: gateConfig })).toMatchObject({
+        kind: 'pre_compress',
+        blocking: false,
+        reason: 'near_auto_compact_threshold'
+      })
+      expect(classifyClaudeContextGate({ inputTokens: 167_000, config: gateConfig })).toMatchObject({
+        kind: 'auto_compact',
+        blocking: false,
+        reason: 'auto_compact_threshold_reached'
+      })
+    })
+
+    it('returns safe ok state when compression is disabled', () => {
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 185_000,
+          config: { ...gateConfig, enabled: false }
+        })
+      ).toMatchObject({
+        kind: 'ok',
+        reason: 'compression_disabled',
+        blocking: false
+      })
+    })
+
+    it('returns safe ok state when context length is invalid', () => {
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 10_000,
+          config: { ...gateConfig, contextLength: 0 }
+        })
+      ).toMatchObject({
+        kind: 'ok',
+        reason: 'invalid_context_length',
+        blocking: false
+      })
+    })
+
+    it('does not block at exact context equality and blocks once reserved output exceeds by one token', () => {
+      expect(classifyClaudeContextGate({ inputTokens: 180_000, config: gateConfig })).toMatchObject({
+        kind: 'auto_compact',
+        blocking: false,
+        reason: 'auto_compact_threshold_reached',
+        inputTokens: 180_000,
+        contextLength: 200_000,
+        reservedOutputTokens: 20_000
+      })
+      expect(classifyClaudeContextGate({ inputTokens: 180_001, config: gateConfig })).toMatchObject({
+        kind: 'reserved_output_exceeded',
+        blocking: true,
+        reason: 'reserved_output_budget_exceeded',
+        inputTokens: 180_001,
+        contextLength: 200_000,
+        reservedOutputTokens: 20_000
+      })
+    })
+
+    it('uses custom pre-compress gap tokens relative to auto-compact threshold', () => {
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 164_000,
+          config: gateConfig,
+          preCompressGapTokens: 4_000
+        })
+      ).toMatchObject({
+        kind: 'pre_compress',
+        reason: 'near_auto_compact_threshold',
+        preCompressThreshold: 163_000
+      })
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 162_999,
+          config: gateConfig,
+          preCompressGapTokens: 4_000
+        })
+      ).toMatchObject({
+        kind: 'ok',
+        reason: 'below_pre_compress_threshold',
+        preCompressThreshold: 163_000
+      })
+    })
+
+    it('normalizes invalid pre-compress gap tokens to a minimum positive integer', () => {
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 165_999,
+          config: gateConfig,
+          preCompressGapTokens: 0
+        })
+      ).toMatchObject({
+        kind: 'ok',
+        preCompressThreshold: 166_999
+      })
+      expect(
+        classifyClaudeContextGate({
+          inputTokens: 165_999,
+          config: gateConfig,
+          preCompressGapTokens: -10
+        })
+      ).toMatchObject({
+        kind: 'ok',
+        preCompressThreshold: 166_999
+      })
+    })
+
+    it('normalizes NaN input tokens without leaking NaN into the result', () => {
+      const result = classifyClaudeContextGate({ inputTokens: Number.NaN, config: gateConfig })
+
+      expect(result).toMatchObject({
+        kind: 'ok',
+        reason: 'below_pre_compress_threshold',
+        blocking: false,
+        inputTokens: 0
+      })
+      expect(Number.isNaN(result.inputTokens)).toBe(false)
+      expect(Number.isNaN(result.preCompressThreshold)).toBe(false)
+    })
+
+    it('prioritizes hard input overflow over reserved output pressure', () => {
+      expect(classifyClaudeContextGate({ inputTokens: 201_000, config: gateConfig })).toMatchObject({
+        kind: 'hard_limit_exceeded',
+        blocking: true,
+        reason: 'hard_context_limit_exceeded',
+        inputTokens: 201_000,
+        contextLength: 200_000,
+        reservedOutputTokens: 20_000
+      })
+    })
+  })
+
   it('computes Claude Code style budget without renderer imports', () => {
     expect(
       getClaudeCompactBudget({ contextLength: 200_000, reservedOutputBudget: 32_000 })
