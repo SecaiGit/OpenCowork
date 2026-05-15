@@ -21,6 +21,7 @@ import {
   CLAUDE_COMPACT_AUTO_BUFFER_TOKENS,
   CLAUDE_COMPACT_RESERVED_OUTPUT_CAP
 } from './claude-compact-budget'
+import { extractClaudeCompactSummary } from './claude-compact-prompt'
 import { groupMessagesByApiRound } from './context-budget'
 
 export {
@@ -767,13 +768,7 @@ function truncateOldestMessages(messages: UnifiedMessage[], attempt: number): Un
 }
 
 function formatCompactSummary(rawSummary: string): string {
-  let result = rawSummary
-  result = result.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
-  const summaryMatch = result.match(/<summary>([\s\S]*?)<\/summary>/i)
-  if (summaryMatch) {
-    result = summaryMatch[1] ?? ''
-  }
-  return result.replace(/\n\n+/g, '\n\n').trim()
+  return extractClaudeCompactSummary(rawSummary)
 }
 
 function serializeCompressionInput(
