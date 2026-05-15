@@ -5,6 +5,7 @@ import { toAgentEvent } from '../stream-event-adapter'
 
 vi.mock('../agent-loop', () => ({
   runAgentLoop: vi.fn(async function* () {
+    yield { type: 'loop_start' }
     throw new Error('renderer loop should not run for low-token sidecar compression forwarding')
   })
 }))

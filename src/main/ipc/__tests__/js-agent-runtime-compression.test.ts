@@ -5,12 +5,24 @@ const capturedLoopConfigs: unknown[] = []
 
 vi.mock('../adaptive-event-batcher', () => ({
   AdaptiveEventBatcher: class {
-    setHandler(): void {}
-    setSessionVisibility(): void {}
-    push(): void {}
-    flush(): void {}
-    cleanupRun(): void {}
-    stop(): void {}
+    setHandler(): void {
+      return undefined
+    }
+    setSessionVisibility(): void {
+      return undefined
+    }
+    push(): void {
+      return undefined
+    }
+    flush(): void {
+      return undefined
+    }
+    cleanupRun(): void {
+      return undefined
+    }
+    stop(): void {
+      return undefined
+    }
   }
 }))
 
