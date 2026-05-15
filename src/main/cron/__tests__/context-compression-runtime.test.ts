@@ -91,6 +91,13 @@ describe('main runtime context compression preflight', () => {
         messages: result.messages
       }
     ])
+    const compressedEvent = result.events.find((event) => event.type === 'context_compressed')
+    expect(compressedEvent && 'messages' in compressedEvent ? compressedEvent.messages[0]?.meta : null).toMatchObject({
+      compactBoundary: {
+        strategy: 'claude-code-compact-v1',
+        trigger: 'auto'
+      }
+    })
     expect(JSON.stringify(summarize.mock.calls[0])).not.toContain('sk-secret')
   })
 

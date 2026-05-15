@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UnifiedMessage, ProviderConfig, ToolDefinition } from '../../api/types'
 import { MessageQueue, type AgentLoopConfig } from '../types'
+import { toAgentEvent } from '../stream-event-adapter'
 
 vi.mock('../agent-loop', () => ({
   runAgentLoop: vi.fn(async function* () {
@@ -110,6 +111,47 @@ describe('runSharedAgentRuntime sidecar compression routing', () => {
         strategyId: 'claude-code-compact-v1',
         reservedOutputBudget: 20_000
       }
+    })
+  })
+
+  it('keeps compact metadata from sidecar context_compressed events', () => {
+    const event = toAgentEvent({
+      type: 'context_compressed',
+      originalCount: 4,
+      newCount: 2,
+      messages: [
+        {
+          id: 'compact-boundary',
+          role: 'system',
+          content: 'Conversation compacted',
+          createdAt: 123,
+          meta: {
+            compactBoundary: {
+              strategy: 'claude-code-compact-v1',
+              trigger: 'auto',
+              preTokens: 180_000,
+              postTokens: 1_000,
+              messagesSummarized: 2,
+              compactedAt: 123,
+              retryCount: 0
+            }
+          }
+        }
+      ]
+    })
+
+    expect(event).toMatchObject({
+      type: 'context_compressed',
+      messages: [
+        {
+          meta: {
+            compactBoundary: {
+              strategy: 'claude-code-compact-v1',
+              trigger: 'auto'
+            }
+          }
+        }
+      ]
     })
   })
 })
