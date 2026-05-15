@@ -245,11 +245,11 @@ When editing an existing Word document, use the **Document library** (a Python l
 
 The Document library provides both high-level methods for common operations and direct DOM access for complex scenarios.
 
-## Adding Comments (批注)
+## Adding Comments
 
-Comments (批注) allow you to add annotations to documents without modifying the actual content. This is useful for review feedback, explanations, or questions about specific parts of a document.
+Comments allow you to add annotations to documents without modifying the actual content. This is useful for review feedback, explanations, or questions about specific parts of a document.
 
-### Recommended Method: Using python-docx (简单推荐)
+### Recommended Method: Using python-docx
 
 The simplest and most reliable way to add comments is using the `python-docx` library:
 

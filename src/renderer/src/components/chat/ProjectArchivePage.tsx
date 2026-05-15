@@ -22,7 +22,7 @@ import {
 const DEFAULT_PROJECT_MEMORY_TEMPLATES = {
   agents: `# AGENTS.md
 
-在这里编写项目级工作协议、边界和协作说明。
+Write project-level work agreements, boundaries, and collaboration guidelines here.
 `,
   soul: `# SOUL.md
 
@@ -81,27 +81,27 @@ const PROJECT_MEMORY_FILE_META: Record<
   agents: {
     id: 'agents',
     title: 'AGENTS.md',
-    description: '项目级工作协议、边界和协作说明。'
+    description: 'Project-level work agreements, boundaries, and collaboration guidelines.'
   },
   soul: {
     id: 'soul',
     title: 'SOUL.md',
-    description: '当前项目专用的人格/风格补充，优先级高于全局 SOUL.md。'
+    description: 'Project-specific personality/style supplement, takes priority over global SOUL.md.'
   },
   user: {
     id: 'user',
     title: 'USER.md',
-    description: '当前项目下你的偏好、目标和协作方式。'
+    description: 'Your preferences, goals, and collaboration style for this project.'
   },
   memory: {
     id: 'memory',
     title: 'MEMORY.md',
-    description: '沉淀当前项目的长期记忆、决定和背景。'
+    description: 'Long-term memory, decisions, and context for this project.'
   },
   daily: {
     id: 'daily',
-    title: '今日记忆',
-    description: '记录今天的项目临时上下文，后续可整理进 MEMORY.md。'
+    title: 'Daily Memory',
+    description: 'Record today\'s project temporary context, can be organized into MEMORY.md later.'
   }
 }
 
@@ -189,12 +189,12 @@ export function ProjectArchivePage(): React.JSX.Element {
   const canSave = activeFile.missingFile || hasUnsavedChanges
   const viewTitle =
     viewMode === 'channels'
-      ? t('projectHome.openChannels', { defaultValue: '频道' })
-      : t('projectHome.openArchive', { defaultValue: '项目档案' })
+      ? t('projectHome.openChannels', { defaultValue: 'Channels' })
+      : t('projectHome.openArchive', { defaultValue: 'Project archive' })
   const viewSummary =
     viewMode === 'channels'
       ? (activeProject?.workingFolder ??
-        t('projectArchive.noChannelSummary', { defaultValue: '查看项目的协作渠道与连接状态。' }))
+        t('projectArchive.noChannelSummary', { defaultValue: 'View project collaboration channels and connection status.' }))
       : memoryRootPath || activeProject?.workingFolder || PROJECT_MEMORY_DIRNAME
 
   const readProjectTextFile = useCallback(
@@ -304,7 +304,7 @@ export function ProjectArchivePage(): React.JSX.Element {
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : String(loadError)
       setError(message)
-      toast.error(t('projectArchive.loadFailed', { defaultValue: '加载项目档案失败' }), {
+      toast.error(t('projectArchive.loadFailed', { defaultValue: 'Failed to load project archive' }), {
         description: message
       })
     } finally {
@@ -377,11 +377,11 @@ export function ProjectArchivePage(): React.JSX.Element {
           lastSavedAt: Date.now()
         }
       }))
-      toast.success(t('projectArchive.saved', { defaultValue: '项目档案已保存' }))
+      toast.success(t('projectArchive.saved', { defaultValue: 'Project archive saved' }))
     } catch (saveError) {
       const message = saveError instanceof Error ? saveError.message : String(saveError)
       setError(message)
-      toast.error(t('projectArchive.saveFailed', { defaultValue: '保存项目档案失败' }), {
+      toast.error(t('projectArchive.saveFailed', { defaultValue: 'Failed to save project archive' }), {
         description: message
       })
     } finally {
@@ -394,11 +394,11 @@ export function ProjectArchivePage(): React.JSX.Element {
       <div className="flex flex-1 items-center justify-center bg-background px-6">
         <div className="max-w-md text-center">
           <div className="text-[28px] font-semibold tracking-tight text-foreground">
-            {t('projectArchive.noProjectTitle', { defaultValue: '未选择项目' })}
+            {t('projectArchive.noProjectTitle', { defaultValue: 'No project selected' })}
           </div>
           <p className="mt-3 text-sm leading-6 text-muted-foreground">
             {t('projectArchive.noProjectDesc', {
-              defaultValue: '先返回首页选择项目，再查看项目档案。'
+              defaultValue: 'Return to home page to select a project first, then view the project archive.'
             })}
           </p>
           <Button
@@ -406,7 +406,7 @@ export function ProjectArchivePage(): React.JSX.Element {
             onClick={() => useUIStore.getState().navigateToHome()}
           >
             <ChevronRight className="size-4" />
-            {t('projectArchive.backHome', { defaultValue: '返回首页' })}
+            {t('projectArchive.backHome', { defaultValue: 'Return to home' })}
           </Button>
         </div>
       </div>
@@ -440,7 +440,7 @@ export function ProjectArchivePage(): React.JSX.Element {
               className="h-8 rounded-md px-3 text-xs"
               onClick={() => useUIStore.getState().navigateToProject()}
             >
-              {t('projectArchive.backProject', { defaultValue: '返回项目主页' })}
+              {t('projectArchive.backProject', { defaultValue: 'Return to project home' })}
             </Button>
             <Button
               variant="outline"
@@ -455,7 +455,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                   viewMode === 'archive' && loading && 'animate-spin'
                 )}
               />
-              {tCommon('action.refresh', { defaultValue: '刷新' })}
+              {tCommon('action.refresh', { defaultValue: 'Refresh' })}
             </Button>
           </div>
         </div>
@@ -474,7 +474,7 @@ export function ProjectArchivePage(): React.JSX.Element {
           ) : loading ? (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
               <Loader2 className="mr-2 size-4 animate-spin" />
-              {t('projectArchive.loading', { defaultValue: '正在加载项目档案...' })}
+              {t('projectArchive.loading', { defaultValue: 'Loading project archive...' })}
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -488,15 +488,15 @@ export function ProjectArchivePage(): React.JSX.Element {
                 <div className="flex shrink-0 items-center gap-2">
                   <div className="text-xs text-muted-foreground">
                     {hasUnsavedChanges
-                      ? t('projectArchive.unsavedState', { defaultValue: '有未保存更改' })
-                      : t('projectArchive.savedState', { defaultValue: '内容已同步' })}
+                      ? t('projectArchive.unsavedState', { defaultValue: 'Unsaved changes' })
+                      : t('projectArchive.savedState', { defaultValue: 'Content synced' })}
                   </div>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => useUIStore.getState().navigateToProject()}
                   >
-                    {t('projectArchive.backProject', { defaultValue: '返回项目主页' })}
+                    {t('projectArchive.backProject', { defaultValue: 'Return to project home' })}
                   </Button>
                   <Button
                     variant="outline"
@@ -505,7 +505,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                     disabled={loading || saving}
                   >
                     <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} />
-                    {tCommon('action.refresh', { defaultValue: '刷新' })}
+                    {tCommon('action.refresh', { defaultValue: 'Refresh' })}
                   </Button>
                   <Button
                     size="sm"
@@ -517,7 +517,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                     ) : (
                       <Save className="size-4" />
                     )}
-                    {tCommon('action.save', { defaultValue: '保存' })}
+                    {tCommon('action.save', { defaultValue: 'Save' })}
                   </Button>
                 </div>
               </div>
@@ -526,10 +526,10 @@ export function ProjectArchivePage(): React.JSX.Element {
                   <section className="space-y-3 border-b border-border/60 pb-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="space-y-1">
-                        <p className="text-sm font-medium">项目记忆根目录</p>
+                        <p className="text-sm font-medium">Project Memory Root</p>
                         <p className="break-all text-xs text-muted-foreground">
                           {memoryRootPath ||
-                            t('projectArchive.pathUnavailable', { defaultValue: '路径不可用' })}
+                            t('projectArchive.pathUnavailable', { defaultValue: 'Path unavailable' })}
                         </p>
                       </div>
                       <Button
@@ -540,13 +540,13 @@ export function ProjectArchivePage(): React.JSX.Element {
                         disabled={loading || saving}
                       >
                         <RefreshCw className={`mr-1.5 size-3.5 ${loading ? 'animate-spin' : ''}`} />
-                        {t('projectArchive.reloadAction', { defaultValue: '重新加载' })}
+                        {t('projectArchive.reloadAction', { defaultValue: 'Reload' })}
                       </Button>
                     </div>
                     <p className="text-xs text-muted-foreground">
                       {t('projectArchive.effectiveHint', {
                         defaultValue:
-                          '优先使用工作目录下的 .agents；若旧文件仍在工作目录根部，也会兼容读取并继续写回原处。'
+                          'Prefers .agents in the working directory; if old files still exist at the working directory root, they will also be read and written back compatibly.'
                       })}
                     </p>
                   </section>
@@ -578,18 +578,18 @@ export function ProjectArchivePage(): React.JSX.Element {
                           <p className="text-xs text-muted-foreground">{activeFile.description}</p>
                           <p className="break-all text-[11px] text-muted-foreground">
                             {activeFile.path ||
-                              t('projectArchive.pathUnavailable', { defaultValue: '路径不可用' })}
+                              t('projectArchive.pathUnavailable', { defaultValue: 'Path unavailable' })}
                           </p>
                         </div>
                         <span className="text-[11px] text-muted-foreground">
                           {hasUnsavedChanges
-                            ? t('projectArchive.unsavedState', { defaultValue: '有未保存更改' })
+                            ? t('projectArchive.unsavedState', { defaultValue: 'Unsaved changes' })
                             : activeFile.lastSavedAt
                               ? t('projectArchive.lastSavedAt', {
-                                  defaultValue: '保存于 {{time}}',
+                                  defaultValue: 'Saved at {{time}}',
                                   time: new Date(activeFile.lastSavedAt).toLocaleString()
                                 })
-                              : t('projectArchive.upToDate', { defaultValue: '已是最新' })}
+                              : t('projectArchive.upToDate', { defaultValue: 'Up to date' })}
                         </span>
                       </div>
 
@@ -597,7 +597,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                         <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                           {t('projectArchive.missingFileHint', {
                             defaultValue:
-                              '{{file}} 尚不存在。已加载初始模板，点击保存即可创建文件。',
+                              '{{file}} does not exist yet. Initial template loaded, click Save to create the file.',
                             file: activeFile.filename || activeFile.title
                           })}
                         </p>
@@ -606,7 +606,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                       {!activeFile.missingFile && activeFile.source === 'workspace-root' && (
                         <p className="rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-600 dark:text-blue-400">
                           {t('projectArchive.legacyLocationHint', {
-                            defaultValue: '当前文件来自工作目录根部旧位置，保存会继续写回原处。'
+                            defaultValue: 'Current file is from an old location in the working directory root, save will continue writing back to the original location.'
                           })}
                         </p>
                       )}
@@ -615,7 +615,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                         value={activeFile.draftContent}
                         onChange={(event) => updateDraft(event.target.value)}
                         placeholder={t('projectArchive.placeholder', {
-                          defaultValue: '在这里编辑 {{file}} ...',
+                          defaultValue: 'Edit {{file}} here ...',
                           file: activeFile.filename || activeFile.title
                         })}
                         rows={20}
@@ -634,8 +634,8 @@ export function ProjectArchivePage(): React.JSX.Element {
                             <Save className="mr-1.5 size-3.5" />
                           )}
                           {saving
-                            ? t('projectArchive.savingAction', { defaultValue: '保存中...' })
-                            : tCommon('action.save', { defaultValue: '保存' })}
+                            ? t('projectArchive.savingAction', { defaultValue: 'Saving...' })
+                            : tCommon('action.save', { defaultValue: 'Save' })}
                         </Button>
                         <Button
                           variant="ghost"
@@ -644,7 +644,7 @@ export function ProjectArchivePage(): React.JSX.Element {
                           onClick={handleReset}
                           disabled={saving || loading || !hasUnsavedChanges}
                         >
-                          {t('projectArchive.resetAction', { defaultValue: '重置' })}
+                          {t('projectArchive.resetAction', { defaultValue: 'Reset' })}
                         </Button>
                       </div>
                     </div>
@@ -653,7 +653,7 @@ export function ProjectArchivePage(): React.JSX.Element {
               </div>
               {error && (
                 <div className="border-t px-5 py-3 text-sm text-destructive">
-                  {t('projectArchive.errorLabel', { defaultValue: '错误：' })}
+                  {t('projectArchive.errorLabel', { defaultValue: 'Error: ' })}
                   {error}
                 </div>
               )}

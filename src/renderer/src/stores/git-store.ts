@@ -207,7 +207,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       set({
         isScanning: false,
         repositories: [],
-        scanError: getErrorMessage(result, '扫描 Git 仓库失败')
+        scanError: getErrorMessage(result, 'Failed to scan Git repositories')
       })
       return
     }
@@ -272,9 +272,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
             .historyFileDiffByKey,
           loading: false,
           error:
-            (!statusResult.success && getErrorMessage(statusResult, '加载状态失败')) ||
-            (!historyResult.success && getErrorMessage(historyResult, '加载历史失败')) ||
-            (!branchesResult.success && getErrorMessage(branchesResult, '加载分支失败')) ||
+            (!statusResult.success && getErrorMessage(statusResult, 'Failed to load status')) ||
+            (!historyResult.success && getErrorMessage(historyResult, 'Failed to load history')) ||
+            (!branchesResult.success && getErrorMessage(branchesResult, 'Failed to load branches')) ||
             null
         }
       }
@@ -368,7 +368,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
       }
     )
     if (!result.success) {
-      toast.error(getErrorMessage(result, '加载历史变更失败'))
+      toast.error(getErrorMessage(result, 'Failed to load history changes'))
       return { success: false }
     }
     set((state) => ({
@@ -396,7 +396,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (!result.success) {
       return {
         success: false as const,
-        error: getErrorMessage(result, '读取暂存变更失败')
+        error: getErrorMessage(result, 'Failed to read staged changes')
       }
     }
     return {
@@ -412,7 +412,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, 'fetch 失败') }
+      : { success: false, error: getErrorMessage(result, 'Fetch failed') }
   },
 
   pullRebase: async (repoPath) => {
@@ -420,7 +420,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, 'pull --rebase 失败') }
+      : { success: false, error: getErrorMessage(result, 'Pull --rebase failed') }
   },
 
   pushRepository: async (repoPath) => {
@@ -428,7 +428,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, 'push 失败') }
+      : { success: false, error: getErrorMessage(result, 'Push failed') }
   },
 
   syncRepository: async (repoPath) => {
@@ -446,7 +446,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '创建分支失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to create branch') }
   },
 
   checkoutBranch: async (repoPath, name) => {
@@ -457,7 +457,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '切换分支失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to checkout branch') }
   },
 
   mergeBranch: async (repoPath, ref) => {
@@ -468,7 +468,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '合并失败') }
+      : { success: false, error: getErrorMessage(result, 'Merge failed') }
   },
 
   rebaseBranch: async (repoPath, ref) => {
@@ -479,7 +479,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '变基失败') }
+      : { success: false, error: getErrorMessage(result, 'Rebase failed') }
   },
 
   deleteLocalBranch: async (repoPath, name, force) => {
@@ -491,7 +491,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '删除本地分支失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to delete local branch') }
   },
 
   deleteRemoteBranch: async (repoPath, remote, branchName) => {
@@ -503,7 +503,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '删除远程分支失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to delete remote branch') }
   },
 
   renameBranch: async (repoPath, newName, oldName) => {
@@ -515,7 +515,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '重命名分支失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to rename branch') }
   },
 
   stageFiles: async (repoPath, paths) => {
@@ -526,7 +526,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '暂存失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to stage files') }
   },
 
   unstageFiles: async (repoPath, paths) => {
@@ -537,7 +537,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '取消暂存失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to unstage files') }
   },
 
   stageAll: async (repoPath) => {
@@ -545,7 +545,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '全部暂存失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to stage all') }
   },
 
   unstageAll: async (repoPath) => {
@@ -553,7 +553,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '全部取消暂存失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to unstage all') }
   },
 
   discardFiles: async (repoPath, paths, scope) => {
@@ -565,7 +565,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '丢弃更改失败') }
+      : { success: false, error: getErrorMessage(result, 'Failed to discard changes') }
   },
 
   commit: async (repoPath, message) => {
@@ -576,7 +576,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     if (result.success) await get().refreshRepository(repoPath)
     return result.success
       ? { success: true }
-      : { success: false, error: getErrorMessage(result, '提交失败') }
+      : { success: false, error: getErrorMessage(result, 'Commit failed') }
   },
 
   startPolling: () => {

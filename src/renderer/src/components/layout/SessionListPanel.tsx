@@ -309,7 +309,7 @@ export function SessionListPanel(): React.JSX.Element {
     (updatedAt: number): string => {
       const elapsed = Date.now() - updatedAt
       if (elapsed < RECENT_MINUTES_MS) {
-        return t('sidebar.recentMinutes', { defaultValue: '最近几分钟' })
+        return t('sidebar.recentMinutes', { defaultValue: 'Last few minutes' })
       }
       if (elapsed < DAY_MS) {
         return t('sidebar.today')
@@ -318,13 +318,13 @@ export function SessionListPanel(): React.JSX.Element {
         return t('sidebar.yesterday')
       }
       if (elapsed < WEEK_MS) {
-        return t('sidebar.recentWeek', { defaultValue: '最近一周' })
+        return t('sidebar.recentWeek', { defaultValue: 'Last week' })
       }
       if (elapsed < TWO_WEEKS_MS) {
-        return t('sidebar.twoWeeks', { defaultValue: '2周内' })
+        return t('sidebar.twoWeeks', { defaultValue: 'Within 2 weeks' })
       }
       if (elapsed < MONTH_MS) {
-        return t('sidebar.oneMonth', { defaultValue: '1个月内' })
+        return t('sidebar.oneMonth', { defaultValue: 'Within 1 month' })
       }
       return t('sidebar.older')
     },
@@ -651,7 +651,7 @@ export function SessionListPanel(): React.JSX.Element {
           target.updatedAt = now
         })
         setProjectModelDialog(null)
-        toast.success('项目默认模型已改为跟随全局')
+        toast.success('Project default model changed to follow global')
         return
       }
 
@@ -667,7 +667,7 @@ export function SessionListPanel(): React.JSX.Element {
         target.updatedAt = now
       })
       setProjectModelDialog(null)
-      toast.success('项目默认模型已更新')
+      toast.success('Project default model updated')
     },
     [projectModelDialog]
   )
@@ -713,7 +713,7 @@ export function SessionListPanel(): React.JSX.Element {
             : providerStore.getActiveProviderConfig()
 
         if (!providerConfig) {
-          toast.error('当前没有可用模型')
+          toast.error('No available model')
           return
         }
 
@@ -740,7 +740,7 @@ export function SessionListPanel(): React.JSX.Element {
           .slice(0, 6000)
 
         if (!transcript.trim()) {
-          toast.error('该会话没有可用于重命名的文本内容')
+          toast.error('No text content available for renaming in this session')
           return
         }
 
@@ -749,7 +749,7 @@ export function SessionListPanel(): React.JSX.Element {
             id: crypto.randomUUID(),
             role: 'user',
             content:
-              '请基于下面的会话内容，生成一个简短、准确的中文会话标题。要求：1）不超过18个字；2）不要使用引号、书名号、句号；3）只输出标题本身，不要解释。\n\n' +
+              'Based on the conversation below, generate a short, accurate session title in the same language as the conversation. Requirements: 1) No more than 18 characters; 2) Do not use quotes or punctuation wrappers; 3) Output only the title itself, no explanation.\n\n' +
               transcript,
             createdAt: Date.now()
           }
@@ -759,7 +759,7 @@ export function SessionListPanel(): React.JSX.Element {
         for await (const event of provider.sendMessage(messages, [], {
           ...providerConfig,
           systemPrompt:
-            '你是一个会话标题生成器。只返回一个简短准确的中文标题，不要解释，不要使用标点包裹。'
+            'You are a session title generator. Return only a short accurate title in the same language as the conversation. Do not explain. Do not wrap in punctuation.'
         })) {
           if (event.type === 'text_delta' && event.text) {
             nextTitle += event.text
@@ -773,14 +773,14 @@ export function SessionListPanel(): React.JSX.Element {
           .slice(0, 18)
 
         if (!cleanedTitle) {
-          toast.error('AI 未生成有效标题')
+          toast.error('AI did not generate a valid title')
           return
         }
 
         updateSessionTitle(sessionId, cleanedTitle)
-        toast.success('已自动重命名会话')
+        toast.success('Session auto-renamed')
       } catch (error) {
-        toast.error('自动重命名失败', {
+        toast.error('Auto-rename failed', {
           description: error instanceof Error ? error.message : String(error)
         })
       } finally {
@@ -1148,8 +1148,8 @@ export function SessionListPanel(): React.JSX.Element {
             togglePinSession(session.id)
             toast.success(
               session.pinned
-                ? t('sidebar_toast.sessionUnpinned', { defaultValue: '会话已取消置顶' })
-                : t('sidebar_toast.sessionPinned', { defaultValue: '会话已置顶' })
+                ? t('sidebar_toast.sessionUnpinned', { defaultValue: 'Session unpinned' })
+                : t('sidebar_toast.sessionPinned', { defaultValue: 'Session pinned' })
             )
           }}
         >
@@ -1171,7 +1171,7 @@ export function SessionListPanel(): React.JSX.Element {
           ) : (
             <Sparkles className="size-4" />
           )}
-          自动重命名
+          Auto rename
         </ContextMenuItem>
         {session.messageCount > 0 && (
           <>
@@ -1345,10 +1345,10 @@ export function SessionListPanel(): React.JSX.Element {
               {group.project.sshConnectionId ? (
                 <span
                   className="inline-flex shrink-0 items-center gap-0.5 rounded border border-sky-500/30 bg-sky-500/10 px-1 py-px text-[9px] font-semibold leading-none text-sky-600 dark:text-sky-300"
-                  title="SSH project"
+                  title={t('sidebar.sshProject')}
                 >
                   <Server className="size-2.5" />
-                  SSH
+                  {t('sidebar.sshLabel')}
                 </span>
               ) : null}
               {group.project.pinned && (
@@ -1364,8 +1364,8 @@ export function SessionListPanel(): React.JSX.Element {
                 togglePinProject(group.project.id)
                 toast.success(
                   group.project.pinned
-                    ? t('sidebar_toast.projectUnpinned', { defaultValue: '项目已取消置顶' })
-                    : t('sidebar_toast.projectPinned', { defaultValue: '项目已置顶' })
+                    ? t('sidebar_toast.projectUnpinned', { defaultValue: 'Project unpinned' })
+                    : t('sidebar_toast.projectPinned', { defaultValue: 'Project pinned' })
                 )
               }}
             >
@@ -1384,15 +1384,15 @@ export function SessionListPanel(): React.JSX.Element {
               onClick={() => handleEditProjectDirectory(group.project.id)}
             >
               <FolderOpen className="size-4" />
-              修改工作目录
+              Change working directory
             </ContextMenuItem>
             <ContextMenuSub>
-              <ContextMenuSubTrigger inset>修改默认模型</ContextMenuSubTrigger>
+              <ContextMenuSubTrigger inset>Change default model</ContextMenuSubTrigger>
               <ContextMenuSubContent className="w-72">
                 <ContextMenuItem
                   onClick={() => handleEditProjectModel(group.project.id, group.project.name)}
                 >
-                  打开模型选择
+                  Open model selector
                 </ContextMenuItem>
               </ContextMenuSubContent>
             </ContextMenuSub>
@@ -1434,10 +1434,10 @@ export function SessionListPanel(): React.JSX.Element {
                     />
                     <span>
                       {isHistoryExpanded
-                        ? t('sidebar.collapseOlderSessions', { defaultValue: '收起历史记录' })
+                        ? t('sidebar.collapseOlderSessions', { defaultValue: 'Collapse history' })
                         : t('sidebar.expandOlderSessions', {
                             count: historicalItems.length,
-                            defaultValue: '展开历史记录（{{count}}）'
+                            defaultValue: 'Expand history ({{count}})'
                           })}
                     </span>
                   </button>
@@ -1568,20 +1568,20 @@ export function SessionListPanel(): React.JSX.Element {
             <>
               {pinnedProjectGroups.length > 0 && (
                 <div className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-                  {t('sidebar.pinnedProjects', { defaultValue: '置顶项目' })}
+                  {t('sidebar.pinnedProjects', { defaultValue: 'Pinned projects' })}
                 </div>
               )}
               {pinnedProjectGroups.map(renderProjectGroup)}
 
               {regularProjectGroups.length > 0 && (
                 <div className="px-2 pb-1 pt-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-                  {t('sidebar.projects', { defaultValue: '项目' })}
+                  {t('sidebar.projects', { defaultValue: 'Projects' })}
                 </div>
               )}
               {regularProjectGroups.map(renderProjectGroup)}
               {hasMoreSessions && (
                 <div className="px-2 py-3 text-center text-[10px] text-muted-foreground/60">
-                  {t('common.loading', { ns: 'common', defaultValue: '加载中...' })}
+                  {t('common.loading', { ns: 'common', defaultValue: 'Loading...' })}
                 </div>
               )}
             </>
@@ -1655,7 +1655,7 @@ export function SessionListPanel(): React.JSX.Element {
                 {deleteTarget?.queueCount ? (
                   <p>
                     {t('sidebar.deleteQueuedMessagesNotice', {
-                      defaultValue: '该会话还有 {{count}} 条待发送消息，也会一起删除。',
+                      defaultValue: 'This session has {{count}} queued messages that will also be deleted.',
                       count: deleteTarget.queueCount
                     })}
                   </p>
@@ -1663,7 +1663,7 @@ export function SessionListPanel(): React.JSX.Element {
                 {deleteTargetRunningInfo?.hasRunning && (
                   <p className="font-medium text-destructive">
                     {t('sidebar.deleteRunningNotice', {
-                      defaultValue: '该会话存在正在运行的任务，删除前会先停止当前运行。'
+                      defaultValue: 'This session has running tasks that will be stopped before deletion.'
                     })}
                   </p>
                 )}
@@ -1736,7 +1736,7 @@ export function SessionListPanel(): React.JSX.Element {
               className="w-full justify-start"
               onClick={() => applyProjectModel('__global__')}
             >
-              跟随全局默认模型
+              Follow global default model
             </Button>
             {chatProviderGroups.map(({ provider, models }) => (
               <div key={`project-model-${provider.id}`} className="space-y-1">

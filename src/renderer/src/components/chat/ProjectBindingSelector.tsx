@@ -115,7 +115,7 @@ export function ProjectBindingSelector({
     <div className="space-y-3">
       <div>
         <div className="mb-2 text-[11px] font-medium text-muted-foreground">
-          {t('input.selectProject', { defaultValue: '选择项目' })}
+          {t('input.selectProject', { defaultValue: 'Select project' })}
         </div>
         <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
           {projects
@@ -140,13 +140,13 @@ export function ProjectBindingSelector({
             onClick={() => void onCreateProject()}
           >
             <span className="size-3.5 shrink-0" />
-            <span>{t('input.newProject', { defaultValue: '新建项目' })}</span>
+            <span>{t('input.newProject', { defaultValue: 'New project' })}</span>
           </button>
         </div>
       </div>
       <div className="border-t pt-3">
         <div className="mb-2 text-[11px] font-medium text-muted-foreground">
-          {t('input.currentWorkingFolder', { defaultValue: '当前工作目录' })}
+          {t('input.currentWorkingFolder', { defaultValue: 'Current working directory' })}
         </div>
         <div className="mb-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground">
           {project.workingFolder || project.name}
@@ -189,13 +189,13 @@ export function ProjectBindingSelector({
             onClick={() => void handleSelectOtherFolder()}
           >
             <Pencil className="size-3 shrink-0" />
-            {t('input.selectOtherFolder', { defaultValue: '选择其他目录' })}
+            {t('input.selectOtherFolder', { defaultValue: 'Select another directory' })}
           </button>
         </div>
       </div>
       <div className="border-t pt-3">
         <div className="mb-2 text-[11px] font-medium text-muted-foreground">
-          {t('input.sshConnections', { defaultValue: 'SSH 连接' })}
+          {t('input.sshConnections', { defaultValue: 'SSH Connection' })}
         </div>
         {sshConnections.length > 0 ? (
           <div className="max-h-40 space-y-1.5 overflow-y-auto pr-1">

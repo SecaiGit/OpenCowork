@@ -18,6 +18,29 @@ export default defineConfig({
       strictPort: true
     },
     optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'i18next',
+        'react-i18next',
+        'zustand',
+        'immer',
+        'clsx',
+        'lucide-react',
+        'sonner',
+        'cmdk',
+        'gpt-tokenizer',
+        'nanoid',
+        'class-variance-authority',
+        '@xterm/xterm',
+        '@xterm/addon-fit',
+        '@xterm/addon-search',
+        'mermaid',
+        'partial-json',
+        'motion',
+        'framer-motion'
+      ],
       exclude: ['@monaco-editor/react', '@monaco-editor/loader', 'monaco-editor']
     },
     resolve: {

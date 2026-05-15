@@ -252,7 +252,7 @@ function ChannelConfigPanelContent({
     const baseUrl = (localConfig.baseUrl || 'https://ilinkai.weixin.qq.com').trim()
 
     setWeixinLoginPending(true)
-    setWeixinLoginMessage(t('channel.weixin.loginStarting', '正在生成二维码...'))
+    setWeixinLoginMessage(t('channel.weixin.loginStarting', 'Generating QR code...'))
     setWeixinQrUrl('')
     setWeixinSessionKey('')
 
@@ -271,13 +271,13 @@ function ChannelConfigPanelContent({
       }
 
       if ((!startResult?.qrDataUrl && !startResult?.qrUrl) || !startResult.sessionKey) {
-        throw new Error(startResult?.message || '无法获取二维码')
+        throw new Error(startResult?.message || 'Failed to get QR code')
       }
 
       setWeixinQrUrl(startResult.qrDataUrl || startResult.qrUrl || '')
       setWeixinSessionKey(startResult.sessionKey)
       setWeixinLoginMessage(
-        startResult.message || t('channel.weixin.scanHint', '请使用微信扫码确认')
+        startResult.message || t('channel.weixin.scanHint', 'Please scan the QR code with WeChat')
       )
 
       const waitResult = (await ipcClient.invoke(IPC.PLUGIN_WEIXIN_LOGIN_WAIT, {
@@ -299,7 +299,7 @@ function ChannelConfigPanelContent({
       setWeixinLoginMessage(waitResult.message)
 
       if (!waitResult.connected || !waitResult.token) {
-        throw new Error(waitResult.message || '微信绑定失败')
+        throw new Error(waitResult.message || 'WeChat binding failed')
       }
 
       const nextConfig = {
@@ -315,7 +315,7 @@ function ChannelConfigPanelContent({
         enabled: true,
         ...(projectId && plugin.projectId !== projectId ? { projectId } : {})
       })
-      toast.success(t('channel.weixin.loginSuccess', '微信绑定成功'))
+      toast.success(t('channel.weixin.loginSuccess', 'WeChat binding successful'))
       const err = await startChannel(plugin.id)
       if (err) {
         toast.error(t('channel.error', 'Error'), { description: err })
@@ -323,7 +323,7 @@ function ChannelConfigPanelContent({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setWeixinLoginMessage(message)
-      toast.error(t('channel.weixin.loginFailed', '微信绑定失败'), { description: message })
+      toast.error(t('channel.weixin.loginFailed', 'WeChat binding failed'), { description: message })
     } finally {
       setWeixinLoginPending(false)
     }
@@ -357,8 +357,8 @@ function ChannelConfigPanelContent({
                 </Badge>
                 <Badge variant={plugin.enabled ? 'outline' : 'secondary'}>
                   {plugin.enabled
-                    ? t('channel.enabled', '已启用')
-                    : t('channel.disabled', '已停用')}
+                    ? t('channel.enabled', 'Enabled')
+                    : t('channel.disabled', 'Disabled')}
                 </Badge>
               </div>
               <p className="mt-1 truncate text-sm text-muted-foreground">
@@ -368,7 +368,7 @@ function ChannelConfigPanelContent({
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {t('channel.autoSaveHint', '修改后自动保存')}
+              {t('channel.autoSaveHint', 'Auto-saved after changes')}
             </span>
             <Switch
               checked={plugin.enabled}
@@ -384,18 +384,18 @@ function ChannelConfigPanelContent({
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Badge variant="outline">
-            {t('channel.platform', '平台')} · {descriptor?.displayName ?? plugin.type}
+            {t('channel.platform', 'Platform')} · {descriptor?.displayName ?? plugin.type}
           </Badge>
           {projectId && (
             <Badge variant={isBoundToCurrentProject ? 'secondary' : 'outline'}>
               {isBoundToCurrentProject
-                ? t('channel.boundCurrentProject', '已绑定当前项目')
-                : (boundProject?.name ?? t('channel.unboundProject', '未绑定项目'))}
+                ? t('channel.boundCurrentProject', 'Bound to current project')
+                : (boundProject?.name ?? t('channel.unboundProject', 'Unbound project'))}
             </Badge>
           )}
           {(localModel || globalDefaultModel?.model?.name) && (
             <Badge variant="outline">
-              {t('channel.replyModelShort', '模型')} ·{' '}
+              {t('channel.replyModelShort', 'Model')} ·{' '}
               {localModel || globalDefaultModel?.model?.name}
             </Badge>
           )}
@@ -413,7 +413,7 @@ function ChannelConfigPanelContent({
               </Badge>
             </div>
             <p className="text-xs text-muted-foreground">
-              {t('channel.botNameDesc', '用于在项目内识别当前聊天频道。')}
+              {t('channel.botNameDesc', 'Used to identify this chat channel within the project.')}
             </p>
           </div>
           <Input
@@ -583,12 +583,12 @@ function ChannelConfigPanelContent({
         <section className="border-b border-border/60 py-5">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-medium">{t('channel.advanced', '高级设置')}</p>
+              <p className="text-sm font-medium">{t('channel.advanced', 'Advanced settings')}</p>
               <p className="text-xs text-muted-foreground">
-                {t('channel.advancedDesc', '按需展开回复策略、工具能力和权限边界。')}
+                {t('channel.advancedDesc', 'Expand to configure reply strategy, tool capabilities, and permission boundaries.')}
               </p>
             </div>
-            <Badge variant="outline">{t('channel.advancedHint', '可折叠')}</Badge>
+            <Badge variant="outline">{t('channel.advancedHint', 'Collapsible')}</Badge>
           </div>
           <Accordion type="multiple" defaultValue={['features']} className="w-full">
             <AccordionItem value="features" className="border-border/60">
@@ -596,7 +596,7 @@ function ChannelConfigPanelContent({
                 <div>
                   <div className="text-sm font-medium">{t('channel.features', 'Features')}</div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {t('channel.featuresDesc', '自动回复、流式回复和自动启动策略。')}
+                    {t('channel.featuresDesc', 'Auto-reply, streaming reply, and auto-start policies.')}
                   </p>
                 </div>
               </AccordionTrigger>
@@ -660,7 +660,7 @@ function ChannelConfigPanelContent({
                   <div>
                     <div className="text-sm font-medium">{t('channel.tools', 'Tools')}</div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {t('channel.toolsPanelDesc', '控制频道可调用的专属工具集合。')}
+                      {t('channel.toolsPanelDesc', 'Control the set of exclusive tools available to this channel.')}
                     </p>
                   </div>
                 </AccordionTrigger>
@@ -703,7 +703,7 @@ function ChannelConfigPanelContent({
                       {t('channel.security', 'Security & Permissions')}
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {t('channel.securityDesc', '限制频道读写范围、命令执行和子代理能力。')}
+                      {t('channel.securityDesc', 'Restrict channel read/write scope, command execution, and sub-agent capabilities.')}
                     </p>
                   </div>
                 </div>
@@ -843,20 +843,20 @@ function ChannelConfigPanelContent({
           <>
             <section className="space-y-2 mb-4">
               <label className="text-xs font-medium">
-                {t('channel.weixin.binding', '微信绑定')}
+                {t('channel.weixin.binding', 'WeChat binding')}
               </label>
               <div className="rounded-md border p-3 space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs">
                       {localConfig.token
-                        ? t('channel.weixin.bound', '已绑定官方微信账号')
-                        : t('channel.weixin.unbound', '未绑定官方微信账号')}
+                        ? t('channel.weixin.bound', 'Bound to official WeChat account')
+                        : t('channel.weixin.unbound', 'Not bound to official WeChat account')}
                     </p>
                     <p className="text-[10px] text-muted-foreground">
                       {t(
                         'channel.weixin.bindingDesc',
-                        '通过扫码获取 token，并启用长轮询收发消息。'
+                        'Scan QR code to obtain token and enable long-polling for message delivery.'
                       )}
                     </p>
                   </div>
@@ -869,7 +869,7 @@ function ChannelConfigPanelContent({
                         onClick={() => void handleWeixinBind()}
                         disabled={weixinLoginPending}
                       >
-                        {t('channel.weixin.refreshQr', '刷新二维码')}
+                        {t('channel.weixin.refreshQr', 'Refresh QR code')}
                       </Button>
                     )}
                     <Button
@@ -880,10 +880,10 @@ function ChannelConfigPanelContent({
                       disabled={weixinLoginPending}
                     >
                       {weixinLoginPending
-                        ? t('channel.weixin.bindingInProgress', '绑定中...')
+                        ? t('channel.weixin.bindingInProgress', 'Binding...')
                         : localConfig.token
-                          ? t('channel.weixin.rebind', '重新绑定')
-                          : t('channel.weixin.bind', '绑定微信')}
+                          ? t('channel.weixin.rebind', 'Rebind')
+                          : t('channel.weixin.bind', 'Bind WeChat')}
                     </Button>
                   </div>
                 </div>
@@ -915,7 +915,7 @@ function ChannelConfigPanelContent({
 
       <div className="flex items-center justify-between gap-3 border-t border-border/60 px-6 py-4">
         <div className="text-xs text-muted-foreground">
-          {t('channel.autoSaveFooter', '当前频道配置会自动保存，并在项目内立即生效。')}
+          {t('channel.autoSaveFooter', 'Channel configuration is auto-saved and takes effect immediately within the project.')}
         </div>
         <div className="flex items-center gap-2">
           {!plugin.builtin && (
@@ -1060,7 +1060,7 @@ export function ChannelPanel({ projectId }: ChannelPanelProps = {}): React.JSX.E
         <div className="flex min-h-0 flex-col border-r border-border/60 bg-muted/10">
           <div className="border-b border-border/60 px-4 py-4">
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground/60">
-              {t('channel.platforms', '平台')}
+              {t('channel.platforms', 'Platforms')}
             </p>
             <div className="relative mt-3">
               <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -1123,7 +1123,7 @@ export function ChannelPanel({ projectId }: ChannelPanelProps = {}): React.JSX.E
                             <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                               <span className="truncate">{descriptor?.description ?? p.type}</span>
                               {isBoundToProject && (
-                                <Badge variant="outline">{t('channel.bound', '已绑定')}</Badge>
+                                <Badge variant="outline">{t('channel.bound', 'Bound')}</Badge>
                               )}
                             </div>
                           </div>
@@ -1212,7 +1212,7 @@ export function ChannelPanel({ projectId }: ChannelPanelProps = {}): React.JSX.E
                 <Puzzle className="mb-3 size-8 opacity-30" />
                 <p className="text-sm">
                   {projectId
-                    ? t('channel.noProjectChannels', '当前项目暂无可配置频道')
+                    ? t('channel.noProjectChannels', 'No configurable channels for this project')
                     : t('channel.noChannels', 'No channels found')}
                 </p>
               </div>

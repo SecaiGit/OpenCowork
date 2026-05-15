@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import { Bot, MessagesSquare, ScrollText, Users } from 'lucide-react'
 import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
 import { useChatStore } from '@renderer/stores/chat-store'
@@ -9,10 +8,15 @@ import { useAgentStore } from '@renderer/stores/agent-store'
 import { useTeamStore } from '@renderer/stores/team-store'
 import { useUIStore } from '@renderer/stores/ui-store'
 import { buildOrchestrationRuns } from '@renderer/lib/orchestration/build-runs'
+import { selectSessionScopedAgentState } from '@renderer/lib/agent/session-scoped-agent-state'
 import { OrchestrationStagePills } from '@renderer/components/chat/OrchestrationStagePills'
 import { TranscriptMessageList } from '@renderer/components/chat/TranscriptMessageList'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@renderer/components/ui/hover-card'
 import { cn } from '@renderer/lib/utils'
+import {
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS
+} from '@renderer/lib/preview/viewers/markdown-components'
 
 export function OrchestrationConsole(): React.JSX.Element {
   const { t } = useTranslation('layout')
@@ -20,12 +24,8 @@ export function OrchestrationConsole(): React.JSX.Element {
   const messages = useChatStore((s) =>
     activeSessionId ? s.getSessionMessages(activeSessionId) : []
   )
-  const { activeSubAgents, completedSubAgents, subAgentHistory } = useAgentStore(
-    useShallow((s) => ({
-      activeSubAgents: s.activeSubAgents,
-      completedSubAgents: s.completedSubAgents,
-      subAgentHistory: s.subAgentHistory
-    }))
+  const { activeSubAgents, completedSubAgents, subAgentHistory } = useAgentStore((s) =>
+    selectSessionScopedAgentState(s, activeSessionId)
   )
   const { activeTeam, teamHistory } = useTeamStore(
     useShallow((s) => ({ activeTeam: s.activeTeam, teamHistory: s.teamHistory }))
@@ -80,7 +80,9 @@ export function OrchestrationConsole(): React.JSX.Element {
   if (!run) {
     return (
       <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-border/60 bg-background/40 text-sm text-muted-foreground">
-        {t('rightPanel.orchestrationEmpty', { defaultValue: '暂无协作编排记录' })}
+        {t('rightPanel.orchestrationEmpty', {
+          defaultValue: 'No collaboration orchestration records'
+        })}
       </div>
     )
   }
@@ -97,7 +99,7 @@ export function OrchestrationConsole(): React.JSX.Element {
               <h2 className="truncate text-base font-semibold text-foreground/92">{run.title}</h2>
               <span className="rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[10px] text-muted-foreground/70">
                 {t('rightPanel.orchestrationProgress', {
-                  defaultValue: '当前进度 {{current}}/{{total}}',
+                  defaultValue: 'Current progress {{current}}/{{total}}',
                   current: run.stageIndex + 1,
                   total: run.stageCount
                 })}
@@ -125,10 +127,10 @@ export function OrchestrationConsole(): React.JSX.Element {
               )}
             >
               {view === 'overview'
-                ? t('rightPanel.orchestrationViewOverview', { defaultValue: '总览' })
+                ? t('rightPanel.orchestrationViewOverview', { defaultValue: 'Overview' })
                 : view === 'member'
-                  ? t('rightPanel.orchestrationViewMember', { defaultValue: '成员轨迹' })
-                  : t('rightPanel.orchestrationViewTasks', { defaultValue: '任务' })}
+                  ? t('rightPanel.orchestrationViewMember', { defaultValue: 'Member trail' })
+                  : t('rightPanel.orchestrationViewTasks', { defaultValue: 'Tasks' })}
             </button>
           ))}
         </div>
@@ -160,7 +162,12 @@ export function OrchestrationConsole(): React.JSX.Element {
                       ) : null}
                       {task.report ? (
                         <div className="prose prose-sm mt-3 max-w-none dark:prose-invert">
-                          <Markdown remarkPlugins={[remarkGfm]}>{task.report}</Markdown>
+                          <Markdown
+                            remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                            rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                          >
+                            {task.report}
+                          </Markdown>
                         </div>
                       ) : null}
                     </div>
@@ -168,7 +175,7 @@ export function OrchestrationConsole(): React.JSX.Element {
                 ) : (
                   <div className="rounded-xl border border-dashed border-border/60 bg-background/60 p-4 text-sm text-muted-foreground">
                     {t('rightPanel.orchestrationTasksEmpty', {
-                      defaultValue: '当前 run 没有独立任务列表'
+                      defaultValue: 'Current run has no independent task list'
                     })}
                   </div>
                 )}
@@ -180,7 +187,9 @@ export function OrchestrationConsole(): React.JSX.Element {
                     <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/65">
                       <MessagesSquare className="size-3.5" />
                       <span>
-                        {t('rightPanel.orchestrationTeamMessages', { defaultValue: '团队消息' })}
+                        {t('rightPanel.orchestrationTeamMessages', {
+                          defaultValue: 'Team messages'
+                        })}
                       </span>
                     </div>
                     <div className="space-y-2">
@@ -204,7 +213,9 @@ export function OrchestrationConsole(): React.JSX.Element {
                   <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/65">
                     <Users className="size-3.5" />
                     <span>
-                      {t('rightPanel.orchestrationMemberSummary', { defaultValue: '成员摘要' })}
+                      {t('rightPanel.orchestrationMemberSummary', {
+                        defaultValue: 'Member summary'
+                      })}
                     </span>
                   </div>
                   <div className="space-y-2">
@@ -254,7 +265,7 @@ export function OrchestrationConsole(): React.JSX.Element {
                   <p className="mt-1 whitespace-pre-wrap break-words text-sm text-muted-foreground/75">
                     {selectedMember.summary ||
                       selectedMember.latestAction ||
-                      t('rightPanel.orchestrationNoSummary', { defaultValue: '暂无摘要' })}
+                      t('rightPanel.orchestrationNoSummary', { defaultValue: 'No summary' })}
                   </p>
                 </section>
 
@@ -263,7 +274,7 @@ export function OrchestrationConsole(): React.JSX.Element {
                     <div className="mb-3 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground/65">
                       <MessagesSquare className="size-3.5" />
                       <span>
-                        {t('rightPanel.orchestrationTranscript', { defaultValue: '轨迹' })}
+                        {t('rightPanel.orchestrationTranscript', { defaultValue: 'Trail' })}
                       </span>
                     </div>
                     <TranscriptMessageList messages={selectedMember.transcript} />
@@ -346,7 +357,7 @@ export function OrchestrationConsole(): React.JSX.Element {
                               <MessagesSquare className="size-3" />
                               <span>
                                 {t('subAgentsPanel.reportStatusSubmitted', {
-                                  defaultValue: '结果'
+                                  defaultValue: 'Results'
                                 })}
                               </span>
                             </div>

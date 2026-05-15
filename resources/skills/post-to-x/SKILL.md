@@ -1,79 +1,79 @@
 ---
-description: 发布推文到 X.com (Twitter)，使用系统浏览器登录状态
+description: Post tweets to X.com (Twitter) using the system browser's login state
 ---
 
 # Post to X
 
-使用系统 Edge/Chrome 浏览器登录状态，自动发布推文到 X.com (Twitter)。
+Automatically post tweets to X.com (Twitter) using the system Edge/Chrome browser's login state.
 
-## 特点
+## Features
 
-- **自动复用登录状态** - 直接使用系统浏览器用户数据，无需每次登录
-- **智能检测登录** - 自动检测是否已登录，未登录时提示用户
-- **支持多行内容** - 可发布包含换行的完整推文
-- **Edge/Chrome 兼容** - 优先使用 Edge，回退到 Chrome
+- **Automatic login state reuse** - Directly uses system browser user data, no need to log in each time
+- **Smart login detection** - Automatically detects login status, prompts user if not logged in
+- **Multi-line content support** - Can post tweets containing line breaks
+- **Edge/Chrome compatible** - Prefers Edge, falls back to Chrome
 
-## 前置要求
+## Prerequisites
 
 ```bash
 pip install playwright
 playwright install chromium
 ```
 
-## 使用方法
+## Usage
 
-### 基本用法
+### Basic usage
 
 ```bash
-python scripts/post_to_x.py "你的推文内容"
+python scripts/post_to_x.py "Your tweet content"
 ```
 
-### 多行内容
+### Multi-line content
 
 ```bash
-python scripts/post_to_x.py "第一行\n第二行\n#标签"
+python scripts/post_to_x.py "First line\nSecond line\n#hashtag"
 ```
 
-### 示例
+### Examples
 
 ```bash
-# 简单推文
+# Simple tweet
 python scripts/post_to_x.py "Hello X! 👋"
 
-# 多行推文
-python scripts/post_to_x.py "🚀 新品发布！\n\n✨ 功能1：xxx\n✨ 功能2：yyy\n\n#ProductLaunch #NewFeature"
+# Multi-line tweet
+python scripts/post_to_x.py "🚀 New product launch!\n\n✨ Feature 1: xxx\n✨ Feature 2: yyy\n\n#ProductLaunch #NewFeature"
 ```
 
-## 工作流
+## Workflow
 
-1. 关闭正在运行的 Edge/Chrome 浏览器
-2. 脚本读取系统浏览器用户数据目录
-3. 启动浏览器并访问 x.com
-4. 检测登录状态（已登录则跳过）
-5. 打开发推界面
-6. 输入内容并发布
+1. Close any running Edge/Chrome browser
+2. Script reads system browser user data directory
+3. Launches browser and navigates to x.com
+4. Detects login status (skips if already logged in)
+5. Opens the tweet compose interface
+6. Enters content and posts
 
-## 首次使用
+## First-time usage
 
-如果是第一次使用，需要：
+If using for the first time:
 
-1. 关闭所有 Edge 浏览器窗口
-2. 运行脚本，会提示登录
-3. 在弹出的浏览器中登录 X.com
-4. 登录成功后脚本自动继续
-5. 下次使用时登录状态已保留，无需重复登录
+1. Close all Edge browser windows
+2. Run the script, it will prompt for login
+3. Log in to X.com in the pop-up browser
+4. After successful login, the script continues automatically
+5. Next time you use it, the login state is already saved, no need to log in again
 
-## 故障排除
+## Troubleshooting
 
-| 问题             | 解决方案                           |
-| ---------------- | ---------------------------------- |
-| 提示需要登录每次 | 关闭 Edge 浏览器后运行脚本         |
-| 发布按钮点击失败 | 脚本会自动使用 JavaScript 点击     |
-| 页面加载超时     | 检查网络连接，或增加 `--wait` 参数 |
+| Issue                          | Solution                                       |
+| ------------------------------ | ---------------------------------------------- |
+| Prompts for login every time   | Close Edge browser before running the script   |
+| Post button click fails        | Script automatically uses JavaScript click     |
+| Page load timeout              | Check network connection, or add `--wait` flag |
 
-## 技术细节
+## Technical details
 
-- 使用 Playwright 控制 Chromium
-- 直接读取 `%LOCALAPPDATA%\Microsoft\Edge\User Data`
-- 登录凭证保存在原始浏览器数据中
-- 支持 Windows 系统
+- Uses Playwright to control Chromium
+- Directly reads `%LOCALAPPDATA%\Microsoft\Edge\User Data`
+- Login credentials are saved in the original browser data
+- Supports Windows systems

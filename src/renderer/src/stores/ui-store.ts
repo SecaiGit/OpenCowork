@@ -259,7 +259,8 @@ interface UIStore {
   ensureSubAgentTab: (
     toolUseId?: string | null,
     inlineText?: string | null,
-    title?: string | null
+    title?: string | null,
+    sessionId?: string | null
   ) => void
   ensureTerminalTab: (processId: string, title?: string | null) => void
   closeRightPanelTab: (tabId: string) => void
@@ -267,6 +268,8 @@ interface UIStore {
   setRightPanelWidth: (width: number) => void
   isHoveringRightPanel: boolean
   setIsHoveringRightPanel: (hovering: boolean) => void
+  runtimeStatusPanelTriggerHovered: boolean
+  setRuntimeStatusPanelTriggerHovered: (hovering: boolean) => void
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
   settingsPageOpen: boolean
@@ -353,7 +356,7 @@ interface UIStore {
   openOrchestrationPanel: (runId?: string | null, memberId?: string | null) => void
   openOrchestrationMember: (runId: string, memberId?: string | null) => void
   closeOrchestrationPanel: () => void
-  openSubAgentsPanel: (toolUseId?: string | null) => void
+  openSubAgentsPanel: (toolUseId?: string | null, sessionId?: string | null) => void
   browserStatesBySession: Record<string, BrowserPanelSessionState | undefined>
   getBrowserState: (
     sessionId?: string | null,
@@ -409,7 +412,8 @@ interface UIStore {
   openSubAgentExecutionDetail: (
     toolUseId: string,
     inlineText?: string | null,
-    title?: string | null
+    title?: string | null,
+    sessionId?: string | null
   ) => void
   closeSubAgentExecutionDetail: () => void
   selectedSubAgentToolUseId: string | null
@@ -920,15 +924,19 @@ export const useUIStore = create<UIStore>()(
             )
           }
         }),
-      ensureSubAgentTab: (toolUseId, inlineText, title) =>
+      ensureSubAgentTab: (toolUseId, inlineText, title, requestedSessionId) =>
         set((state) => {
           const tabId = toolUseId ? `subagent:${toolUseId}` : 'subagent:overview'
           const sessionId =
-            state.activeScopedSessionId ?? useChatStore.getState().activeSessionId ?? null
+            normalizeScopeId(requestedSessionId) ??
+            state.activeScopedSessionId ??
+            useChatStore.getState().activeSessionId ??
+            null
           const existing = state.rightPanelTabs.find((tab) => tab.id === tabId)
           const tab: RightPanelTabInstance = existing
             ? {
                 ...existing,
+                sessionId: sessionId ?? existing.sessionId ?? null,
                 title: title?.trim() || existing.title,
                 inlineText: inlineText?.trim() ? inlineText : existing.inlineText
               }
@@ -1032,6 +1040,9 @@ export const useUIStore = create<UIStore>()(
       setRightPanelWidth: (width) => set({ rightPanelWidth: width }),
       isHoveringRightPanel: false,
       setIsHoveringRightPanel: (hovering) => set({ isHoveringRightPanel: hovering }),
+      runtimeStatusPanelTriggerHovered: false,
+      setRuntimeStatusPanelTriggerHovered: (hovering) =>
+        set({ runtimeStatusPanelTriggerHovered: hovering }),
       settingsOpen: false,
       setSettingsOpen: (open) => set({ settingsOpen: open }),
       settingsPageOpen: false,
@@ -1463,7 +1474,8 @@ export const useUIStore = create<UIStore>()(
           selectedOrchestrationRunId: null,
           selectedOrchestrationMemberId: null
         }),
-      openSubAgentsPanel: (toolUseId) => get().ensureSubAgentTab(toolUseId ?? null),
+      openSubAgentsPanel: (toolUseId, sessionId) =>
+        get().ensureSubAgentTab(toolUseId ?? null, null, null, sessionId),
       browserStatesBySession: {},
       getBrowserState: (sessionId, projectId) => {
         const state = get()
@@ -1521,8 +1533,8 @@ export const useUIStore = create<UIStore>()(
       subAgentExecutionDetailOpen: false,
       subAgentExecutionDetailToolUseId: null,
       subAgentExecutionDetailInlineText: null,
-      openSubAgentExecutionDetail: (toolUseId, inlineText, title) =>
-        get().ensureSubAgentTab(toolUseId, inlineText ?? null, title ?? null),
+      openSubAgentExecutionDetail: (toolUseId, inlineText, title, sessionId) =>
+        get().ensureSubAgentTab(toolUseId, inlineText ?? null, title ?? null, sessionId),
       closeSubAgentExecutionDetail: () =>
         set({
           subAgentExecutionDetailOpen: false,

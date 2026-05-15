@@ -88,8 +88,8 @@ export const useTerminalStore = create<TerminalStore>()((set, get) => ({
       | undefined
 
     if (!result?.id || result.error) {
-      toast.error('创建终端失败', {
-        description: result?.error || '未知错误'
+      toast.error('Failed to create terminal', {
+        description: result?.error || 'Unknown error'
       })
       return null
     }

@@ -55,6 +55,9 @@ export function TitleBar({
   const toggleLeftSidebar = useUIStore((s) => s.toggleLeftSidebar)
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen)
   const toggleRightPanel = useUIStore((s) => s.toggleRightPanel)
+  const setRuntimeStatusPanelTriggerHovered = useUIStore(
+    (s) => s.setRuntimeStatusPanelTriggerHovered
+  )
   const workingFolderSheetOpen = useUIStore((s) => s.workingFolderSheetOpen)
   const toggleWorkingFolderSheet = useUIStore((s) => s.toggleWorkingFolderSheet)
   const setBottomTerminalDockOpen = useUIStore((s) => s.setBottomTerminalDockOpen)
@@ -183,7 +186,7 @@ export function TitleBar({
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              {t('commandPalette.toggleSidebar', { defaultValue: 'Toggle sidebar' })}
+              {t('commandPalette.toggleSidebar')}
             </TooltipContent>
           </Tooltip>
         ) : null}
@@ -314,11 +317,9 @@ export function TitleBar({
                 <TooltipContent>
                   {canOpenFileManager
                     ? workingFolderSheetOpen
-                      ? t('topbar.closeFileManager', { defaultValue: 'Close file manager' })
-                      : t('topbar.openFileManager', { defaultValue: 'Open file manager' })
-                    : t('topbar.fileManagerUnavailable', {
-                        defaultValue: 'Select a working folder to open the file manager'
-                      })}
+                      ? t('topbar.closeFileManager')
+                      : t('topbar.openFileManager')
+                    : t('topbar.fileManagerUnavailable')}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -331,6 +332,10 @@ export function TitleBar({
                     aria-pressed={rightPanelOpen}
                     data-active={rightPanelOpen ? 'true' : 'false'}
                     className={projectToolButtonClass}
+                    onMouseEnter={() => setRuntimeStatusPanelTriggerHovered(true)}
+                    onMouseLeave={() => setRuntimeStatusPanelTriggerHovered(false)}
+                    onFocus={() => setRuntimeStatusPanelTriggerHovered(true)}
+                    onBlur={() => setRuntimeStatusPanelTriggerHovered(false)}
                     onClick={toggleRightPanel}
                   >
                     {rightPanelOpen ? (
@@ -342,8 +347,8 @@ export function TitleBar({
                 </TooltipTrigger>
                 <TooltipContent>
                   {rightPanelOpen
-                    ? t('topbar.closeInspector', { defaultValue: 'Close inspector' })
-                    : t('topbar.openInspector', { defaultValue: 'Open inspector' })}
+                    ? t('topbar.closeInspector')
+                    : t('topbar.openInspector')}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -360,7 +365,7 @@ export function TitleBar({
               <HelpCircle className="size-4" />
             </button>
           </TooltipTrigger>
-          <TooltipContent>{t('topbar.help', { defaultValue: 'Open guide' })}</TooltipContent>
+          <TooltipContent>{t('topbar.help')}</TooltipContent>
         </Tooltip>
       </div>
 

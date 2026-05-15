@@ -202,7 +202,7 @@ function parseOpenCoworkFile(filePath: string): {
   }
 
   if (isRecord(raw) && isRecord(raw.ssh)) {
-    warnings.push('检测到原始 OpenCoWork 配置结构，已按 SSH 段导入。')
+    warnings.push('Detected original OpenCoWork config structure, imported as SSH segments.')
     const groups = Array.isArray(raw.ssh.groups)
       ? raw.ssh.groups.map(normalizeGroup).filter(Boolean)
       : []
@@ -259,7 +259,7 @@ function parseOpenSshConfig(filePath: string): {
     const exactPatterns = currentPatterns.filter(isExactHostPattern)
     const ignoredPatterns = currentPatterns.filter((pattern) => !isExactHostPattern(pattern))
     if (ignoredPatterns.length > 0) {
-      warnings.push(`已忽略通配 Host 模式：${ignoredPatterns.join(', ')}`)
+      warnings.push(`Ignored wildcard Host pattern: ${ignoredPatterns.join(', ')}`)
     }
 
     for (const alias of exactPatterns) {
@@ -282,7 +282,7 @@ function parseOpenSshConfig(filePath: string): {
 
     const includeMatch = trimmed.match(/^Include\s+(.+)$/i)
     if (includeMatch) {
-      warnings.push(`暂不支持 OpenSSH Include：${includeMatch[1]}`)
+      warnings.push(`OpenSSH Include not yet supported: ${includeMatch[1]}`)
       continue
     }
 
@@ -317,7 +317,7 @@ function parseOpenSshConfig(filePath: string): {
     const host = entry.options.get('hostname') ?? entry.alias
     const username = entry.options.get('user') ?? null
     if (!username) {
-      warnings.push(`Host ${entry.alias} 缺少 User，已跳过。`)
+      warnings.push(`Host ${entry.alias} missing User, skipped.`)
       return
     }
 
@@ -328,7 +328,7 @@ function parseOpenSshConfig(filePath: string): {
     const rowWarnings: string[] = []
 
     if (!privateKeyPath) {
-      rowWarnings.push('未找到 IdentityFile，将默认导入为 SSH Agent 认证。')
+      rowWarnings.push('IdentityFile not found, will default to SSH Agent authentication.')
     }
 
     connections.push({
@@ -412,10 +412,10 @@ export function previewSshImport(
     const connections = parsed.connections.map((connection, index) => {
       const warnings = [...parsed.warnings]
       if (connection.privateKeyPath) {
-        warnings.push('私钥路径来自旧机器，导入后请检查是否仍然有效。')
+        warnings.push('Private key path is from old machine, please verify it is still valid after import.')
       }
       if (connection.groupId && !groupMap.has(connection.groupId)) {
-        warnings.push('分组 ID 无法匹配，导入时将按名称重建或回退为未分组。')
+        warnings.push('Group ID cannot be matched, will rebuild by name or fallback to ungrouped during import.')
       }
       return {
         importId: buildImportId(index, connection),
@@ -597,7 +597,7 @@ export function applySshImport(
             proxyJump: connection.proxyJump,
             updatedAt: now
           }
-          result.warnings.push(`已保留 ${existing.name} 的启动命令、默认目录、心跳和密码字段。`)
+          result.warnings.push(`Preserved ${existing.name} startup command, default directory, heartbeat and password fields.`)
         }
         result.replaced += 1
         continue

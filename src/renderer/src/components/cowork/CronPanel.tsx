@@ -48,9 +48,9 @@ const MONO_FONT = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monosp
 function formatRelative(ts: number | null): string {
   if (!ts) return '—'
   const diff = Date.now() - ts
-  if (diff < 60_000) return '刚刚'
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} minutes ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} hours ago`
   return new Date(ts).toLocaleString()
 }
 
@@ -94,7 +94,7 @@ function scheduleLabel(schedule: CronSchedule): string {
     case 'at':
       return schedule.at ? new Date(schedule.at).toLocaleString() : '—'
     case 'every':
-      return schedule.every ? `每 ${formatInterval(schedule.every)}` : '—'
+      return schedule.every ? `Every ${formatInterval(schedule.every)}` : '—'
     case 'cron':
       return schedule.expr ?? '—'
   }
@@ -112,7 +112,7 @@ function ScheduleIcon({ kind }: { kind: CronSchedule['kind'] }): React.JSX.Eleme
 }
 
 function scheduleKindBadge(kind: CronSchedule['kind']): React.JSX.Element {
-  const labels = { at: '一次性', every: '间隔', cron: 'Cron' }
+  const labels = { at: 'Once', every: 'Interval', cron: 'Cron' }
   const colors = {
     at: 'bg-amber-500/10 text-amber-400',
     every: 'bg-cyan-500/10 text-cyan-400',
@@ -217,13 +217,13 @@ function CronJobCard({
       .then((result) => {
         const payload = result as { success?: boolean; error?: string }
         if (payload?.success) {
-          toast.info('已中止 Agent 执行')
+          toast.info('Agent execution aborted')
         } else {
-          toast.error(payload?.error ?? '中止 Agent 执行失败')
+          toast.error(payload?.error ?? 'Failed to abort Agent execution')
         }
       })
       .catch((err) => {
-        toast.error(err instanceof Error ? err.message : '中止 Agent 执行失败')
+        toast.error(err instanceof Error ? err.message : 'Failed to abort Agent execution')
       })
   }
 
@@ -314,12 +314,12 @@ function CronJobCard({
               </span>
             )}
             {job.deliveryMode !== 'desktop' && (
-              <span className="text-[9px] text-muted-foreground/40">投递: {job.deliveryMode}</span>
+              <span className="text-[9px] text-muted-foreground/40">Delivery: {job.deliveryMode}</span>
             )}
-            <span className="text-[9px] text-muted-foreground/40">触发 {job.fireCount} 次</span>
+            <span className="text-[9px] text-muted-foreground/40">Fired {job.fireCount} times</span>
             {job.lastFiredAt && (
               <span className="text-[9px] text-muted-foreground/40">
-                上次: {formatRelative(job.lastFiredAt)}
+                Last: {formatRelative(job.lastFiredAt)}
               </span>
             )}
           </div>
@@ -328,7 +328,7 @@ function CronJobCard({
           {job.executing && (
             <div className="flex items-center gap-2 mt-1.5 text-[10px]">
               <Loader2 className="size-3 text-blue-400 animate-spin shrink-0" />
-              <span className="text-blue-400/80 font-medium">执行中</span>
+              <span className="text-blue-400/80 font-medium">Running</span>
               {job.executionStartedAt && <ElapsedTimer startedAt={job.executionStartedAt} />}
               {job.executionProgress && (
                 <>
@@ -360,7 +360,7 @@ function CronJobCard({
               variant="ghost"
               size="icon"
               className="size-6 text-amber-400 hover:text-destructive"
-              title="中止 Agent"
+              title="Abort Agent"
               onClick={handleAbortAgent}
             >
               <StopCircle className="size-3" />
@@ -372,7 +372,7 @@ function CronJobCard({
               variant="ghost"
               size="icon"
               className="size-6 text-muted-foreground hover:text-green-400"
-              title="立即执行"
+              title="Run now"
               disabled={runNowLoading}
               onClick={handleRunNow}
             >
@@ -393,7 +393,7 @@ function CronJobCard({
                 ? 'text-muted-foreground hover:text-amber-400'
                 : 'text-muted-foreground hover:text-green-400'
             )}
-            title={job.enabled ? '暂停' : '启用'}
+            title={job.enabled ? 'Pause' : 'Enable'}
             onClick={() => onToggle(job.id, !job.enabled)}
           >
             {job.enabled ? <Square className="size-3" /> : <Play className="size-3 fill-current" />}
@@ -408,7 +408,7 @@ function CronJobCard({
                 ? 'text-destructive animate-pulse'
                 : 'text-muted-foreground hover:text-destructive'
             )}
-            title={confirmDelete ? '再次点击确认删除' : '删除任务'}
+            title={confirmDelete ? 'Click again to confirm delete' : 'Delete task'}
             onClick={() => {
               if (confirmDelete) {
                 onRemove(job.id)
@@ -426,7 +426,7 @@ function CronJobCard({
             variant="ghost"
             size="icon"
             className="size-6 text-muted-foreground/50 hover:text-foreground"
-            title="执行历史 / Agent 日志"
+            title="Execution history / Agent logs"
             onClick={() => setExpanded((v) => !v)}
           >
             {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
@@ -445,7 +445,7 @@ function CronJobCard({
             <div className="border-t px-3 py-2 space-y-1.5">
               <p className="text-[9px] text-muted-foreground/50 uppercase tracking-wider flex items-center gap-1">
                 <History className="size-2.5" />
-                最近执行
+                Recent executions
               </p>
               {jobRuns.map((run) => (
                 <RunHistoryItem key={run.id} run={run} />
@@ -504,7 +504,7 @@ function RunHistoryItem({ run }: { run: CronRunEntry }): React.JSX.Element {
           </span>
         ) : (
           <span className="text-muted-foreground/40 flex-1">
-            {run.status === 'running' ? '执行中...' : run.status}
+            {run.status === 'running' ? 'Running...' : run.status}
           </span>
         )}
         {(run.outputSummary || run.error) && (
@@ -531,9 +531,9 @@ function EmptyState(): React.JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center py-12 text-center">
       <Clock className="mb-3 size-8 text-muted-foreground/30" />
-      <p className="text-sm text-muted-foreground">暂无定时任务</p>
+      <p className="text-sm text-muted-foreground">No scheduled tasks</p>
       <p className="mt-1 text-xs text-muted-foreground/50 max-w-[200px]">
-        让 AI 使用 <span className="font-mono text-blue-400/70">CronAdd</span> 工具创建定时任务
+        Have AI use the <span className="font-mono text-blue-400/70">CronAdd</span> tool to create scheduled tasks
       </p>
     </div>
   )
@@ -543,7 +543,7 @@ function EmptyState(): React.JSX.Element {
 
 // ── Calendar helpers ──────────────────────────────────────────────
 
-const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 /** Check if a single cron field matches a value */
 function matchesCronField(field: string, value: number): boolean {
@@ -714,7 +714,7 @@ function CronCalendarView({
           className="text-[11px] font-medium text-foreground/80 hover:text-foreground transition-colors px-2 py-0.5 rounded hover:bg-muted/50"
           onClick={goToday}
         >
-          {year}年{month + 1}月
+          {year} / {month + 1}
         </button>
         <button
           className="size-6 flex items-center justify-center rounded hover:bg-muted transition-colors text-muted-foreground"
@@ -782,16 +782,16 @@ function CronCalendarView({
           <div className="space-y-1.5">
             <p className="text-[10px] text-muted-foreground/60 flex items-center gap-1">
               <CalendarDays className="size-3" />
-              {selectedDate.toLocaleDateString('zh-CN', {
+              {selectedDate.toLocaleDateString(undefined, {
                 month: 'long',
                 day: 'numeric',
                 weekday: 'short'
               })}
-              <span className="text-muted-foreground/40">· {selectedJobs.length} 个任务</span>
+              <span className="text-muted-foreground/40">· {selectedJobs.length} tasks</span>
             </p>
             {selectedJobs.length === 0 && (
               <p className="text-[10px] text-muted-foreground/40 py-4 text-center">
-                当天无定时任务
+                No scheduled tasks for this day
               </p>
             )}
             {selectedJobs.map((job) => (
@@ -820,9 +820,9 @@ function formatDate(ts: number): string {
   const yesterday = new Date(now)
   yesterday.setDate(yesterday.getDate() - 1)
   const isYesterday = d.toDateString() === yesterday.toDateString()
-  if (isToday) return '今天'
-  if (isYesterday) return '昨天'
-  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })
+  if (isToday) return 'Today'
+  if (isYesterday) return 'Yesterday'
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', weekday: 'short' })
 }
 
 function HistoryRunCard({
@@ -839,22 +839,22 @@ function HistoryRunCard({
   const statusConfig = {
     success: {
       icon: <CheckCircle2 className="size-3.5 text-green-500" />,
-      label: '成功',
+      label: 'Success',
       color: 'text-green-500'
     },
     error: {
       icon: <XCircle className="size-3.5 text-destructive" />,
-      label: '失败',
+      label: 'Failed',
       color: 'text-destructive'
     },
     aborted: {
       icon: <StopCircle className="size-3.5 text-amber-400" />,
-      label: '中止',
+      label: 'Aborted',
       color: 'text-amber-400'
     },
     running: {
       icon: <Loader2 className="size-3.5 text-blue-400 animate-spin" />,
-      label: '执行中',
+      label: 'Running',
       color: 'text-blue-400'
     }
   }
@@ -915,7 +915,7 @@ function HistoryRunCard({
           {run.error && (
             <div className="space-y-1">
               <p className="text-[9px] text-destructive/60 uppercase tracking-wider font-medium">
-                错误信息
+                Error message
               </p>
               <pre
                 className="text-[10px] text-destructive/70 whitespace-pre-wrap break-words leading-relaxed max-h-[300px] overflow-y-auto"
@@ -928,7 +928,7 @@ function HistoryRunCard({
           {run.outputSummary && (
             <div className={cn('space-y-1', run.error && 'mt-2')}>
               <p className="text-[9px] text-muted-foreground/50 uppercase tracking-wider font-medium">
-                执行输出
+                Execution output
               </p>
               <pre
                 className="text-[10px] text-muted-foreground/60 whitespace-pre-wrap break-words leading-relaxed max-h-[400px] overflow-y-auto"
@@ -1015,15 +1015,15 @@ function CronHistoryView({
           onClick={() => setShowFilter((v) => !v)}
         >
           <ListFilter className="size-3" />
-          筛选
+          Filter
         </button>
         {loading && <Loader2 className="size-3 text-muted-foreground animate-spin" />}
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-[9px] text-muted-foreground/50">
-          <span className="text-green-500/70">{stats.success} 成功</span>
-          {stats.errors > 0 && <span className="text-destructive/70">{stats.errors} 失败</span>}
-          <span>共 {stats.total} 次</span>
-          {stats.avgDuration > 0 && <span>平均 {formatDuration(stats.avgDuration)}</span>}
+          <span className="text-green-500/70">{stats.success} success</span>
+          {stats.errors > 0 && <span className="text-destructive/70">{stats.errors} failed</span>}
+          <span>Total {stats.total}</span>
+          {stats.avgDuration > 0 && <span>Avg {formatDuration(stats.avgDuration)}</span>}
         </div>
       </div>
 
@@ -1039,7 +1039,7 @@ function CronHistoryView({
             )}
             onClick={() => setFilterJobId(null)}
           >
-            全部
+            All
           </button>
           {jobs.map((j) => (
             <button
@@ -1062,9 +1062,9 @@ function CronHistoryView({
       {filteredRuns.length === 0 && !loading && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
           <FileText className="mb-3 size-8 text-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">暂无执行记录</p>
+          <p className="text-sm text-muted-foreground">No execution records</p>
           <p className="mt-1 text-xs text-muted-foreground/50">
-            {filterJobId ? '该任务还没有执行记录' : '定时任务执行后会在这里显示'}
+            {filterJobId ? 'This task has no execution records yet' : 'Scheduled task executions will appear here'}
           </p>
         </div>
       )}
@@ -1075,7 +1075,7 @@ function CronHistoryView({
           <div className="flex items-center gap-1.5 sticky top-0 bg-background/80 backdrop-blur-sm py-1 z-10">
             <Calendar className="size-3 text-muted-foreground/40" />
             <span className="text-[10px] font-medium text-muted-foreground/60">{group.date}</span>
-            <span className="text-[9px] text-muted-foreground/30">{group.runs.length} 次执行</span>
+            <span className="text-[9px] text-muted-foreground/30">{group.runs.length} runs</span>
           </div>
           <div className="space-y-1.5">
             {group.runs.map((run) => (
@@ -1126,26 +1126,26 @@ export function CronPanel(): React.JSX.Element {
       error?: string
     }
     if (result.error) {
-      toast.error('操作失败', { description: result.error })
+      toast.error('Operation failed', { description: result.error })
       return
     }
     updateJob(id, { enabled, scheduled: enabled })
-    toast.success(enabled ? '已启用定时任务' : '已暂停定时任务')
+    toast.success(enabled ? 'Scheduled task enabled' : 'Scheduled task paused')
   }
 
   const handleRemove = async (id: string): Promise<void> => {
     const result = await deleteJob(id)
     if (result.error) {
-      toast.error('删除失败', { description: result.error })
+      toast.error('Delete failed', { description: result.error })
       return
     }
-    toast.success('定时任务已删除')
+    toast.success('Scheduled task deleted')
   }
 
   const handleRunNow = async (id: string): Promise<void> => {
     const result = (await ipcClient.invoke(IPC.CRON_RUN_NOW, { jobId: id })) as { error?: string }
     if (result.error) {
-      toast.error('执行失败', { description: result.error })
+      toast.error('Execution failed', { description: result.error })
       return
     }
   }
@@ -1166,7 +1166,7 @@ export function CronPanel(): React.JSX.Element {
             onClick={() => setView('tasks')}
           >
             <Clock className="size-3" />
-            任务
+            Tasks
             {jobs.length > 0 && (
               <span className="text-[9px] text-muted-foreground/60 ml-0.5">{jobs.length}</span>
             )}
@@ -1181,7 +1181,7 @@ export function CronPanel(): React.JSX.Element {
             onClick={() => setView('history')}
           >
             <History className="size-3" />
-            历史
+            History
             {runs.length > 0 && (
               <span className="text-[9px] text-muted-foreground/60 ml-0.5">{runs.length}</span>
             )}
@@ -1196,21 +1196,21 @@ export function CronPanel(): React.JSX.Element {
             onClick={() => setView('calendar')}
           >
             <CalendarDays className="size-3" />
-            日历
+            Calendar
           </button>
         </div>
         <div className="flex items-center gap-1">
           {view === 'tasks' && enabledJobs.length > 0 && (
             <span className="text-[9px] text-green-500/70 flex items-center gap-0.5">
               <span className="size-1.5 rounded-full bg-green-500/70 inline-flex" />
-              {enabledJobs.length} 运行中
+              {enabledJobs.length} running
             </span>
           )}
           <Button
             variant="ghost"
             size="icon"
             className="size-6 text-muted-foreground hover:text-foreground"
-            title="刷新"
+            title="Refresh"
             onClick={handleRefresh}
           >
             <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} />
@@ -1246,7 +1246,7 @@ export function CronPanel(): React.JSX.Element {
               {enabledJobs.length > 0 && <Separator />}
               <div className="space-y-1">
                 <p className="text-[9px] text-muted-foreground/40 uppercase tracking-wider px-1">
-                  已暂停
+                  Paused
                 </p>
                 <div className="space-y-2">
                   {disabledJobs.map((job) => (
@@ -1267,12 +1267,12 @@ export function CronPanel(): React.JSX.Element {
           {/* Hint */}
           <div className="rounded-md bg-muted/30 px-3 py-2 text-[10px] text-muted-foreground/50 space-y-0.5">
             <p className="flex items-center gap-1">
-              <Plus className="size-2.5" />让 AI 调用{' '}
-              <span className="font-mono text-blue-400/60 mx-0.5">CronAdd</span> 创建新任务
+              <Plus className="size-2.5" />Have AI call{' '}
+              <span className="font-mono text-blue-400/60 mx-0.5">CronAdd</span> to create new tasks
             </p>
             <p className="flex items-center gap-1">
               <AlertCircle className="size-2.5" />
-              支持一次性定时 (at)、固定间隔 (every)、Cron 表达式三种调度方式
+              Supports three scheduling modes: one-time (at), fixed interval (every), and Cron expression
             </p>
           </div>
         </>

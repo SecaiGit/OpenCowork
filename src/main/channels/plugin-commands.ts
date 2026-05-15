@@ -233,17 +233,17 @@ function handleHelp(ctx: CommandContext, args: string): CommandResult {
   void ctx
   void args
   const helpText = [
-    '📋 可用指令 / Available Commands',
+    '📋 Available Commands',
     '',
-    '/help      — 显示此帮助信息',
-    '/new       — 清空当前会话，开始新对话',
-    '/init [args...] — 初始化 AGENTS/SOUL/USER/MEMORY 并分析项目更新 AGENTS.md',
-    '/status    — 查看当前状态信息',
-    '/stats     — 查看 Token 用量统计',
-    '/compress  — 压缩上下文（清理旧工具结果和思考过程）',
+    '/help      — Show this help message',
+    '/new       — Clear current session, start new conversation',
+    '/init [args...] — Initialize AGENTS/SOUL/USER/MEMORY and analyze project to update AGENTS.md',
+    '/status    — Show current status information',
+    '/stats     — Show token usage statistics',
+    '/compress  — Compress context (clear stale tool results and thinking blocks)',
     '',
-    '💡 群聊中可使用 @机器人 + 指令，如 "@Bot /help"',
-    '直接发送消息即可与 AI 助手对话。'
+    '💡 Use @bot + command in group chats, e.g. "@Bot /help"',
+    'Send a message directly to chat with the AI assistant.'
   ].join('\n')
 
   return { handled: true, reply: helpText }
@@ -252,7 +252,7 @@ function handleHelp(ctx: CommandContext, args: string): CommandResult {
 function handleNew(ctx: CommandContext, args: string): CommandResult {
   void args
   if (!ctx.sessionId) {
-    return { handled: true, reply: '当前没有活跃会话。\nNo active session found.' }
+    return { handled: true, reply: 'No active session found.' }
   }
 
   try {
@@ -270,13 +270,13 @@ function handleNew(ctx: CommandContext, args: string): CommandResult {
     console.log(`[PluginCommand] Cleared session ${ctx.sessionId}`)
     return {
       handled: true,
-      reply: '✅ 会话已清空，开始新对话。\nSession cleared. Starting fresh.'
+      reply: '✅ Session cleared. Starting fresh.'
     }
   } catch (err) {
     console.error('[PluginCommand] Failed to clear session:', err)
     return {
       handled: true,
-      reply: '❌ 清空会话失败，请稍后重试。\nFailed to clear session. Please try again.'
+      reply: '❌ Failed to clear session. Please try again.'
     }
   }
 }
@@ -304,11 +304,11 @@ function handleInit(ctx: CommandContext, args: string): CommandResult {
 
   const statusLine = [
     initialization.created.length > 0
-      ? `🧩 已初始化模板文件: ${initialization.created.join(', ')}`
-      : '🧩 模板文件已存在，跳过初始化。',
+      ? `🧩 Initialized template files: ${initialization.created.join(', ')}`
+      : '🧩 Template files already exist, skipping initialization.',
     hasExistingAgents
-      ? '🔄 正在分析项目并更新 AGENTS.md...'
-      : '🔍 正在分析项目结构，生成 AGENTS.md...'
+      ? '🔄 Analyzing project and updating AGENTS.md...'
+      : '🔍 Analyzing project structure, generating AGENTS.md...'
   ].join('\n')
 
   return {
@@ -320,7 +320,7 @@ function handleInit(ctx: CommandContext, args: string): CommandResult {
 
 function handleStatus(ctx: CommandContext, args: string): CommandResult {
   void args
-  const lines: string[] = ['📊 当前状态 / Status']
+  const lines: string[] = ['📊 Status']
 
   // Plugin info
   let pluginInstance: ChannelInstance | undefined
@@ -335,26 +335,26 @@ function handleStatus(ctx: CommandContext, args: string): CommandResult {
 
   // ── Plugin Basic Info ──
   lines.push('')
-  lines.push(`🔌 插件: ${pluginInstance?.name ?? ctx.pluginId}`)
-  lines.push(`📡 类型: ${ctx.pluginType}`)
+  lines.push(`🔌 Plugin: ${pluginInstance?.name ?? ctx.pluginId}`)
+  lines.push(`📡 Type: ${ctx.pluginType}`)
   lines.push(`🆔 ID: ${ctx.pluginId}`)
 
   // Service status
   const service = ctx.pluginManager.getService(ctx.pluginId)
   const status = ctx.pluginManager.getStatus(ctx.pluginId)
   lines.push(
-    `⚡ 运行状态: ${status === 'running' ? '运行中 ✅' : status === 'error' ? '异常 ❌' : '已停止 ⏹'}`
+    `⚡ Status: ${status === 'running' ? 'Running ✅' : status === 'error' ? 'Error ❌' : 'Stopped ⏹'}`
   )
 
   // ── Model & Provider ──
   lines.push('')
   if (pluginInstance?.providerId) {
-    lines.push(`🏢 服务商: ${pluginInstance.providerId}`)
+    lines.push(`🏢 Provider: ${pluginInstance.providerId}`)
   }
   if (pluginInstance?.model) {
-    lines.push(`🤖 模型: ${pluginInstance.model}`)
+    lines.push(`🤖 Model: ${pluginInstance.model}`)
   } else {
-    lines.push(`🤖 模型: 使用全局默认`)
+    lines.push(`🤖 Model: Using global default`)
   }
 
   // ── Features ──
@@ -364,22 +364,22 @@ function handleStatus(ctx: CommandContext, args: string): CommandResult {
     autoStart: true
   }
   lines.push('')
-  lines.push(`📋 功能开关:`)
-  lines.push(`  自动回复: ${features.autoReply ? '✅ 开启' : '❌ 关闭'}`)
+  lines.push(`📋 Feature Toggles:`)
+  lines.push(`  Auto Reply: ${features.autoReply ? '✅ ON' : '❌ OFF'}`)
   lines.push(
-    `  流式回复: ${features.streamingReply && service?.supportsStreaming ? '✅ 开启' : '❌ 关闭'}`
+    `  Streaming Reply: ${features.streamingReply && service?.supportsStreaming ? '✅ ON' : '❌ OFF'}`
   )
-  lines.push(`  自动启动: ${features.autoStart ? '✅ 开启' : '❌ 关闭'}`)
+  lines.push(`  Auto Start: ${features.autoStart ? '✅ ON' : '❌ OFF'}`)
 
   // ── Permissions ──
   const perms = pluginInstance?.permissions
   if (perms) {
     lines.push('')
-    lines.push(`🔒 权限:`)
-    lines.push(`  Shell 执行: ${perms.allowShell ? '✅ 允许' : '❌ 禁止'}`)
-    lines.push(`  读取主目录: ${perms.allowReadHome ? '✅ 允许' : '❌ 禁止'}`)
-    lines.push(`  外部写入: ${perms.allowWriteOutside ? '✅ 允许' : '❌ 禁止'}`)
-    lines.push(`  子代理: ${perms.allowSubAgents ? '✅ 允许' : '❌ 禁止'}`)
+    lines.push(`🔒 Permissions:`)
+    lines.push(`  Shell Execute: ${perms.allowShell ? '✅ Allowed' : '❌ Denied'}`)
+    lines.push(`  Read Home: ${perms.allowReadHome ? '✅ Allowed' : '❌ Denied'}`)
+    lines.push(`  External Write: ${perms.allowWriteOutside ? '✅ Allowed' : '❌ Denied'}`)
+    lines.push(`  Sub-agents: ${perms.allowSubAgents ? '✅ Allowed' : '❌ Denied'}`)
   }
 
   // ── Session Info ──
@@ -394,19 +394,19 @@ function handleStatus(ctx: CommandContext, args: string): CommandResult {
         .prepare('SELECT COUNT(*) as count FROM messages WHERE session_id = ?')
         .get(ctx.sessionId) as { count: number } | undefined
 
-      lines.push(`💬 会话: ${sessionRow?.title ?? '未命名'}`)
-      lines.push(`  消息数: ${msgCount?.count ?? 0}`)
+      lines.push(`💬 Session: ${sessionRow?.title ?? 'Untitled'}`)
+      lines.push(`  Messages: ${msgCount?.count ?? 0}`)
       if (sessionRow?.created_at) {
-        lines.push(`  创建时间: ${new Date(sessionRow.created_at).toLocaleString('zh-CN')}`)
+        lines.push(`  Created: ${new Date(sessionRow.created_at).toLocaleString()}`)
       }
       if (sessionRow?.updated_at) {
-        lines.push(`  最后活跃: ${new Date(sessionRow.updated_at).toLocaleString('zh-CN')}`)
+        lines.push(`  Last Active: ${new Date(sessionRow.updated_at).toLocaleString()}`)
       }
     } catch {
       /* ignore */
     }
   } else {
-    lines.push(`💬 会话: 无活跃会话`)
+    lines.push(`💬 Session: No active session`)
   }
 
   // ── Workspace Memory & Working Directory ──
@@ -414,15 +414,15 @@ function handleStatus(ctx: CommandContext, args: string): CommandResult {
   for (const filename of WORKSPACE_MEMORY_TEMPLATE_FILES) {
     const filePath = path.join(ctx.pluginWorkDir, filename)
     lines.push(
-      `📝 ${filename}: ${fs.existsSync(filePath) ? '已配置 ✅' : '未初始化（使用 /init 创建）'}`
+      `📝 ${filename}: ${fs.existsSync(filePath) ? 'Configured ✅' : 'Not initialized (use /init to create)'}`
     )
   }
-  lines.push(`📁 工作目录: ${ctx.pluginWorkDir}`)
+  lines.push(`📁 Working Directory: ${ctx.pluginWorkDir}`)
 
   // ── System Info ──
   lines.push('')
-  lines.push(`🖥️ 系统: ${os.platform()} ${os.release()}`)
-  lines.push(`⏰ 当前时间: ${new Date().toLocaleString('zh-CN')}`)
+  lines.push(`🖥️ System: ${os.platform()} ${os.release()}`)
+  lines.push(`⏰ Current Time: ${new Date().toLocaleString()}`)
 
   return { handled: true, reply: lines.join('\n') }
 }
@@ -430,7 +430,7 @@ function handleStatus(ctx: CommandContext, args: string): CommandResult {
 function handleCompress(ctx: CommandContext, args: string): CommandResult {
   void args
   if (!ctx.sessionId) {
-    return { handled: true, reply: '当前没有活跃会话。\nNo active session found.' }
+    return { handled: true, reply: 'No active session found.' }
   }
 
   try {
@@ -444,7 +444,7 @@ function handleCompress(ctx: CommandContext, args: string): CommandResult {
       .all(ctx.sessionId) as Array<{ id: string; role: string; content: string }>
 
     if (rows.length < 6) {
-      return { handled: true, reply: '消息数量较少，无需压缩。\nToo few messages to compress.' }
+      return { handled: true, reply: 'Too few messages to compress.' }
     }
 
     // Keep the last 6 messages intact, compress older ones
@@ -491,7 +491,7 @@ function handleCompress(ctx: CommandContext, args: string): CommandResult {
     }
 
     if (compressedCount === 0) {
-      return { handled: true, reply: '上下文已经很精简，无需压缩。\nContext is already compact.' }
+      return { handled: true, reply: 'Context is already compact.' }
     }
 
     console.log(
@@ -499,13 +499,13 @@ function handleCompress(ctx: CommandContext, args: string): CommandResult {
     )
     return {
       handled: true,
-      reply: `✅ 上下文已压缩，清理了 ${compressedCount} 条消息中的旧工具结果和思考过程。\nCompressed ${compressedCount} messages (stale tool results and thinking blocks cleared).`
+      reply: `✅ Context compressed, cleaned ${compressedCount} messages (stale tool results and thinking blocks cleared). Compressed ${compressedCount} messages.`
     }
   } catch (err) {
     console.error('[PluginCommand] Failed to compress context:', err)
     return {
       handled: true,
-      reply: '❌ 压缩失败，请稍后重试。\nCompression failed. Please try again.'
+      reply: '❌ Compression failed. Please try again.'
     }
   }
 }
@@ -561,7 +561,7 @@ function initializeWorkspaceMemoryFiles(workDir: string): {
 function handleStats(ctx: CommandContext, args: string): CommandResult {
   void args
   if (!ctx.sessionId) {
-    return { handled: true, reply: '当前没有活跃会话。\nNo active session found.' }
+    return { handled: true, reply: 'No active session found.' }
   }
 
   try {
@@ -575,7 +575,7 @@ function handleStats(ctx: CommandContext, args: string): CommandResult {
       .all(ctx.sessionId, 'assistant') as Array<{ usage: string; created_at: number }>
 
     if (rows.length === 0) {
-      return { handled: true, reply: '暂无 Token 用量数据。\nNo token usage data available.' }
+      return { handled: true, reply: 'No token usage data available.' }
     }
 
     let totalInput = 0
@@ -617,18 +617,18 @@ function handleStats(ctx: CommandContext, args: string): CommandResult {
       return `${(n / 1_000_000).toFixed(2)}M`
     }
 
-    const lines: string[] = ['📈 Token 用量统计 / Usage Stats']
+    const lines: string[] = ['📈 Usage Stats']
 
     lines.push('')
-    lines.push(`📊 总计: ${formatNum(totalTokens)} tokens`)
-    lines.push(`  输入 (Input):  ${formatNum(totalInput)}`)
-    lines.push(`  输出 (Output): ${formatNum(totalOutput)}`)
+    lines.push(`📊 Total: ${formatNum(totalTokens)} tokens`)
+    lines.push(`  Input:  ${formatNum(totalInput)}`)
+    lines.push(`  Output: ${formatNum(totalOutput)}`)
 
     if (totalCacheRead > 0 || totalCacheCreation > 0) {
       lines.push('')
-      lines.push(`💾 缓存:`)
-      if (totalCacheRead > 0) lines.push(`  缓存命中: ${formatNum(totalCacheRead)}`)
-      if (totalCacheCreation > 0) lines.push(`  缓存写入: ${formatNum(totalCacheCreation)}`)
+      lines.push(`💾 Cache:`)
+      if (totalCacheRead > 0) lines.push(`  Cache Hit: ${formatNum(totalCacheRead)}`)
+      if (totalCacheCreation > 0) lines.push(`  Cache Write: ${formatNum(totalCacheCreation)}`)
     }
 
     if (totalReasoning > 0) {
@@ -636,14 +636,14 @@ function handleStats(ctx: CommandContext, args: string): CommandResult {
     }
 
     lines.push('')
-    lines.push(`🔄 API 调用次数: ${requestCount}`)
-    lines.push(`💬 助手回复数: ${rows.length}`)
+    lines.push(`🔄 API Calls: ${requestCount}`)
+    lines.push(`💬 Assistant Replies: ${rows.length}`)
 
     if (totalDurationMs > 0) {
       const totalSec = totalDurationMs / 1000
       const tps = totalSec > 0 ? totalTokens / totalSec : 0
       lines.push(
-        `⏱️ 总耗时: ${totalSec < 60 ? `${totalSec.toFixed(1)}s` : `${(totalSec / 60).toFixed(1)}min`}`
+        `⏱️ Total Time: ${totalSec < 60 ? `${totalSec.toFixed(1)}s` : `${(totalSec / 60).toFixed(1)}min`}`
       )
       lines.push(`⚡ TPS: ${tps.toFixed(1)}`)
     }
@@ -653,9 +653,9 @@ function handleStats(ctx: CommandContext, args: string): CommandResult {
     const lastMsg = rows[rows.length - 1]
     if (firstMsg && lastMsg) {
       lines.push('')
-      lines.push(`📅 统计范围:`)
-      lines.push(`  首次: ${new Date(firstMsg.created_at).toLocaleString('zh-CN')}`)
-      lines.push(`  最近: ${new Date(lastMsg.created_at).toLocaleString('zh-CN')}`)
+      lines.push(`📅 Stats Range:`)
+      lines.push(`  First: ${new Date(firstMsg.created_at).toLocaleString()}`)
+      lines.push(`  Latest: ${new Date(lastMsg.created_at).toLocaleString()}`)
     }
 
     return { handled: true, reply: lines.join('\n') }
@@ -663,7 +663,7 @@ function handleStats(ctx: CommandContext, args: string): CommandResult {
     console.error('[PluginCommand] Failed to get stats:', err)
     return {
       handled: true,
-      reply: '❌ 获取统计信息失败。\nFailed to get usage stats.'
+      reply: '❌ Failed to get usage stats.'
     }
   }
 }

@@ -292,12 +292,12 @@ function buildGifPrompt(
 
 function buildGifRunSummary(input: DrawGifInputSnapshot): string {
   const parts = [
-    input.inputMode === 'reference' ? '参考图模式' : `角色：${input.characterPrompt}`,
+    input.inputMode === 'reference' ? 'Reference image mode' : `Character: ${input.characterPrompt}`,
     input.inputMode === 'reference' && input.characterPrompt
-      ? `角色补充：${input.characterPrompt}`
+      ? `Character notes: ${input.characterPrompt}`
       : null,
-    `风格：${input.stylePrompt}`,
-    `动作：${input.actionPrompt}`
+    `Style: ${input.stylePrompt}`,
+    `Action: ${input.actionPrompt}`
   ].filter(Boolean)
 
   return parts.join('｜')

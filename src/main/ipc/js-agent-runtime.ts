@@ -112,6 +112,7 @@ function normalizeRendererToolResult(value: unknown): RendererToolResult {
   }
 }
 
+
 export class JsAgentRuntimeManager {
   private running = false
   private onRequestFromSidecar: RequestHandler | null = null

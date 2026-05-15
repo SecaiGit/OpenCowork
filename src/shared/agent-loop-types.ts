@@ -111,7 +111,7 @@ export type InteractiveAgentEvent =
       type: 'context_compressed'
       originalCount: number
       newCount: number
-      messages: AgentLoopMessage[]
+      messages?: AgentLoopMessage[]
     }
   | {
       type: 'iteration_end'
@@ -134,7 +134,7 @@ export type InteractiveAgentEvent =
 // Both sides map to their own richer UnifiedMessage type.
 export interface AgentLoopMessage {
   id: string
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | AgentLoopContentBlock[]
   createdAt: number
   usage?: AgentTokenUsage

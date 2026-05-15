@@ -346,11 +346,20 @@ export function buildRenderableMessageMetaFromAnalysis(
   streamingMessageId: string | null
 ): RenderableMessageMeta[] {
   const lastRealUserMessageId = streamingMessageId ? null : analysis.lastRealUserMessageId
+  const renderableMessageIds = [...analysis.renderableMessageIds]
+  if (
+    streamingMessageId &&
+    !renderableMessageIds.includes(streamingMessageId) &&
+    analysis.messageLookup.get(streamingMessageId)?.role === 'assistant'
+  ) {
+    renderableMessageIds.push(streamingMessageId)
+  }
 
-  return analysis.renderableMessageIds.map((messageId) => ({
+  return renderableMessageIds.map((messageId) => ({
     messageId,
     isLastUserMessage: messageId === lastRealUserMessageId,
-    isLastAssistantMessage: messageId === analysis.lastAssistantMessageId
+    isLastAssistantMessage:
+      messageId === analysis.lastAssistantMessageId || messageId === streamingMessageId
   }))
 }
 

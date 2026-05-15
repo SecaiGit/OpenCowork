@@ -367,7 +367,7 @@ export function SshTerminalStatusPanel({
       >
         <div>
           <div className="text-[1rem] font-semibold" style={{ color: palette.terminalText }}>
-            {t('workspace.terminalStatus.title', { defaultValue: '终端状态' })}
+            {t('workspace.terminalStatus.title', { defaultValue: 'Terminal status' })}
           </div>
           <div className="mt-1 text-[0.78rem]" style={{ color: palette.muted }}>
             {statusSubtitle}
@@ -390,7 +390,7 @@ export function SshTerminalStatusPanel({
             className="size-9 rounded-[12px] hover:opacity-85"
             style={{ color: palette.terminalText }}
             onClick={onClose}
-            title={t('workspace.close', { defaultValue: '关闭' })}
+            title={t('workspace.close', { defaultValue: 'Close' })}
           >
             <X className="size-4" />
           </Button>
@@ -461,7 +461,7 @@ export function SshTerminalStatusPanel({
                 className="text-[0.72rem] uppercase tracking-[0.16em]"
                 style={{ color: palette.muted }}
               >
-                {t('workspace.terminalStatus.load', { defaultValue: '负载' })}
+                {t('workspace.terminalStatus.load', { defaultValue: 'Load' })}
               </div>
               <div
                 className="mt-2 text-[0.94rem] font-semibold"
@@ -481,7 +481,7 @@ export function SshTerminalStatusPanel({
                 className="text-[0.72rem] uppercase tracking-[0.16em]"
                 style={{ color: palette.muted }}
               >
-                {t('workspace.terminalStatus.uptime', { defaultValue: '运行' })}
+                {t('workspace.terminalStatus.uptime', { defaultValue: 'Uptime' })}
               </div>
               <div
                 className="mt-2 text-[0.88rem] font-semibold"
@@ -519,7 +519,7 @@ export function SshTerminalStatusPanel({
             style={{ color: palette.terminalText }}
           >
             <Cpu className="size-4" style={{ color: palette.accent }} />
-            {t('workspace.terminalStatus.resources', { defaultValue: '系统资源' })}
+            {t('workspace.terminalStatus.resources', { defaultValue: 'System resources' })}
           </div>
           <MetricBar
             label="CPU"
@@ -529,7 +529,7 @@ export function SshTerminalStatusPanel({
             palette={palette}
           />
           <MetricBar
-            label={t('workspace.terminalStatus.memory', { defaultValue: '内存' })}
+            label={t('workspace.terminalStatus.memory', { defaultValue: 'Memory' })}
             value={memoryPercent}
             detail={
               snapshot
@@ -561,7 +561,7 @@ export function SshTerminalStatusPanel({
             style={{ color: palette.terminalText }}
           >
             <MemoryStick className="size-4" style={{ color: palette.accent }} />
-            {t('workspace.terminalStatus.processes', { defaultValue: '进程占用' })}
+            {t('workspace.terminalStatus.processes', { defaultValue: 'Process usage' })}
           </div>
           <div
             className="mt-3 overflow-hidden rounded-[18px] border"
@@ -571,9 +571,9 @@ export function SshTerminalStatusPanel({
               className="grid grid-cols-[72px_66px_1fr] gap-2 px-3 py-2 text-[0.72rem] font-semibold text-white"
               style={{ background: palette.accent }}
             >
-              <span>{t('workspace.terminalStatus.memory', { defaultValue: '内存' })}</span>
+              <span>{t('workspace.terminalStatus.memory', { defaultValue: 'Memory' })}</span>
               <span>CPU</span>
-              <span>{t('workspace.terminalStatus.command', { defaultValue: '命令' })}</span>
+              <span>{t('workspace.terminalStatus.command', { defaultValue: 'Command' })}</span>
             </div>
             <div className="divide-y" style={{ borderColor: palette.panelBorder }}>
               {(snapshot?.processes ?? []).map((process, index) => (
@@ -601,7 +601,7 @@ export function SshTerminalStatusPanel({
               style={{ color: palette.terminalText }}
             >
               <ArrowUpRight className="size-4" style={{ color: palette.warning }} />
-              {t('workspace.terminalStatus.network', { defaultValue: '网络吞吐' })}
+              {t('workspace.terminalStatus.network', { defaultValue: 'Network throughput' })}
             </div>
             <div className="text-right text-[0.72rem]" style={{ color: palette.muted }}>
               <div className="flex items-center justify-end gap-1">
@@ -626,7 +626,7 @@ export function SshTerminalStatusPanel({
             style={{ color: palette.terminalText }}
           >
             <HardDrive className="size-4" style={{ color: palette.accent }} />
-            {t('workspace.terminalStatus.disks', { defaultValue: '磁盘用量' })}
+            {t('workspace.terminalStatus.disks', { defaultValue: 'Disk usage' })}
           </div>
           <div
             className="mt-3 overflow-hidden rounded-[18px] border"
@@ -636,8 +636,8 @@ export function SshTerminalStatusPanel({
               className="grid grid-cols-[1fr_auto] gap-2 px-3 py-2 text-[0.72rem] font-semibold uppercase tracking-[0.14em]"
               style={{ background: palette.panelStrong, color: palette.muted }}
             >
-              <span>{t('workspace.terminalStatus.path', { defaultValue: '路径' })}</span>
-              <span>{t('workspace.terminalStatus.capacity', { defaultValue: '可用/大小' })}</span>
+              <span>{t('workspace.terminalStatus.path', { defaultValue: 'Path' })}</span>
+              <span>{t('workspace.terminalStatus.capacity', { defaultValue: 'Available/Size' })}</span>
             </div>
             <div className="divide-y" style={{ borderColor: palette.panelBorder }}>
               {(snapshot?.disks ?? []).map((disk) => (

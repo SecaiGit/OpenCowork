@@ -118,7 +118,7 @@ export async function startWeixinLoginWithQr(opts: {
   if (!opts.force && existing && isLoginFresh(existing) && existing.qrcodeUrl) {
     return {
       qrcodeUrl: existing.qrcodeUrl,
-      message: '二维码已就绪，请使用微信扫描。',
+      message: 'QR code ready, please scan with WeChat.',
       sessionKey
     }
   }
@@ -138,7 +138,7 @@ export async function startWeixinLoginWithQr(opts: {
 
   return {
     qrcodeUrl: qrResponse.qrcode_img_content,
-    message: '使用微信扫描以下二维码，以完成连接。',
+    message: 'Scan the QR code below with WeChat to complete the connection.',
     sessionKey
   }
 }
@@ -159,11 +159,11 @@ export async function waitForWeixinLogin(opts: {
 }> {
   let activeLogin = activeLogins.get(opts.sessionKey)
   if (!activeLogin) {
-    return { connected: false, message: '当前没有进行中的登录，请先发起登录。' }
+    return { connected: false, message: 'No login in progress, please initiate login first.' }
   }
   if (!isLoginFresh(activeLogin)) {
     activeLogins.delete(opts.sessionKey)
-    return { connected: false, message: '二维码已过期，请重新生成。' }
+    return { connected: false, message: 'QR code expired, please regenerate.' }
   }
 
   const deadline = Date.now() + Math.max(opts.timeoutMs ?? 480_000, 1000)
@@ -180,7 +180,7 @@ export async function waitForWeixinLogin(opts: {
         qrRefreshCount += 1
         if (qrRefreshCount > MAX_QR_REFRESH_COUNT) {
           activeLogins.delete(opts.sessionKey)
-          return { connected: false, message: '登录超时：二维码多次过期，请重新开始登录流程。' }
+          return { connected: false, message: 'Login timeout: QR code expired multiple times, please restart login flow.' }
         }
 
         const qrResponse = await fetchQRCode(
@@ -200,11 +200,11 @@ export async function waitForWeixinLogin(opts: {
       case 'confirmed':
         activeLogins.delete(opts.sessionKey)
         if (!status.ilink_bot_id) {
-          return { connected: false, message: '登录失败：服务器未返回 ilink_bot_id。' }
+          return { connected: false, message: 'Login failed: server did not return ilink_bot_id.' }
         }
         return {
           connected: true,
-          message: '✅ 与微信连接成功！',
+          message: '✅ Connected to WeChat successfully!',
           token: status.bot_token,
           accountId: status.ilink_bot_id,
           baseUrl: status.baseurl,
@@ -216,5 +216,5 @@ export async function waitForWeixinLogin(opts: {
   }
 
   activeLogins.delete(opts.sessionKey)
-  return { connected: false, message: '登录超时，请重试。' }
+  return { connected: false, message: 'Login timeout, please retry.' }
 }

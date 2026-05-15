@@ -244,14 +244,14 @@ export function ProjectWikiPage(): React.JSX.Element {
     if (!activeProjectId || !activeProject?.workingFolder) return
     if (runningAction !== null) {
       if (runningAction !== action) {
-        toast.info('Wiki 正在执行其他生成任务，请先取消当前任务')
+        toast.info('Wiki is running another generation task, please cancel the current task first')
       }
       return
     }
     setRunningAction(action)
     setGenerationProgress({
       stage: 'preparing',
-      message: '正在启动 Wiki 生成流程',
+      message: 'Starting Wiki generation process',
       totalLeafCount: 0,
       completedLeafCount: 0
     })
@@ -273,10 +273,10 @@ export function ProjectWikiPage(): React.JSX.Element {
       )
       toast.success(
         mode === 'incremental'
-          ? 'Wiki 已增量更新'
+          ? 'Wiki incrementally updated'
           : mode === 'full'
-            ? 'Wiki 已生成（旧结构已自动升级为树形）'
-            : 'Wiki 已重新生成'
+            ? 'Wiki generated (old structure auto-upgraded to tree)'
+            : 'Wiki regenerated'
       )
       await loadData()
     } catch (error) {
@@ -303,9 +303,9 @@ export function ProjectWikiPage(): React.JSX.Element {
     cancelWikiGeneration()
     setRunningAction(null)
     setGenerationProgress((current) =>
-      current ? { ...current, stage: 'cancelled', message: 'Wiki 生成已取消' } : current
+      current ? { ...current, stage: 'cancelled', message: 'Wiki generation cancelled' } : current
     )
-    toast.info('Wiki 生成已取消')
+    toast.info('Wiki generation cancelled')
   }
 
   const renderTreeNode = (node: WikiTreeNode): React.JSX.Element => {
@@ -340,9 +340,9 @@ export function ProjectWikiPage(): React.JSX.Element {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium">{node.name}</div>
             <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
-              {node.description || '无描述'}
+              {node.description || 'No description'}
             </div>
-            <div className="mt-1 text-[10px] text-muted-foreground/80">状态：{node.status}</div>
+            <div className="mt-1 text-[10px] text-muted-foreground/80">Status: {node.status}</div>
           </div>
         </button>
         {hasChildren && expanded && (
@@ -355,7 +355,7 @@ export function ProjectWikiPage(): React.JSX.Element {
   if (!activeProject) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        先选择项目
+        Select a project first
       </div>
     )
   }
@@ -366,13 +366,13 @@ export function ProjectWikiPage(): React.JSX.Element {
         <div className="border-b p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <BookOpen className="size-4 text-primary" />
-            <span>项目 Wiki</span>
+            <span>Project Wiki</span>
           </div>
           <div className="mt-3 space-y-2 text-xs text-muted-foreground">
             <div className="flex items-center justify-between rounded-md border px-2 py-1.5">
               <span className="flex items-center gap-1">
                 <Bot className="size-3.5" />
-                启用 Wiki 搜索
+                Enable Wiki search
               </span>
               <Switch
                 checked={projectState?.wiki_search_enabled === 1}
@@ -382,7 +382,7 @@ export function ProjectWikiPage(): React.JSX.Element {
             <div className="rounded-md border px-2 py-1.5">
               <div className="flex items-center gap-1">
                 <GitCommitHorizontal className="size-3.5" />
-                上次全量 Commit
+                Last full commit
               </div>
               <div className="mt-1 break-all text-[11px]">
                 {projectState?.last_full_generated_commit_id ?? '—'}
@@ -397,7 +397,7 @@ export function ProjectWikiPage(): React.JSX.Element {
                 disabled={runningAction === 'incremental'}
               >
                 <RefreshCw className="size-3.5" />
-                {runningAction === 'incremental' ? '增量中' : '增量生成'}
+                {runningAction === 'incremental' ? 'Incrementing' : 'Incremental generation'}
               </Button>
               <Button
                 size="sm"
@@ -407,7 +407,7 @@ export function ProjectWikiPage(): React.JSX.Element {
                 disabled={runningAction === 'generate'}
               >
                 <RotateCcw className="size-3.5" />
-                {runningAction === 'generate' ? '生成中' : '全量生成'}
+                {runningAction === 'generate' ? 'Generating' : 'Full generation'}
               </Button>
               <Button
                 size="sm"
@@ -417,19 +417,19 @@ export function ProjectWikiPage(): React.JSX.Element {
                 disabled={runningAction === 'regenerate'}
               >
                 <RotateCcw className="size-3.5" />
-                {runningAction === 'regenerate' ? '重建中' : '重新生成'}
+                {runningAction === 'regenerate' ? 'Rebuilding' : 'Regenerate'}
               </Button>
             </div>
             {generationProgress && (
               <div className="rounded-md border px-2 py-2 text-[11px]">
                 <div className="font-medium text-foreground">{generationProgress.message}</div>
                 <div className="mt-1 text-muted-foreground">
-                  阶段：{generationProgress.stage} · 进度：{generationProgress.completedLeafCount}/
+                  Stage: {generationProgress.stage} · Progress: {generationProgress.completedLeafCount}/
                   {generationProgress.totalLeafCount}
                 </div>
                 {generationProgress.currentNodeTitle && (
                   <div className="mt-1 break-all text-muted-foreground">
-                    当前节点：{generationProgress.currentNodeTitle}
+                    Current node: {generationProgress.currentNodeTitle}
                   </div>
                 )}
                 {runningAction !== null && (
@@ -440,7 +440,7 @@ export function ProjectWikiPage(): React.JSX.Element {
                     onClick={handleCancelGeneration}
                   >
                     <Square className="size-3.5" />
-                    取消生成
+                    Cancel generation
                   </Button>
                 )}
               </div>
@@ -449,9 +449,9 @@ export function ProjectWikiPage(): React.JSX.Element {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {loading ? (
-            <div className="px-2 py-6 text-xs text-muted-foreground">正在加载 Wiki...</div>
+            <div className="px-2 py-6 text-xs text-muted-foreground">Loading Wiki...</div>
           ) : documents.length === 0 ? (
-            <div className="px-2 py-6 text-xs text-muted-foreground">暂无 Wiki 文档</div>
+            <div className="px-2 py-6 text-xs text-muted-foreground">No Wiki documents</div>
           ) : (
             <div className="space-y-1">{wikiTree.map(renderTreeNode)}</div>
           )}
@@ -461,13 +461,13 @@ export function ProjectWikiPage(): React.JSX.Element {
         <div className="flex items-center gap-2 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium">
-              {activeDocument?.name ?? '项目 Wiki'}
+              {activeDocument?.name ?? 'Project Wiki'}
             </div>
             <div className="truncate text-xs text-muted-foreground">
-              {activeDocument?.description ?? activeProject.workingFolder ?? '尚未生成文档'}
+              {activeDocument?.description ?? activeProject.workingFolder ?? 'No documents generated yet'}
             </div>
             <div className="text-[11px] text-muted-foreground">
-              文档状态：{activeDocument?.status ?? '—'}
+              Document status: {activeDocument?.status ?? '—'}
             </div>
           </div>
           <Button
@@ -477,7 +477,7 @@ export function ProjectWikiPage(): React.JSX.Element {
             disabled={!activeDocument || saving}
           >
             <Save className="size-3.5" />
-            保存
+            Save
           </Button>
         </div>
         <div className="flex min-h-0 flex-1">
@@ -492,22 +492,22 @@ export function ProjectWikiPage(): React.JSX.Element {
               />
             ) : (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                请选择叶子 Wiki 节点
+                Please select a leaf Wiki node
               </div>
             )}
           </div>
           <div className="w-72 shrink-0 border-l bg-muted/10 p-3">
-            <div className="text-xs font-medium">章节来源文件</div>
+            <div className="text-xs font-medium">Section source files</div>
             <div className="mt-2 space-y-3 overflow-y-auto text-[11px] text-muted-foreground">
               {sections.length === 0 ? (
-                <div>暂无章节来源</div>
+                <div>No section sources</div>
               ) : (
                 sections.map((section) => (
                   <div key={section.id} className="rounded-md border bg-background/70 p-2">
                     <div className="font-medium text-foreground">{section.title}</div>
                     <div className="mt-1 space-y-1">
                       {section.sources.length === 0 ? (
-                        <div>无来源文件</div>
+                        <div>No source files</div>
                       ) : (
                         section.sources.map((source) => (
                           <div key={source.id} className="break-all">

@@ -34,7 +34,7 @@ const resourceKindOptions: ResourceKindOption[] = [
 function SourceBadge({ source }: { source: ManagedResourceItem['source'] }): React.JSX.Element {
   return (
     <Badge variant={source === 'bundled' ? 'outline' : 'secondary'}>
-      {source === 'bundled' ? '内置' : '用户'}
+      {source === 'bundled' ? 'Built-in' : 'User'}
     </Badge>
   )
 }
@@ -105,8 +105,8 @@ export function ResourcesPage(): React.JSX.Element {
     const result = await saveSelected()
     toast[result.success ? 'success' : 'error'](
       result.success
-        ? t('resourcesPage.saved', { defaultValue: '已保存' })
-        : result.error || t('resourcesPage.saveFailed', { defaultValue: '保存失败' })
+        ? t('resourcesPage.saved', { defaultValue: 'Saved' })
+        : result.error || t('resourcesPage.saveFailed', { defaultValue: 'Save failed' })
     )
   }
 
@@ -114,8 +114,8 @@ export function ResourcesPage(): React.JSX.Element {
     const result = await createCommand(newCommandName)
     toast[result.success ? 'success' : 'error'](
       result.success
-        ? t('resourcesPage.commandCreated', { defaultValue: '命令已创建' })
-        : result.error || t('resourcesPage.commandCreateFailed', { defaultValue: '创建命令失败' })
+        ? t('resourcesPage.commandCreated', { defaultValue: 'Command created' })
+        : result.error || t('resourcesPage.commandCreateFailed', { defaultValue: 'Failed to create command' })
     )
 
     if (!result.success) return
@@ -135,11 +135,11 @@ export function ResourcesPage(): React.JSX.Element {
         </button>
         <div>
           <h1 className="text-sm font-semibold">
-            {t('resourcesPage.title', { defaultValue: '资源' })}
+            {t('resourcesPage.title', { defaultValue: 'Resources' })}
           </h1>
           <p className="text-xs text-muted-foreground">
             {t('resourcesPage.subtitle', {
-              defaultValue: '统一管理 SubAgents 与 Commands'
+              defaultValue: 'Unified management of SubAgents and Commands'
             })}
           </p>
         </div>
@@ -152,7 +152,7 @@ export function ResourcesPage(): React.JSX.Element {
             onClick={() => setCreateDialogOpen(true)}
           >
             <Plus className="size-3.5" />
-            {t('resourcesPage.addCommand', { defaultValue: '新增命令' })}
+            {t('resourcesPage.addCommand', { defaultValue: 'Add command' })}
           </Button>
         ) : null}
         <div className="relative w-64">
@@ -161,7 +161,7 @@ export function ResourcesPage(): React.JSX.Element {
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={t('resourcesPage.searchPlaceholder', {
-              defaultValue: '搜索名称、摘要或路径'
+              defaultValue: 'Search name, summary or path'
             })}
             className="h-8 pl-8 text-xs"
           />
@@ -177,22 +177,22 @@ export function ResourcesPage(): React.JSX.Element {
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t('resourcesPage.addCommand', { defaultValue: '新增命令' })}</DialogTitle>
+            <DialogTitle>{t('resourcesPage.addCommand', { defaultValue: 'Add command' })}</DialogTitle>
             <DialogDescription>
               {t('resourcesPage.addCommandDesc', {
-                defaultValue: '请输入 kebab-case 命令名，创建后会写入用户命令目录并进入编辑状态。'
+                defaultValue: 'Please enter a kebab-case command name. After creation, it will be written to the user command directory and enter edit mode.'
               })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             <label className="text-xs font-medium text-foreground/80">
-              {t('resourcesPage.commandName', { defaultValue: '命令名' })}
+              {t('resourcesPage.commandName', { defaultValue: 'Command name' })}
             </label>
             <Input
               value={newCommandName}
               onChange={(event) => setNewCommandName(event.target.value)}
               placeholder={t('resourcesPage.commandNamePlaceholder', {
-                defaultValue: '例如：project-review'
+                defaultValue: 'e.g. project-review'
               })}
               className="text-sm"
               onKeyDown={(event) => {
@@ -204,17 +204,17 @@ export function ResourcesPage(): React.JSX.Element {
             />
             <p className="text-[11px] text-muted-foreground">
               {t('resourcesPage.commandNameHint', {
-                defaultValue: '仅允许小写字母、数字和连字符，例如 release-note。'
+                defaultValue: 'Only lowercase letters, numbers and hyphens allowed, e.g. release-note.'
               })}
             </p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
-              {t('resourcesPage.cancel', { defaultValue: '取消' })}
+              {t('resourcesPage.cancel', { defaultValue: 'Cancel' })}
             </Button>
             <Button onClick={() => void handleCreateCommand()} disabled={saving}>
               {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-              {t('resourcesPage.create', { defaultValue: '创建' })}
+              {t('resourcesPage.create', { defaultValue: 'Create' })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -242,7 +242,7 @@ export function ResourcesPage(): React.JSX.Element {
                   })}
                 </span>
                 <span className="text-[11px] opacity-70">
-                  {t('resourcesPage.count', { count, defaultValue: `${count} 项` })}
+                  {t('resourcesPage.count', { count, defaultValue: `${count} items` })}
                 </span>
               </button>
             )
@@ -251,21 +251,21 @@ export function ResourcesPage(): React.JSX.Element {
 
         <div className="flex w-80 shrink-0 flex-col border-r bg-muted/20 overflow-hidden">
           <div className="border-b px-3 py-2 text-xs text-muted-foreground">
-            {t('resourcesPage.listTitle', { defaultValue: '资源列表' })}
+            {t('resourcesPage.listTitle', { defaultValue: 'Resource list' })}
           </div>
           <div className="flex-1 overflow-y-auto px-2 py-2">
             {listLoading ? (
               <div className="flex items-center justify-center py-8 text-xs text-muted-foreground">
                 <Loader2 className="mr-2 size-3.5 animate-spin" />
-                {t('resourcesPage.loadingList', { defaultValue: '加载列表中...' })}
+                {t('resourcesPage.loadingList', { defaultValue: 'Loading list...' })}
               </div>
             ) : filteredItems.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-10 text-center">
                 <p className="text-sm text-muted-foreground">
-                  {t('resourcesPage.empty', { defaultValue: '没有可用资源' })}
+                  {t('resourcesPage.empty', { defaultValue: 'No available resources' })}
                 </p>
                 <p className="text-xs text-muted-foreground/70">
-                  {t('resourcesPage.emptyDesc', { defaultValue: '试试切换类型或修改搜索词' })}
+                  {t('resourcesPage.emptyDesc', { defaultValue: 'Try switching type or modifying search term' })}
                 </p>
               </div>
             ) : (
@@ -288,14 +288,14 @@ export function ResourcesPage(): React.JSX.Element {
                           <div className="truncate text-sm font-medium">{item.name}</div>
                           <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
                             {item.description ||
-                              t('resourcesPage.noDescription', { defaultValue: '暂无摘要' })}
+                              t('resourcesPage.noDescription', { defaultValue: 'No summary' })}
                           </div>
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-1">
                           <SourceBadge source={item.source} />
                           {item.kind === 'commands' && item.effective ? (
                             <Badge variant="outline">
-                              {t('resourcesPage.effective', { defaultValue: '生效中' })}
+                              {t('resourcesPage.effective', { defaultValue: 'Active' })}
                             </Badge>
                           ) : null}
                         </div>
@@ -318,7 +318,7 @@ export function ResourcesPage(): React.JSX.Element {
                     <SourceBadge source={selectedResource.source} />
                     {selectedResource.kind === 'commands' && selectedResource.effective ? (
                       <Badge variant="outline">
-                        {t('resourcesPage.effective', { defaultValue: '生效中' })}
+                        {t('resourcesPage.effective', { defaultValue: 'Active' })}
                       </Badge>
                     ) : null}
                   </div>
@@ -359,7 +359,7 @@ export function ResourcesPage(): React.JSX.Element {
               {!selectedResource.editable ? (
                 <div className="border-b bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
                   {t('resourcesPage.readonlyNotice', {
-                    defaultValue: '这是内置资源，当前版本只支持预览，不支持直接编辑。'
+                    defaultValue: 'This is a built-in resource, current version only supports preview, not direct editing.'
                   })}
                 </div>
               ) : null}
@@ -374,7 +374,7 @@ export function ResourcesPage(): React.JSX.Element {
                 {detailLoading ? (
                   <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
                     <Loader2 className="mr-2 size-4 animate-spin" />
-                    {t('resourcesPage.loadingDetail', { defaultValue: '加载内容中...' })}
+                    {t('resourcesPage.loadingDetail', { defaultValue: 'Loading content...' })}
                   </div>
                 ) : editing ? (
                   <textarea
@@ -393,11 +393,11 @@ export function ResourcesPage(): React.JSX.Element {
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
               <p className="text-sm text-muted-foreground">
-                {t('resourcesPage.selectTitle', { defaultValue: '选择一个资源' })}
+                {t('resourcesPage.selectTitle', { defaultValue: 'Select a resource' })}
               </p>
               <p className="text-xs text-muted-foreground/70">
                 {t('resourcesPage.selectDesc', {
-                  defaultValue: '左侧可切换资源类型，并在列表中选择具体条目。'
+                  defaultValue: 'Switch resource type on the left and select specific entries in the list.'
                 })}
               </p>
             </div>

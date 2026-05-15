@@ -1,4 +1,5 @@
 import * as React from 'react'
+import type { TFunction } from 'i18next'
 import {
   CalendarDays,
   CheckCircle2,
@@ -11,10 +12,12 @@ import {
   Plus,
   Power,
   PowerOff,
+  StopCircle,
   Trash2,
   XCircle
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 import { Button } from '@renderer/components/ui/button'
 import {
   Dialog,
@@ -168,9 +171,21 @@ function selectTaskPageSessionSummaries(state: {
   return next
 }
 
-const WEEKDAY_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+function getWeekdayLabels(t: TFunction): string[] {
+  return [
+    t('tasksPage.weekdaySun'),
+    t('tasksPage.weekdayMon'),
+    t('tasksPage.weekdayTue'),
+    t('tasksPage.weekdayWed'),
+    t('tasksPage.weekdayThu'),
+    t('tasksPage.weekdayFri'),
+    t('tasksPage.weekdaySat')
+  ]
+}
+
 const INPUT_CLASS =
   'h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring'
+const TASKS_RUN_WINDOW_LIMIT = 1000
 
 function toDateTimeLocalValue(timestamp: number | null | undefined): string {
   if (!timestamp) return ''
@@ -272,13 +287,13 @@ function getLatestRunStatus(item: TimelineItem): string | null {
   return latestRun?.status ?? null
 }
 
-function getStatusLabel(status: string | null, job?: CronJobEntry | null): string {
-  if (status === 'running') return '运行中'
-  if (status === 'success') return '成功'
-  if (status === 'error') return '失败'
-  if (status === 'aborted') return '中止'
-  if (job) return job.enabled ? '已启用' : '已停用'
-  return '历史记录'
+function getStatusLabel(status: string | null, t: TFunction, job?: CronJobEntry | null): string {
+  if (status === 'running') return t('tasksPage.statusRunning')
+  if (status === 'success') return t('tasksPage.statusSuccess')
+  if (status === 'error') return t('tasksPage.statusFailed')
+  if (status === 'aborted') return t('tasksPage.statusAborted')
+  if (job) return job.enabled ? t('tasksPage.statusEnabled') : t('tasksPage.statusDisabled')
+  return t('tasksPage.statusHistory')
 }
 
 function getStatusClass(status: string | null, job?: CronJobEntry | null): string {
@@ -292,17 +307,19 @@ function getStatusClass(status: string | null, job?: CronJobEntry | null): strin
 
 function getSourceSessionMeta(
   item: TimelineItem,
-  sessionSummaryById: Map<string, TaskPageSessionSummary>
+  sessionSummaryById: Map<string, TaskPageSessionSummary>,
+  t: TFunction
 ): { title: string; model: string | null; workingFolder: string | null } {
   const session = item.sourceSessionId ? sessionSummaryById.get(item.sourceSessionId) : null
   return {
-    title: item.sourceSessionTitle ?? session?.title ?? '未知会话',
+    title: item.sourceSessionTitle ?? session?.title ?? t('tasksPage.unknownSession'),
     model: item.model ?? session?.modelId ?? null,
     workingFolder: item.workingFolder ?? session?.workingFolder ?? null
   }
 }
 
 export function TasksPage(): React.JSX.Element {
+  const { t } = useTranslation('layout')
   const jobs = useCronStore((state) => state.jobs)
   const runs = useCronStore((state) => state.runs)
   const loadJobs = useCronStore((state) => state.loadJobs)
@@ -347,6 +364,15 @@ export function TasksPage(): React.JSX.Element {
     () => getCalendarDays(calendarCursor.year, calendarCursor.month),
     [calendarCursor.month, calendarCursor.year]
   )
+  const calendarRunWindow = React.useMemo(() => {
+    const firstDay = calendarDays[0]
+    const lastDay = calendarDays[calendarDays.length - 1]
+    if (!firstDay || !lastDay) return { start: 0, end: 0 }
+    return {
+      start: startOfLocalDay(firstDay).getTime(),
+      end: endOfLocalDay(lastDay).getTime()
+    }
+  }, [calendarDays])
   const sessionSummaryById = React.useMemo(() => {
     const map = new Map<string, TaskPageSessionSummary>()
     for (const session of sessionSummaries) {
@@ -354,10 +380,40 @@ export function TasksPage(): React.JSX.Element {
     }
     return map
   }, [sessionSummaries])
+  const jobsById = React.useMemo(() => {
+    const map = new Map<string, CronJobEntry>()
+    for (const job of jobs) {
+      map.set(job.id, job)
+    }
+    return map
+  }, [jobs])
+  const calendarRunsByDayKey = React.useMemo(() => {
+    const map = new Map<string, CronRunEntry[]>()
+    for (const run of runs) {
+      if (run.startedAt < calendarRunWindow.start || run.startedAt > calendarRunWindow.end) {
+        continue
+      }
+      const key = dateKeyFromDate(new Date(run.startedAt))
+      const bucket = map.get(key)
+      if (bucket) {
+        bucket.push(run)
+      } else {
+        map.set(key, [run])
+      }
+    }
+    return map
+  }, [calendarRunWindow.end, calendarRunWindow.start, runs])
 
   const refreshAll = React.useCallback(async (): Promise<void> => {
-    await Promise.all([loadJobs(), loadRuns()])
-  }, [loadJobs, loadRuns])
+    await Promise.all([
+      loadJobs(),
+      loadRuns({
+        start: calendarRunWindow.start,
+        end: calendarRunWindow.end,
+        limit: TASKS_RUN_WINDOW_LIMIT
+      })
+    ])
+  }, [calendarRunWindow.end, calendarRunWindow.start, loadJobs, loadRuns])
 
   React.useEffect(() => {
     void refreshAll()
@@ -433,13 +489,14 @@ export function TasksPage(): React.JSX.Element {
       const dayStart = startOfLocalDay(date).getTime()
       const dayEnd = endOfLocalDay(date).getTime()
       const dayKey = dateKeyFromDate(date)
+      const dayRuns = calendarRunsByDayKey.get(dayKey) ?? []
       const ids = new Set<string>()
 
       for (const job of jobs) {
         const pseudoItem: TimelineItem = {
           jobId: job.id,
           job,
-          runs: runs.filter(
+          runs: dayRuns.filter(
             (run) => run.jobId === job.id && run.startedAt >= dayStart && run.startedAt <= dayEnd
           ),
           plannedTimes: listPlannedTimesForDay(job, dayStart, dayEnd),
@@ -460,9 +517,8 @@ export function TasksPage(): React.JSX.Element {
         ids.add(job.id)
       }
 
-      for (const run of runs) {
-        if (run.startedAt < dayStart || run.startedAt > dayEnd) continue
-        const existingJob = jobs.find((job) => job.id === run.jobId)
+      for (const run of dayRuns) {
+        const existingJob = jobsById.get(run.jobId)
         if (existingJob) continue
         if (sessionFilter !== 'all' && run.sourceSessionIdSnapshot !== sessionFilter) continue
         if (statusFilter !== 'all' && run.status !== statusFilter) continue
@@ -476,7 +532,15 @@ export function TasksPage(): React.JSX.Element {
       map.set(dayKey, ids.size)
     }
     return map
-  }, [calendarDays, jobs, runs, sessionFilter, statusFilter, workingFolderFilter])
+  }, [
+    calendarDays,
+    calendarRunsByDayKey,
+    jobs,
+    jobsById,
+    sessionFilter,
+    statusFilter,
+    workingFolderFilter
+  ])
 
   const handleSelectCalendarDate = React.useCallback((date: Date) => {
     setSelectedDateKey(dateKeyFromDate(date))
@@ -593,7 +657,7 @@ export function TasksPage(): React.JSX.Element {
 
   const handleSubmit = React.useCallback(async () => {
     if (!editorForm.name.trim() || !editorForm.prompt.trim()) {
-      toast.error('任务名称和 Prompt 不能为空')
+      toast.error('Task name and Prompt cannot be empty')
       return
     }
 
@@ -637,10 +701,10 @@ export function TasksPage(): React.JSX.Element {
 
       setEditorOpen(false)
       await refreshAll()
-      toast.success(editorMode === 'create' ? '任务已创建' : '任务已更新')
+      toast.success(editorMode === 'create' ? 'Task created' : 'Task updated')
     } catch (error) {
       console.error('[TasksPage] Failed to save cron job:', error)
-      toast.error('保存任务失败')
+      toast.error('Failed to save task')
     } finally {
       setSubmitting(false)
     }
@@ -653,7 +717,20 @@ export function TasksPage(): React.JSX.Element {
         toast.error(String((result as { error: string }).error))
         return
       }
-      toast.success('已触发立即执行')
+      toast.success('Immediate execution triggered')
+      await refreshAll()
+    },
+    [refreshAll]
+  )
+
+  const handleAbortRun = React.useCallback(
+    async (jobId: string) => {
+      const result = await ipcClient.invoke(IPC.CRON_ABORT_RUN, { jobId })
+      if (result && typeof result === 'object' && 'error' in (result as Record<string, unknown>)) {
+        toast.error(String((result as { error: string }).error))
+        return
+      }
+      toast.success('已中止运行')
       await refreshAll()
     },
     [refreshAll]
@@ -681,16 +758,18 @@ export function TasksPage(): React.JSX.Element {
         toast.error(String((result as { error: string }).error))
         return
       }
-      toast.success('计划已删除，历史记录已保留')
+      toast.success('Plan deleted, history preserved')
       await refreshAll()
     },
     [refreshAll]
   )
 
   const selectedJob = selectedItem?.job ?? null
-  const selectedMeta = selectedItem ? getSourceSessionMeta(selectedItem, sessionSummaryById) : null
+  const selectedMeta = selectedItem
+    ? getSourceSessionMeta(selectedItem, sessionSummaryById, t)
+    : null
   const selectedStatus = selectedItem ? getLatestRunStatus(selectedItem) : null
-  const monthTitle = `${calendarCursor.year}年 ${calendarCursor.month + 1}月`
+  const monthTitle = `${calendarCursor.year} / ${calendarCursor.month + 1}`
   const todayKey = dateKeyFromDate(new Date())
 
   return (
@@ -699,12 +778,14 @@ export function TasksPage(): React.JSX.Element {
         <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-sm">
           <div className="flex items-center justify-between px-4 py-3">
             <div>
-              <div className="text-sm font-semibold text-foreground">任务日历</div>
-              <div className="text-[11px] text-muted-foreground">按天查看计划与执行</div>
+              <div className="text-sm font-semibold text-foreground">Task Calendar</div>
+              <div className="text-[11px] text-muted-foreground">
+                View plans and executions by day
+              </div>
             </div>
             <Button size="sm" className="h-7 px-2 text-xs" onClick={openCreateDialog}>
               <Plus className="mr-1 size-3.5" />
-              新建
+              New
             </Button>
           </div>
           <div className="flex items-center justify-between px-4 pb-2">
@@ -719,10 +800,10 @@ export function TasksPage(): React.JSX.Element {
                 <ChevronRight className="size-4" />
               </Button>
             </div>
-            <span className="text-[11px] text-muted-foreground">默认显示本地时间</span>
+            <span className="text-[11px] text-muted-foreground">Shows local time by default</span>
           </div>
           <div className="grid grid-cols-7 gap-1 px-4 pb-2 text-center text-[10px] text-muted-foreground">
-            {WEEKDAY_LABELS.map((label) => (
+            {getWeekdayLabels(t).map((label) => (
               <div key={label}>{label}</div>
             ))}
           </div>
@@ -764,7 +845,7 @@ export function TasksPage(): React.JSX.Element {
               <CalendarDays className="size-4 text-primary" />
               {formatDayLabel(selectedDay.date)}
               <span className="text-xs text-muted-foreground">
-                {selectedDay.date.toLocaleDateString('zh-CN')}
+                {selectedDay.date.toLocaleDateString()}
               </span>
             </div>
             <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -773,20 +854,20 @@ export function TasksPage(): React.JSX.Element {
                 value={statusFilter}
                 onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
               >
-                <option value="all">全部状态</option>
-                <option value="enabled">已启用</option>
-                <option value="disabled">已停用</option>
-                <option value="running">运行中</option>
-                <option value="success">成功</option>
-                <option value="error">失败</option>
-                <option value="aborted">中止</option>
+                <option value="all">All statuses</option>
+                <option value="enabled">Enabled</option>
+                <option value="disabled">Disabled</option>
+                <option value="running">Running</option>
+                <option value="success">Success</option>
+                <option value="error">Failed</option>
+                <option value="aborted">Aborted</option>
               </select>
               <select
                 className={INPUT_CLASS}
                 value={sessionFilter}
                 onChange={(event) => setSessionFilter(event.target.value)}
               >
-                <option value="all">全部会话</option>
+                <option value="all">All sessions</option>
                 {sessionSummaries.map((session) => (
                   <option key={session.id} value={session.id}>
                     {session.title}
@@ -797,7 +878,7 @@ export function TasksPage(): React.JSX.Element {
                 className="h-8 text-xs"
                 value={workingFolderFilter}
                 onChange={(event) => setWorkingFolderFilter(event.target.value)}
-                placeholder="筛选工作目录"
+                placeholder="Filter working directory"
               />
             </div>
           </div>
@@ -805,12 +886,12 @@ export function TasksPage(): React.JSX.Element {
             {filteredTimelineItems.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
                 <CalendarDays className="size-10 opacity-30" />
-                <div className="text-sm">这一天没有符合筛选条件的任务</div>
+                <div className="text-sm">No tasks match the filters for this day</div>
               </div>
             ) : (
               <div className="space-y-2">
                 {filteredTimelineItems.map((item) => {
-                  const meta = getSourceSessionMeta(item, sessionSummaryById)
+                  const meta = getSourceSessionMeta(item, sessionSummaryById, t)
                   const status = getLatestRunStatus(item)
                   return (
                     <button
@@ -839,7 +920,7 @@ export function TasksPage(): React.JSX.Element {
                                 getStatusClass(status, item.job)
                               )}
                             >
-                              {getStatusLabel(status, item.job)}
+                              {getStatusLabel(status, t, item.job)}
                             </span>
                             {item.job && (
                               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -848,21 +929,21 @@ export function TasksPage(): React.JSX.Element {
                             )}
                           </div>
                           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                            <span>来源：{meta.title}</span>
-                            {meta.model && <span>模型：{meta.model}</span>}
+                            <span>Source: {meta.title}</span>
+                            {meta.model && <span>Model: {meta.model}</span>}
                             {item.plannedTimes.length > 0 && (
                               <span>
-                                计划：
+                                Planned:{' '}
                                 {item.plannedTimes
                                   .slice(0, 3)
                                   .map((time) => formatTimeLabel(time))
-                                  .join('、')}
+                                  .join(', ')}
                                 {item.plannedTimes.length > 3
                                   ? ` +${item.plannedTimes.length - 3}`
                                   : ''}
                               </span>
                             )}
-                            {item.runs.length > 0 && <span>执行：{item.runs.length} 次</span>}
+                            {item.runs.length > 0 && <span>Runs: {item.runs.length}</span>}
                           </div>
                           {meta.workingFolder && (
                             <div className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -896,17 +977,19 @@ export function TasksPage(): React.JSX.Element {
                         getStatusClass(selectedStatus, selectedItem.job)
                       )}
                     >
-                      {getStatusLabel(selectedStatus, selectedItem.job)}
+                      {getStatusLabel(selectedStatus, t, selectedItem.job)}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-                    <div>来源会话：{selectedMeta?.title ?? '—'}</div>
-                    <div>模型：{selectedMeta?.model ?? '—'}</div>
-                    <div className="truncate">工作目录：{selectedMeta?.workingFolder ?? '—'}</div>
+                    <div>Source session: {selectedMeta?.title ?? '—'}</div>
+                    <div>Model: {selectedMeta?.model ?? '—'}</div>
+                    <div className="truncate">
+                      Working directory: {selectedMeta?.workingFolder ?? '—'}
+                    </div>
                     <div>
-                      计划时间：
+                      Scheduled:{' '}
                       {selectedItem.plannedTimes.length > 0
-                        ? selectedItem.plannedTimes.map((time) => formatTimeLabel(time)).join('、')
+                        ? selectedItem.plannedTimes.map((time) => formatTimeLabel(time)).join(', ')
                         : selectedJob
                           ? scheduleSummary(selectedJob)
                           : '—'}
@@ -920,11 +1003,23 @@ export function TasksPage(): React.JSX.Element {
                         size="sm"
                         variant="outline"
                         className="h-8 text-xs"
+                        disabled={selectedJob.executing}
                         onClick={() => void handleRunNow(selectedJob.id)}
                       >
                         <Play className="mr-1 size-3.5" />
-                        立即执行
+                        Run now
                       </Button>
+                      {selectedJob.executing && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs text-amber-600"
+                          onClick={() => void handleAbortRun(selectedJob.id)}
+                        >
+                          <StopCircle className="mr-1 size-3.5" />
+                          中止运行
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -934,12 +1029,12 @@ export function TasksPage(): React.JSX.Element {
                         {selectedJob.enabled ? (
                           <>
                             <PowerOff className="mr-1 size-3.5" />
-                            停用
+                            Disable
                           </>
                         ) : (
                           <>
                             <Power className="mr-1 size-3.5" />
-                            启用
+                            Enable
                           </>
                         )}
                       </Button>
@@ -950,7 +1045,7 @@ export function TasksPage(): React.JSX.Element {
                         onClick={() => openEditDialog(selectedJob)}
                       >
                         <Pencil className="mr-1 size-3.5" />
-                        编辑
+                        Edit
                       </Button>
                       <Button
                         size="sm"
@@ -959,7 +1054,7 @@ export function TasksPage(): React.JSX.Element {
                         onClick={() => void handleDelete(selectedJob)}
                       >
                         <Trash2 className="mr-1 size-3.5" />
-                        删除计划
+                        Delete plan
                       </Button>
                     </>
                   )}
@@ -969,13 +1064,13 @@ export function TasksPage(): React.JSX.Element {
 
             <div className="flex min-h-0 flex-1">
               <div className="flex w-72 shrink-0 flex-col border-r border-border/60">
-                <div className="px-4 py-3 text-sm font-medium text-foreground">当日运行记录</div>
+                <div className="px-4 py-3 text-sm font-medium text-foreground">Day run records</div>
                 <Separator />
                 <div className="flex-1 overflow-y-auto p-3">
                   {selectedItem.runs.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-muted-foreground">
                       <CheckCircle2 className="size-9 opacity-30" />
-                      <div className="text-sm">当天还没有执行记录</div>
+                      <div className="text-sm">No execution records for this day</div>
                     </div>
                   ) : (
                     <div className="space-y-2">
@@ -998,14 +1093,14 @@ export function TasksPage(): React.JSX.Element {
                                 getStatusClass(run.status)
                               )}
                             >
-                              {getStatusLabel(run.status)}
+                              {getStatusLabel(run.status, t)}
                             </span>
                             <span className="text-xs text-foreground">
                               {formatTimeLabel(run.startedAt)}
                             </span>
                           </div>
                           <div className="mt-1 text-[11px] text-muted-foreground">
-                            工具调用：{run.toolCallCount}
+                            Tool calls: {run.toolCallCount}
                           </div>
                           {(run.error || run.outputSummary) && (
                             <div className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -1030,7 +1125,7 @@ export function TasksPage(): React.JSX.Element {
                       <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
                         <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[12px]">
                           <div>
-                            <span className="text-muted-foreground">来源会话：</span>
+                            <span className="text-muted-foreground">Source session: </span>
                             <span className="text-foreground">
                               {runDetail.run.sourceSessionTitleSnapshot ??
                                 selectedMeta?.title ??
@@ -1038,31 +1133,31 @@ export function TasksPage(): React.JSX.Element {
                             </span>
                           </div>
                           <div>
-                            <span className="text-muted-foreground">状态：</span>
+                            <span className="text-muted-foreground">Status: </span>
                             <span className="text-foreground">
-                              {getStatusLabel(runDetail.run.status)}
+                              {getStatusLabel(runDetail.run.status, t)}
                             </span>
                           </div>
                           <div>
-                            <span className="text-muted-foreground">工作目录：</span>
+                            <span className="text-muted-foreground">Working directory: </span>
                             <span className="text-foreground">
                               {runDetail.run.workingFolderSnapshot ?? '—'}
                             </span>
                           </div>
                           <div>
-                            <span className="text-muted-foreground">模型：</span>
+                            <span className="text-muted-foreground">Model: </span>
                             <span className="text-foreground">
                               {runDetail.run.modelSnapshot ?? '—'}
                             </span>
                           </div>
                           <div>
-                            <span className="text-muted-foreground">计划时间：</span>
+                            <span className="text-muted-foreground">Scheduled: </span>
                             <span className="text-foreground">
                               {formatDateTimeLabel(runDetail.run.scheduledFor)}
                             </span>
                           </div>
                           <div>
-                            <span className="text-muted-foreground">开始时间：</span>
+                            <span className="text-muted-foreground">Started: </span>
                             <span className="text-foreground">
                               {formatDateTimeLabel(runDetail.run.startedAt)}
                             </span>
@@ -1075,12 +1170,13 @@ export function TasksPage(): React.JSX.Element {
                       ) : (
                         <div className="space-y-3">
                           <div className="rounded-xl border border-dashed border-border/60 bg-muted/10 p-4 text-sm text-muted-foreground">
-                            这是旧记录，暂无完整回放。已降级显示基础信息、摘要和轻量日志。
+                            This is an old record with no full playback. Showing basic info,
+                            summary, and lightweight logs.
                           </div>
                           {runDetail.run.outputSummary && (
                             <div className="rounded-xl border border-border/60 p-3">
                               <div className="mb-2 text-sm font-medium text-foreground">
-                                输出摘要
+                                Output summary
                               </div>
                               <div className="whitespace-pre-wrap text-sm text-muted-foreground">
                                 {runDetail.run.outputSummary}
@@ -1091,7 +1187,7 @@ export function TasksPage(): React.JSX.Element {
                             <div className="rounded-xl border border-destructive/40 bg-destructive/5 p-3">
                               <div className="mb-2 flex items-center gap-2 text-sm font-medium text-destructive">
                                 <XCircle className="size-4" />
-                                错误信息
+                                Error message
                               </div>
                               <div className="whitespace-pre-wrap text-sm text-destructive/80">
                                 {runDetail.run.error}
@@ -1101,7 +1197,7 @@ export function TasksPage(): React.JSX.Element {
                           {runDetail.logs.length > 0 && (
                             <div className="rounded-xl border border-border/60 p-3">
                               <div className="mb-2 text-sm font-medium text-foreground">
-                                Agent 执行日志
+                                Agent execution logs
                               </div>
                               <div className="space-y-1">
                                 {runDetail.logs.map((log) => (
@@ -1128,12 +1224,12 @@ export function TasksPage(): React.JSX.Element {
                     </div>
                   ) : (
                     <div className="flex h-full items-center justify-center text-muted-foreground">
-                      暂无详情
+                      No details available
                     </div>
                   )
                 ) : (
                   <div className="flex h-full items-center justify-center text-muted-foreground">
-                    选择一次运行以查看详情
+                    Select a run to view details
                   </div>
                 )}
               </div>
@@ -1143,8 +1239,13 @@ export function TasksPage(): React.JSX.Element {
           <div className="flex h-full items-center justify-center p-6">
             <div className="flex w-full max-w-md flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-muted/10 px-6 py-10 text-center text-muted-foreground">
               <CalendarDays className="size-10 opacity-30" />
-              <div className="text-sm font-medium text-foreground/80">请选择左侧某一天的任务</div>
-              <div className="text-xs">选中任务后，这里会显示来源会话、运行记录和完整回放</div>
+              <div className="text-sm font-medium text-foreground/80">
+                Select a day from the left to view tasks
+              </div>
+              <div className="text-xs">
+                After selecting a task, source session, run records, and full playback will be shown
+                here
+              </div>
             </div>
           </div>
         )}
@@ -1153,12 +1254,12 @@ export function TasksPage(): React.JSX.Element {
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{editorMode === 'create' ? '新建任务' : '编辑任务'}</DialogTitle>
+            <DialogTitle>{editorMode === 'create' ? 'New task' : 'Edit task'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-1">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">任务名称</div>
+                <div className="text-xs text-muted-foreground">Task name</div>
                 <Input
                   className="h-8 text-xs"
                   value={editorForm.name}
@@ -1168,13 +1269,13 @@ export function TasksPage(): React.JSX.Element {
                 />
               </div>
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">来源会话</div>
+                <div className="text-xs text-muted-foreground">Source session</div>
                 <select
                   className={INPUT_CLASS}
                   value={editorForm.sessionId}
                   onChange={(event) => handleSessionPreset(event.target.value)}
                 >
-                  <option value="">不绑定会话</option>
+                  <option value="">No session bound</option>
                   {sessionSummaries.map((session) => (
                     <option key={session.id} value={session.id}>
                       {session.title}
@@ -1197,7 +1298,7 @@ export function TasksPage(): React.JSX.Element {
 
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">调度类型</div>
+                <div className="text-xs text-muted-foreground">Schedule type</div>
                 <select
                   className={INPUT_CLASS}
                   value={editorForm.scheduleKind}
@@ -1208,24 +1309,24 @@ export function TasksPage(): React.JSX.Element {
                     }))
                   }
                 >
-                  <option value="at">一次性</option>
-                  <option value="every">间隔</option>
+                  <option value="at">Once</option>
+                  <option value="every">Interval</option>
                   <option value="cron">Cron</option>
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">模型</div>
+                <div className="text-xs text-muted-foreground">Model</div>
                 <Input
                   className="h-8 text-xs"
                   value={editorForm.model}
                   onChange={(event) =>
                     setEditorForm((state) => ({ ...state, model: event.target.value }))
                   }
-                  placeholder="默认沿用会话/全局"
+                  placeholder="Default from session/global"
                 />
               </div>
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">最大迭代</div>
+                <div className="text-xs text-muted-foreground">Max iterations</div>
                 <Input
                   className="h-8 text-xs"
                   value={editorForm.maxIterations}
@@ -1238,7 +1339,7 @@ export function TasksPage(): React.JSX.Element {
 
             {editorForm.scheduleKind === 'at' && (
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">执行时间</div>
+                <div className="text-xs text-muted-foreground">Execution time</div>
                 <Input
                   className="h-8 text-xs"
                   type="datetime-local"
@@ -1252,7 +1353,7 @@ export function TasksPage(): React.JSX.Element {
 
             {editorForm.scheduleKind === 'every' && (
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">间隔（分钟）</div>
+                <div className="text-xs text-muted-foreground">Interval (minutes)</div>
                 <Input
                   className="h-8 text-xs"
                   value={editorForm.everyMinutes}
@@ -1266,7 +1367,7 @@ export function TasksPage(): React.JSX.Element {
             {editorForm.scheduleKind === 'cron' && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">Cron 表达式</div>
+                  <div className="text-xs text-muted-foreground">Cron expression</div>
                   <Input
                     className="h-8 text-xs"
                     value={editorForm.expr}
@@ -1276,7 +1377,7 @@ export function TasksPage(): React.JSX.Element {
                   />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs text-muted-foreground">时区</div>
+                  <div className="text-xs text-muted-foreground">Timezone</div>
                   <Input
                     className="h-8 text-xs"
                     value={editorForm.tz}
@@ -1290,7 +1391,7 @@ export function TasksPage(): React.JSX.Element {
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">工作目录</div>
+                <div className="text-xs text-muted-foreground">Working directory</div>
                 <Input
                   className="h-8 text-xs"
                   value={editorForm.workingFolder}
@@ -1300,7 +1401,7 @@ export function TasksPage(): React.JSX.Element {
                 />
               </div>
               <div className="space-y-1">
-                <div className="text-xs text-muted-foreground">投递方式</div>
+                <div className="text-xs text-muted-foreground">Delivery mode</div>
                 <select
                   className={INPUT_CLASS}
                   value={editorForm.deliveryMode}
@@ -1311,9 +1412,9 @@ export function TasksPage(): React.JSX.Element {
                     }))
                   }
                 >
-                  <option value="desktop">桌面通知</option>
-                  <option value="session">写入会话</option>
-                  <option value="none">不投递</option>
+                  <option value="desktop">Desktop notification</option>
+                  <option value="session">Write to session</option>
+                  <option value="none">No delivery</option>
                 </select>
               </div>
             </div>
@@ -1321,7 +1422,7 @@ export function TasksPage(): React.JSX.Element {
             {editorForm.deliveryMode === 'session' && (
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">
-                  目标会话 ID（留空则沿用来源会话）
+                  Target session ID (leave empty to use source session)
                 </div>
                 <Input
                   className="h-8 text-xs"
@@ -1341,16 +1442,16 @@ export function TasksPage(): React.JSX.Element {
                   setEditorForm((state) => ({ ...state, deleteAfterRun: event.target.checked }))
                 }
               />
-              执行后删除计划（历史记录仍保留）
+              Delete plan after execution (history will be preserved)
             </label>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditorOpen(false)}>
-              取消
+              Cancel
             </Button>
             <Button onClick={() => void handleSubmit()} disabled={submitting}>
               {submitting ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
-              保存
+              Save
             </Button>
           </DialogFooter>
         </DialogContent>

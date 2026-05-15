@@ -50,12 +50,12 @@ function extractContent(items?: WeixinMessageItem[]): {
     }
     if (item.type === FILE_ITEM) {
       return {
-        content: `[文件${item.file_item?.file_name ? `: ${item.file_item.file_name}` : ''}]`,
+        content: `[File${item.file_item?.file_name ? `: ${item.file_item.file_name}` : ''}]`,
         msgType: 'file'
       }
     }
     if (item.type === VIDEO_ITEM) {
-      return { content: '[视频]', msgType: 'video' }
+      return { content: '[Video]', msgType: 'video' }
     }
   }
 

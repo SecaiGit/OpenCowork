@@ -1,9 +1,12 @@
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { Command, ChevronDown, ChevronRight } from 'lucide-react'
 import type { SystemCommandSnapshot } from '@renderer/lib/commands/system-command'
+import {
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS
+} from '@renderer/lib/preview/viewers/markdown-components'
 
 interface SystemCommandCardProps {
   command: SystemCommandSnapshot
@@ -42,8 +45,8 @@ export function SystemCommandCard({ command }: SystemCommandCardProps): React.JS
             </span>
             <span className="text-[10px] text-muted-foreground">
               {expanded
-                ? t('userMessage.hideCommand', { defaultValue: '收起命令' })
-                : t('userMessage.showCommand', { defaultValue: '展开命令' })}
+                ? t('userMessage.hideCommand', { defaultValue: 'Collapse commands' })
+                : t('userMessage.showCommand', { defaultValue: 'Expand commands' })}
             </span>
           </span>
           {!expanded && preview && (
@@ -60,7 +63,9 @@ export function SystemCommandCard({ command }: SystemCommandCardProps): React.JS
       </button>
       {expanded && (
         <div className="border-t border-violet-500/15 px-3 py-3 text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:bg-background/80 [&_pre]:p-3 [&_p]:my-2">
-          <Markdown remarkPlugins={[remarkGfm]}>{command.content}</Markdown>
+          <Markdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} rehypePlugins={MARKDOWN_REHYPE_PLUGINS}>
+            {command.content}
+          </Markdown>
         </div>
       )}
     </div>

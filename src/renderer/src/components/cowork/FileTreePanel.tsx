@@ -985,7 +985,7 @@ export function FileTreePanel({
             <Input
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder={t('fileTree.searchPlaceholder', { defaultValue: '搜索文件名或路径' })}
+              placeholder={t('fileTree.searchPlaceholder', { defaultValue: 'Search file name or path' })}
               className="workspace-filetree-input h-9 rounded-xl pl-9 pr-9 text-sm"
             />
             {searchQuery && (
@@ -1021,13 +1021,13 @@ export function FileTreePanel({
             searchLoading ? (
               <div className="workspace-filetree-empty flex items-center gap-2 rounded-xl px-3 py-3 text-xs text-muted-foreground">
                 <RefreshCw className="size-3.5 animate-spin" />
-                <span>{t('fileTree.searching', { defaultValue: '搜索文件中...' })}</span>
+                <span>{t('fileTree.searching', { defaultValue: 'Searching files...' })}</span>
               </div>
             ) : searchResults.length === 0 ? (
               <div className="workspace-filetree-empty workspace-filetree-empty--dashed flex flex-col items-center justify-center gap-2 rounded-xl px-4 py-10 text-center">
                 <Search className="size-5 text-muted-foreground/50" />
                 <div className="text-xs text-muted-foreground">
-                  {t('fileTree.noSearchResults', { defaultValue: '没有匹配的文件' })}
+                  {t('fileTree.noSearchResults', { defaultValue: 'No matching files' })}
                 </div>
               </div>
             ) : (
@@ -1072,7 +1072,7 @@ export function FileTreePanel({
             <div className="workspace-filetree-empty workspace-filetree-empty--dashed flex flex-col items-center justify-center gap-2 rounded-xl px-4 py-10 text-center">
               <Folder className="size-5 text-muted-foreground/50" />
               <div className="text-xs text-muted-foreground">
-                {t('fileTree.empty', { defaultValue: '当前目录没有文件' })}
+                {t('fileTree.empty', { defaultValue: 'No files in current directory' })}
               </div>
             </div>
           ) : (
@@ -1098,7 +1098,7 @@ export function FileTreePanel({
         {!compactSheetSurface && (
           <div className="workspace-filetree-footer px-3 py-2 text-[10px] text-muted-foreground/80">
             {isSearching
-              ? t('fileTree.searchHint', { defaultValue: '点击预览，拖到输入框可插入文件引用' })
+              ? t('fileTree.searchHint', { defaultValue: 'Click to preview, drag to input to insert file reference' })
               : t('fileTree.stats', {
                   folders: treeStats.folders,
                   files: treeStats.files

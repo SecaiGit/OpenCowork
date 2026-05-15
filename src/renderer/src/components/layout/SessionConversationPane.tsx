@@ -35,6 +35,7 @@ import { ImageEditDialog } from '@renderer/components/chat/ImageEditDialog'
 import { InputArea } from '@renderer/components/chat/InputArea'
 import { ProjectTerminalDock } from '@renderer/components/terminal/ProjectTerminalDock'
 import { WorkingFolderSelectorDialog } from '@renderer/components/chat/WorkingFolderSelectorDialog'
+import { RuntimeStatusPanel } from './RuntimeStatusPanel'
 import {
   abortSession,
   clearPendingSessionMessages,
@@ -57,8 +58,7 @@ interface SessionConversationPaneProps {
   windowHeaderOwnsTitle?: boolean
 }
 
-const EXPORT_IMAGE_PLACEHOLDER_DATA_URL =
-  'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA='
+const EXPORT_IMAGE_PLACEHOLDER_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA='
 const TERMINAL_DOCK_TRANSITION = {
   duration: 0.24,
   ease: [0.22, 1, 0.36, 1] as const
@@ -200,8 +200,8 @@ export function SessionConversationPane({
     hasProjectFolderAction || hasTranscriptActions || allowOpenInNewWindow
   const showTerminalDock = Boolean(
     sessionView.projectId &&
-      terminalDockOpen &&
-      (sessionView.workingFolder || sessionView.sshConnectionId)
+    terminalDockOpen &&
+    (sessionView.workingFolder || sessionView.sshConnectionId)
   )
 
   const updateSessionProjectDirectory = useCallback(
@@ -398,6 +398,7 @@ export function SessionConversationPane({
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col bg-background">
+      <RuntimeStatusPanel sessionId={resolvedSessionId} />
       <div
         className={cn(
           'flex shrink-0 items-center gap-3 px-4 pt-3',

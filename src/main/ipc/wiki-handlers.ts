@@ -175,8 +175,8 @@ function deriveModuleGroups(
   }
   return Array.from(groups.entries())
     .map(([name, groupFiles]) => ({
-      name: name === 'root' ? '项目根目录' : `${name} 模块`,
-      description: `覆盖 ${groupFiles.length} 个相关文件，用于帮助理解 ${name} 的职责与业务边界。`,
+      name: name === 'root' ? 'Project Root' : `${name} Module`,
+      description: `Covers ${groupFiles.length} related files, to help understand ${name} responsibilities and business boundaries.`,
       files: groupFiles
     }))
     .sort((a, b) => b.files.length - a.files.length)
@@ -190,31 +190,31 @@ function buildDocumentContent(args: {
   files: string[]
   commitId: string | null
 }): string {
-  const fileList = args.files.map((file) => `- \`${file}\``).join('\n') || '- 无'
+  const fileList = args.files.map((file) => `- \`${file}\``).join('\n') || '- None'
   return [
     `# ${args.documentName}`,
     '',
     args.description,
     '',
-    '## 背景',
-    `- 项目：${args.projectName}`,
-    `- 工作目录：\`${args.workingFolder}\``,
-    `- 生成 Commit：${args.commitId ?? '未知'}`,
+    '## Background',
+    `- Project: ${args.projectName}`,
+    `- Working Directory: \`${args.workingFolder}\``,
+    `- Generated Commit: ${args.commitId ?? 'Unknown'}`,
     '',
-    '## 主要职责',
-    '- 该文档由当前项目源码结构自动归纳生成。',
-    '- 当前版本为 V1 基础稿，后续可继续人工编辑并补充业务细节。',
+    '## Key Responsibilities',
+    '- This document was automatically generated from the current project source structure.',
+    '- Current version is a V1 draft, can be manually edited and refined later.',
     '',
-    '## 关键文件',
+    '## Key Files',
     fileList,
     '',
-    '## 业务说明',
-    '请在这里补充该模块的业务目标、核心流程、上下游依赖、异常处理与边界条件。',
+    '## Business Description',
+    'Please add the module business goals, core flows, dependencies, error handling and boundary conditions here.',
     '',
-    '## 待完善',
-    '- 补充真实业务流程',
-    '- 标注关键入口、数据流和外部依赖',
-    '- 沉淀容易误解的设计约束'
+    '## To Be Completed',
+    '- Add real business flows',
+    '- Mark key entry points, data flows and external dependencies',
+    '- Document design constraints that are easy to misunderstand'
   ].join('\n')
 }
 
@@ -382,15 +382,15 @@ async function generateProjectWiki(
 
   const summaryDocs = [
     {
-      name: '项目总览',
-      description: '帮助快速理解项目整体结构、模块分布和代码入口。',
+      name: 'Project Overview',
+      description: 'Help quickly understand project structure, module distribution and code entry points.',
       files: files.slice(0, Math.min(files.length, 40))
     },
     ...grouped.slice(0, 12)
   ]
   const savedDocuments = [] as Array<{ id: string; name: string; files: string[] }>
   for (const doc of summaryDocs) {
-    if (mode === 'incremental' && doc.name !== '项目总览') {
+    if (mode === 'incremental' && doc.name !== 'Project Overview') {
       const matchedExisting = existingDocuments.find((item) => item.name === doc.name)
       if (matchedExisting && !affectedIdSet.has(matchedExisting.id)) {
         continue
@@ -422,17 +422,17 @@ async function generateProjectWiki(
     })
     const sections = wikiDao.replaceWikiSections(saved.id, [
       {
-        title: '关键文件',
+        title: 'Key Files',
         anchor: 'key-files',
         sortOrder: 0,
-        summary: '该文档绑定的关键源码文件。',
+        summary: 'Key source files associated with this document.',
         contentMarkdown: doc.files.map((file) => `- \`${file}\``).join('\n')
       }
     ])
     if (sections[0]) {
       wikiDao.replaceWikiSectionSources(
         sections[0].id,
-        doc.files.map((filePath) => ({ filePath, reason: '自动生成时关联的关键文件' }))
+        doc.files.map((filePath) => ({ filePath, reason: 'Key file associated during auto-generation' }))
       )
     }
     savedDocuments.push({ id: saved.id, name: saved.name, files: doc.files })

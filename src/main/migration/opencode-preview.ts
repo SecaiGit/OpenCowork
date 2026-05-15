@@ -318,9 +318,9 @@ function summarizeSelectionLabel(
   modelId: string,
   providers: AIProvider[]
 ): string {
-  if (!providerId || !modelId) return '未配置'
+  if (!providerId || !modelId) return 'Not configured'
   const provider = providers.find((item) => item.id === providerId)
-  if (!provider) return '未配置'
+  if (!provider) return 'Not configured'
   const model = provider.models.find((item) => item.id === modelId)
   return `${provider.name} / ${model?.name ?? modelId}`
 }
@@ -427,8 +427,8 @@ function buildInstructionsPreviewItem(parsed: ParsedOpenCodeConfig): MigrationPr
     id: 'instructions:managed-memory',
     kind: 'instructions',
     title: 'OpenCode instructions -> MEMORY.md',
-    sourceLabel: `${parsed.instructions.entries.length} 条 instructions`,
-    targetLabel: '全局 MEMORY.md 受管区块',
+    sourceLabel: `${parsed.instructions.entries.length} instructions`,
+    targetLabel: 'Global MEMORY.md managed section',
     targetPath: MEMORY_PATH,
     conflict: fs.existsSync(MEMORY_PATH),
     defaultAction: hasResolved ? 'replace' : 'skip',
@@ -436,8 +436,8 @@ function buildInstructionsPreviewItem(parsed: ParsedOpenCodeConfig): MigrationPr
     warnings,
     unsupportedFields: [],
     details: [
-      { label: '可读取文件', value: String(parsed.instructions.resolvedFiles.length) },
-      { label: '未解析项', value: String(parsed.instructions.unresolved.length) }
+      { label: 'Readable files', value: String(parsed.instructions.resolvedFiles.length) },
+      { label: 'Unresolved items', value: String(parsed.instructions.unresolved.length) }
     ],
     payload: payload as unknown as Record<string, unknown>
   }
@@ -452,10 +452,10 @@ function buildProviderPreviewItems(
     const conflict = findConflictingProvider(draft, currentState.providers)
     const warnings: string[] = []
     if (draft.provider.requiresApiKey !== false && !draft.provider.apiKey.trim()) {
-      warnings.push('API Key 为空，迁移后需要手动补全或确认环境变量已生效')
+      warnings.push('API Key is empty, manual completion or env var verification needed after migration')
     }
     if (draft.provider.models.length === 0) {
-      warnings.push('该 Provider 没有可迁移的模型定义')
+      warnings.push('This Provider has no migratable model definitions')
     }
 
     const payload: ProviderPreviewPayload = {
@@ -476,14 +476,14 @@ function buildProviderPreviewItems(
       warnings,
       unsupportedFields: [],
       details: [
-        { label: '来源 npm', value: source.npm ?? '-' },
+        { label: 'Source npm', value: source.npm ?? '-' },
         { label: 'Base URL', value: draft.provider.baseUrl || '-' },
         {
-          label: '目标类型',
+          label: 'Target type',
           value:
-            draft.strategy === 'builtin' ? `内置预设 ${draft.matchedBuiltinId}` : '自定义 Provider'
+            draft.strategy === 'builtin' ? `Built-in preset ${draft.matchedBuiltinId}` : 'Custom Provider'
         },
-        { label: '模型数', value: String(draft.provider.models.length) }
+        { label: 'Models', value: String(draft.provider.models.length) }
       ],
       payload: payload as unknown as Record<string, unknown>
     }
@@ -510,7 +510,7 @@ function buildModelSelectionItem(
       conflict: true,
       defaultAction: 'skip',
       allowedActions: ['replace', 'skip'],
-      warnings: ['模型引用格式无效，期望 provider/model'],
+      warnings: ['Invalid model reference format, expected provider/model'],
       unsupportedFields: [],
       details: [],
       payload: {
@@ -529,10 +529,10 @@ function buildModelSelectionItem(
 
   const warnings: string[] = []
   if (!sourceProvider) {
-    warnings.push(`未找到来源 Provider：${sourceProviderKey}`)
+    warnings.push(`Source Provider not found: ${sourceProviderKey}`)
   }
   if (sourceProvider && !sourceModel) {
-    warnings.push(`来源 Provider 中未找到模型：${sourceModelId}`)
+    warnings.push(`Model not found in source Provider: ${sourceModelId}`)
   }
 
   const payload: ModelSelectionPreviewPayload = {
@@ -555,7 +555,7 @@ function buildModelSelectionItem(
     allowedActions: ['replace', 'skip'],
     warnings,
     unsupportedFields: [],
-    details: [{ label: '当前选择', value: currentLabel }],
+    details: [{ label: 'Current selection', value: currentLabel }],
     payload: payload as unknown as Record<string, unknown>
   }
 }
@@ -567,7 +567,7 @@ function buildCommandPreviewItems(
   return parsed.commands.map((command) => {
     const targetName = toKebabCase(command.key, 'command')
     const existingPath = existingCommandNames.get(targetName.toLowerCase())
-    const warnings = command.key !== targetName ? [`命令名将归一化为 ${targetName}`] : []
+    const warnings = command.key !== targetName ? [`Command name will be normalized to ${targetName}`] : []
     const payload: CommandPreviewPayload = {
       sourceCommandKey: command.key,
       targetName,
@@ -588,7 +588,7 @@ function buildCommandPreviewItems(
       warnings,
       unsupportedFields: buildUnsupportedFieldList(command),
       details: [
-        { label: '目标文件', value: `${targetName}.md` },
+        { label: 'Target file', value: `${targetName}.md` },
         ...(command.description ? [{ label: 'description', value: command.description }] : []),
         ...(command.model ? [{ label: 'model', value: command.model }] : []),
         ...(command.agent ? [{ label: 'agent', value: command.agent }] : []),
@@ -612,13 +612,13 @@ function buildAgentPreviewItems(
     const existing = findExistingAgent(targetFileName, targetAgentName, existingAgents)
     const warnings: string[] = []
     if (agent.permission) {
-      warnings.push('permission 仅在预览中展示，不会写入目标 Agent')
+      warnings.push('permission is preview-only and will not be written to target Agent')
     }
     if (agent.mode) {
-      warnings.push('mode 仅在预览中展示，不会写入目标 Agent')
+      warnings.push('mode is preview-only and will not be written to target Agent')
     }
     if (agent.variant) {
-      warnings.push('variant 仅在预览中展示，不会写入目标 Agent')
+      warnings.push('variant is preview-only and will not be written to target Agent')
     }
 
     const payload: AgentPreviewPayload = {
@@ -647,7 +647,7 @@ function buildAgentPreviewItems(
         ...agent.unsupportedFields
       ],
       details: [
-        { label: '目标文件', value: targetFileName },
+        { label: 'Target file', value: targetFileName },
         ...(agent.description ? [{ label: 'description', value: agent.description }] : []),
         ...(agent.model ? [{ label: 'model', value: agent.model }] : []),
         ...(agent.steps ? [{ label: 'steps', value: String(agent.steps) }] : []),
@@ -674,7 +674,7 @@ function buildMcpPreviewItems(
         conflict: false,
         defaultAction: 'skip' as const,
         allowedActions: ['skip'] as MigrationAction[],
-        warnings: ['缺少可映射的 command 或 url，已跳过'],
+        warnings: ['Missing mappable command or url, skipped'],
         unsupportedFields: [],
         details: [],
         payload: {
@@ -689,10 +689,10 @@ function buildMcpPreviewItems(
     )
     const warnings: string[] = []
     if (server.timeout !== undefined) {
-      warnings.push('timeout 仅在预览中展示，不会写入目标 MCP 配置')
+      warnings.push('timeout is preview-only and will not be written to target MCP config')
     }
     if (server.oauth !== undefined) {
-      warnings.push('oauth 仅在预览中展示，不会写入目标 MCP 配置')
+      warnings.push('oauth is preview-only and will not be written to target MCP config')
     }
 
     const payload: McpPreviewPayload = {
@@ -771,7 +771,7 @@ export function buildOpenCodeMigrationPreview(): MigrationPreviewResult {
   const mainSelectionItem = buildModelSelectionItem(
     'selection:main',
     'mainModelSelection',
-    '主模型选择',
+    'Main model selection',
     parsed.model,
     summarizeSelectionLabel(
       providerState.activeProviderId,
@@ -785,7 +785,7 @@ export function buildOpenCodeMigrationPreview(): MigrationPreviewResult {
   const fastSelectionItem = buildModelSelectionItem(
     'selection:fast',
     'fastModelSelection',
-    '快速模型选择',
+    'Quick model selection',
     parsed.smallModel,
     summarizeSelectionLabel(
       providerState.activeFastProviderId,

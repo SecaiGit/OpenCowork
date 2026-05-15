@@ -94,7 +94,7 @@ export const CHANNEL_PROVIDERS: ChannelProviderDescriptor[] = [
   {
     type: 'wecom-bot',
     displayName: 'WeCom Bot',
-    description: 'WeCom (企业微信) messaging bot',
+    description: 'WeCom messaging bot',
     icon: 'wecom',
     builtin: true,
     tools: COMMON_PLUGIN_TOOLS,
@@ -156,8 +156,8 @@ export const CHANNEL_PROVIDERS: ChannelProviderDescriptor[] = [
   },
   {
     type: 'weixin-official',
-    displayName: '官方微信',
-    description: '官方微信绑定渠道（扫码登录 + 长轮询）',
+    displayName: 'WeChat Official',
+    description: 'WeChat Official channel (QR login + long polling)',
     icon: 'wechat',
     builtin: true,
     tools: WEIXIN_PLUGIN_TOOLS,

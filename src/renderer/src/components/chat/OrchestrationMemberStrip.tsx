@@ -58,7 +58,7 @@ function StatusDot({ status }: { status: OrchestrationMember['status'] }): React
 }
 
 function getMemberDescription(member: OrchestrationMember): string {
-  return member.latestAction || member.summary || member.currentTaskLabel || '等待执行'
+  return member.latestAction || member.summary || member.currentTaskLabel || 'Waiting to execute'
 }
 
 function getPromptText(member: OrchestrationMember): string {
@@ -99,7 +99,7 @@ function MemberHoverContent({ member }: { member: OrchestrationMember }): React.
           </section>
         ) : (
           <div className="rounded-lg border border-dashed border-white/10 bg-white/[0.02] px-2.5 py-2 text-[12px] text-white/45">
-            暂无 Prompt
+            No prompt available
           </div>
         )}
       </div>

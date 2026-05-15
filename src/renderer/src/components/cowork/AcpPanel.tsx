@@ -41,14 +41,14 @@ export function AcpPanel(): React.JSX.Element {
   }, [tasks])
 
   const phaseLabel = planMode
-    ? t('rightPanel.acpPhasePlan', { ns: 'layout', defaultValue: '规划中' })
+    ? t('rightPanel.acpPhasePlan', { ns: 'layout', defaultValue: 'Planning' })
     : plan?.status === 'implementing'
-      ? t('rightPanel.acpPhaseExecute', { ns: 'layout', defaultValue: '分派执行' })
+      ? t('rightPanel.acpPhaseExecute', { ns: 'layout', defaultValue: 'Dispatch execution' })
       : plan?.status === 'approved'
-        ? t('rightPanel.acpPhaseApproved', { ns: 'layout', defaultValue: '待执行' })
+        ? t('rightPanel.acpPhaseApproved', { ns: 'layout', defaultValue: 'Pending' })
         : plan
-          ? t('rightPanel.acpPhaseReview', { ns: 'layout', defaultValue: '方案评审' })
-          : t('rightPanel.acpPhaseClarify', { ns: 'layout', defaultValue: '需求澄清' })
+          ? t('rightPanel.acpPhaseReview', { ns: 'layout', defaultValue: 'Plan review' })
+          : t('rightPanel.acpPhaseClarify', { ns: 'layout', defaultValue: 'Requirement clarification' })
 
   return (
     <div className="space-y-4">
@@ -64,7 +64,7 @@ export function AcpPanel(): React.JSX.Element {
           <div className="rounded-lg border bg-muted/30 p-3">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <GaugeCircle className="size-3.5" />
-              {t('rightPanel.acpCurrentPhase', { ns: 'layout', defaultValue: '当前阶段' })}
+              {t('rightPanel.acpCurrentPhase', { ns: 'layout', defaultValue: 'Current phase' })}
             </div>
             <p className="mt-2 text-sm font-medium">{phaseLabel}</p>
           </div>
@@ -88,7 +88,7 @@ export function AcpPanel(): React.JSX.Element {
                 ? ` · ${t('rightPanel.acpInProgressCount', {
                     ns: 'layout',
                     count: progress.inProgress,
-                    defaultValue: `${progress.inProgress} 进行中`
+                    defaultValue: `${progress.inProgress} In progress`
                   })}`
                 : ''}
             </p>
@@ -113,14 +113,14 @@ export function AcpPanel(): React.JSX.Element {
 
       <div className="rounded-xl border bg-background/60 p-4">
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {t('rightPanel.acpNextAction', { ns: 'layout', defaultValue: '建议下一步' })}
+          {t('rightPanel.acpNextAction', { ns: 'layout', defaultValue: 'Suggested next step' })}
         </p>
         <Separator className="my-3" />
         <p className="text-sm text-muted-foreground">
           {planMode
             ? t('rightPanel.acpNextActionPlan', {
                 ns: 'layout',
-                defaultValue: '继续完善实施计划，保存后退出 Plan Mode。'
+                defaultValue: 'Continue refining implementation plan, save and exit Plan Mode.'
               })
             : plan?.status === 'awaiting_review'
               ? t('rightPanel.acpNextActionReview', {
@@ -131,11 +131,11 @@ export function AcpPanel(): React.JSX.Element {
               : plan?.status === 'approved' || plan?.status === 'implementing'
                 ? t('rightPanel.acpNextActionExecute', {
                     ns: 'layout',
-                    defaultValue: '继续把已批准计划拆成任务，分派子代理执行，并汇总结果。'
+                    defaultValue: 'Continue breaking down approved plans into tasks, dispatch sub-agents for execution, and summarize results.'
                   })
                 : t('rightPanel.acpNextActionClarify', {
                     ns: 'layout',
-                    defaultValue: '先补齐目标、约束、边界与验收标准，再进入计划。'
+                    defaultValue: 'Complete objectives, constraints, boundaries and acceptance criteria first.'
                   })}
         </p>
       </div>

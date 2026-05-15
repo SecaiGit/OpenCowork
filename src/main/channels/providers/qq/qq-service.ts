@@ -29,17 +29,17 @@ const INTENT_LEVELS = [
   {
     name: 'full',
     intents: INTENTS.PUBLIC_GUILD_MESSAGES | INTENTS.DIRECT_MESSAGE | INTENTS.GROUP_AND_C2C,
-    description: '群聊 + C2C + 频道私信 + 频道消息'
+    description: 'Group + C2C + Channel DM + Channel Messages'
   },
   {
     name: 'group-channel',
     intents: INTENTS.PUBLIC_GUILD_MESSAGES | INTENTS.GROUP_AND_C2C,
-    description: '群聊 + C2C + 频道消息'
+    description: 'Group + C2C + Channel Messages'
   },
   {
     name: 'channel-only',
     intents: INTENTS.PUBLIC_GUILD_MESSAGES | INTENTS.GUILD_MEMBERS,
-    description: '仅频道消息'
+    description: 'Channel Messages Only'
   }
 ] as const
 

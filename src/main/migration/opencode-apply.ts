@@ -197,12 +197,12 @@ function mergeMcpForReplace(
 }
 
 function buildManagedMemorySection(content: string): string {
-  const body = content.trim() || '未解析到可导入的 OpenCode instructions 内容。'
+  const body = content.trim() || 'No importable OpenCode instructions content found.'
   return [
     MEMORY_SECTION_START,
     '## Imported from OpenCode instructions',
     '',
-    '以下内容由 OpenCode 迁移中心自动维护，再次迁移时会覆盖此区块。',
+    'The following content is automatically maintained by the OpenCode Migration Center and will be overwritten on re-migration.',
     '',
     body,
     MEMORY_SECTION_END
@@ -277,7 +277,7 @@ function createSkippedResult(
     status: 'skipped',
     targetPath: item.targetPath,
     warnings: item.warnings,
-    message: '已跳过'
+    message: 'Skipped'
   }
 }
 
@@ -394,7 +394,7 @@ export function applyOpenCodeMigration(
     const action = resolveDecision(item, decisionMap)
     const payload = getPreviewPayload<ProviderPreviewPayload>(item)
     if (!payload) {
-      results.push(createFailedResult(item, action, 'Provider payload 缺失'))
+      results.push(createFailedResult(item, action, 'Provider payload missing'))
       continue
     }
 
@@ -411,13 +411,13 @@ export function applyOpenCodeMigration(
         const targetId = payload.conflictProviderId
         const index = targetId ? providers.findIndex((provider) => provider.id === targetId) : -1
         if (index < 0) {
-          throw new Error('未找到要替换的目标 Provider')
+          throw new Error('Target Provider to replace not found')
         }
         providers[index] = mergeProviderForReplace(providers[index], payload.draft.provider)
         providerIdBySourceKey.set(payload.sourceProviderKey, providers[index].id)
         providerNameSet.add(providers[index].name)
         configChanged = true
-        results.push(createSuccessResult(item, action, undefined, '已覆盖现有 Provider'))
+        results.push(createSuccessResult(item, action, undefined, 'Overwrote existing Provider'))
         continue
       }
 
@@ -439,8 +439,8 @@ export function applyOpenCodeMigration(
           action,
           undefined,
           desiredName === payload.draft.provider.name
-            ? '已创建 Provider'
-            : `已创建 Provider：${desiredName}`
+            ? 'Created Provider'
+            : `Created Provider: ${desiredName}`
         )
       )
     } catch (error) {
@@ -452,7 +452,7 @@ export function applyOpenCodeMigration(
     const action = resolveDecision(item, decisionMap)
     const payload = getPreviewPayload<CommandPreviewPayload>(item)
     if (!payload) {
-      results.push(createFailedResult(item, action, 'Command payload 缺失'))
+      results.push(createFailedResult(item, action, 'Command payload missing'))
       continue
     }
     if (action === 'skip') {
@@ -481,7 +481,7 @@ export function applyOpenCodeMigration(
           item,
           action,
           targetPath,
-          finalName === payload.targetName ? '命令已写入' : `命令已写入：/${finalName}`
+          finalName === payload.targetName ? 'Command written' : `Command written: /${finalName}`
         )
       )
     } catch (error) {
@@ -493,7 +493,7 @@ export function applyOpenCodeMigration(
     const action = resolveDecision(item, decisionMap)
     const payload = getPreviewPayload<AgentPreviewPayload>(item)
     if (!payload) {
-      results.push(createFailedResult(item, action, 'Agent payload 缺失'))
+      results.push(createFailedResult(item, action, 'Agent payload missing'))
       continue
     }
     if (action === 'skip') {
@@ -555,8 +555,8 @@ export function applyOpenCodeMigration(
           action,
           targetPath,
           finalAgentName === payload.targetAgentName
-            ? 'Agent 已写入'
-            : `Agent 已写入：${finalAgentName}`
+            ? 'Agent written'
+            : `Agent written: ${finalAgentName}`
         )
       )
     } catch (error) {
@@ -583,11 +583,11 @@ export function applyOpenCodeMigration(
           ? existingMcpServers.findIndex((server) => server.id === targetId)
           : -1
         if (index < 0) {
-          throw new Error('未找到要替换的 MCP 服务器')
+          throw new Error('MCP server to replace not found')
         }
         existingMcpServers[index] = mergeMcpForReplace(existingMcpServers[index], payload.draft)
         mcpChanged = true
-        results.push(createSuccessResult(item, action, MCP_PATH, '已覆盖现有 MCP 服务器'))
+        results.push(createSuccessResult(item, action, MCP_PATH, 'Overwrote existing MCP server'))
         continue
       }
 
@@ -608,8 +608,8 @@ export function applyOpenCodeMigration(
           action,
           MCP_PATH,
           desiredName === payload.draft.name
-            ? '已创建 MCP 服务器'
-            : `已创建 MCP 服务器：${desiredName}`
+            ? 'Created MCP server'
+            : `Created MCP server: ${desiredName}`
         )
       )
     } catch (error) {
@@ -621,7 +621,7 @@ export function applyOpenCodeMigration(
     const action = resolveDecision(item, decisionMap)
     const payload = getPreviewPayload<ModelSelectionPreviewPayload>(item)
     if (!payload) {
-      results.push(createFailedResult(item, action, '模型选择 payload 缺失'))
+      results.push(createFailedResult(item, action, 'Model selection payload missing'))
       continue
     }
     if (action === 'skip') {
@@ -632,17 +632,17 @@ export function applyOpenCodeMigration(
     try {
       const providerId = providerIdBySourceKey.get(payload.sourceProviderKey)
       if (!providerId) {
-        throw new Error(`未找到已迁移的 Provider：${payload.sourceProviderKey}`)
+        throw new Error(`Migrated Provider not found: ${payload.sourceProviderKey}`)
       }
       const provider = providers.find((entry) => entry.id === providerId)
       if (!provider) {
-        throw new Error(`Provider 不存在：${providerId}`)
+        throw new Error(`Provider does not exist: ${providerId}`)
       }
       const model = provider.models.find(
         (entry) => entry.id.trim().toLowerCase() === payload.sourceModelId.trim().toLowerCase()
       )
       if (!model) {
-        throw new Error(`Provider 中未找到模型：${payload.sourceModelId}`)
+        throw new Error(`Model not found in Provider: ${payload.sourceModelId}`)
       }
 
       if (payload.route === 'main') {
@@ -658,7 +658,7 @@ export function applyOpenCodeMigration(
           item,
           action,
           CONFIG_PATH,
-          `${provider.name} / ${model.name} 已设为${payload.route === 'main' ? '主模型' : '快速模型'}`
+          `${provider.name} / ${model.name} set as ${payload.route === 'main' ? 'main model' : 'quick model'}`
         )
       )
     } catch (error) {
@@ -670,7 +670,7 @@ export function applyOpenCodeMigration(
     const action = resolveDecision(item, decisionMap)
     const payload = getPreviewPayload<InstructionsPreviewPayload>(item)
     if (!payload) {
-      results.push(createFailedResult(item, action, 'instructions payload 缺失'))
+      results.push(createFailedResult(item, action, 'instructions payload missing'))
       continue
     }
     if (action === 'skip') {
@@ -685,7 +685,7 @@ export function applyOpenCodeMigration(
       const nextContent = upsertManagedMemorySection(existingContent, payload.managedContent)
       ensureDirForFile(MEMORY_PATH)
       fs.writeFileSync(MEMORY_PATH, nextContent, 'utf-8')
-      results.push(createSuccessResult(item, action, MEMORY_PATH, '已更新 MEMORY.md 受管区块'))
+      results.push(createSuccessResult(item, action, MEMORY_PATH, 'Updated MEMORY.md managed section'))
     } catch (error) {
       results.push(createFailedResult(item, action, error))
     }

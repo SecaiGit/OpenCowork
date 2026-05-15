@@ -114,7 +114,7 @@ function buildFileChip(
     locateBtn.type = 'button'
     locateBtn.className =
       'composer-file-ref-action inline-flex size-4 items-center justify-center rounded-sm'
-    locateBtn.title = '定位到文件条'
+    locateBtn.title = 'Locate file entry'
     locateBtn.addEventListener('mousedown', (event) => {
       event.preventDefault()
     })
@@ -132,7 +132,7 @@ function buildFileChip(
     deleteBtn.type = 'button'
     deleteBtn.className =
       'composer-file-ref-action inline-flex size-4 items-center justify-center rounded-sm'
-    deleteBtn.title = '删除引用'
+    deleteBtn.title = 'Delete reference'
     deleteBtn.addEventListener('mousedown', (event) => {
       event.preventDefault()
     })

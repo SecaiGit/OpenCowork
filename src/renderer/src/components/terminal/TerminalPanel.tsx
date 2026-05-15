@@ -157,7 +157,7 @@ export function TerminalPanel(): React.JSX.Element {
       <div className="flex shrink-0 items-center justify-between border-b bg-background px-2 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <SquareTerminal className="size-4 text-muted-foreground" />
-          <span className="truncate text-xs font-medium">终端</span>
+          <span className="truncate text-xs font-medium">Terminal</span>
           <span className="text-[11px] text-muted-foreground">{tabs.length}</span>
         </div>
 
@@ -167,21 +167,21 @@ export function TerminalPanel(): React.JSX.Element {
               variant="ghost"
               size="sm"
               className="h-7 gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              title="新建终端"
+              title="New terminal"
             >
               <Plus className="size-3.5" />
-              新建
+              New
               <ChevronDown className="size-3" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
             <DropdownMenuItem onClick={handleCreateLocal}>
               <SquareTerminal className="size-4" />
-              本地终端
+              Local terminal
             </DropdownMenuItem>
             <DropdownMenuItem onClick={handleCreateSsh}>
               <MonitorSmartphone className="size-4" />
-              SSH 终端
+              SSH terminal
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -190,7 +190,7 @@ export function TerminalPanel(): React.JSX.Element {
       <div className="flex shrink-0 items-center gap-1 border-b bg-background/70 px-2 py-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden pb-0.5">
           {tabs.length === 0 ? (
-            <span className="px-2 text-[11px] text-muted-foreground">还没有终端会话</span>
+            <span className="px-2 text-[11px] text-muted-foreground">No terminal sessions yet</span>
           ) : (
             tabs.map((tab) => {
               const isActive = tab.id === activeTab?.id
@@ -234,7 +234,7 @@ export function TerminalPanel(): React.JSX.Element {
                       event.stopPropagation()
                       void handleClose(tab)
                     }}
-                    title="关闭终端"
+                    title="Close terminal"
                   >
                     <X className="size-3" />
                   </span>
@@ -250,7 +250,7 @@ export function TerminalPanel(): React.JSX.Element {
               variant="ghost"
               size="icon"
               className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-              title="更多操作"
+              title="More actions"
             >
               <Ellipsis className="size-3.5" />
             </Button>
@@ -258,15 +258,15 @@ export function TerminalPanel(): React.JSX.Element {
           <DropdownMenuContent align="end" className="w-44">
             <DropdownMenuItem onClick={handleCreateLocal}>
               <SquareTerminal className="size-4" />
-              新建本地终端
+              New local terminal
             </DropdownMenuItem>
             <DropdownMenuItem onClick={handleCreateSsh}>
               <MonitorSmartphone className="size-4" />
-              新建 SSH 终端
+              New SSH terminal
             </DropdownMenuItem>
             <DropdownMenuItem onClick={openSshWindow}>
               <FolderOpen className="size-4" />
-              打开 SSH 管理页
+              Open SSH management
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -287,13 +287,13 @@ export function TerminalPanel(): React.JSX.Element {
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
                     {tab.status === 'error' ? (
                       <>
-                        <div>终端已退出</div>
-                        <div>退出码：{tab.exitCode ?? '-'}</div>
+                        <div>Terminal exited</div>
+                        <div>Exit code: {tab.exitCode ?? '-'}</div>
                       </>
                     ) : (
                       <>
                         <Loader2 className="size-4" />
-                        <div>终端已结束</div>
+                        <div>Terminal ended</div>
                       </>
                     )}
                   </div>
@@ -303,7 +303,7 @@ export function TerminalPanel(): React.JSX.Element {
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="size-4 animate-spin" />
-                  <div>SSH 连接中...</div>
+                  <div>Connecting SSH...</div>
                 </div>
               )}
             </div>
@@ -311,11 +311,11 @@ export function TerminalPanel(): React.JSX.Element {
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-xs text-muted-foreground">
             <SquareTerminal className="size-10 text-muted-foreground/40" />
-            <div>选择一个终端开始使用</div>
+            <div>Select a terminal to get started</div>
             <div className="flex items-center gap-2">
               <Button size="sm" className="h-7 gap-1 text-xs" onClick={handleCreateLocal}>
                 <Plus className="size-3.5" />
-                本地终端
+                Local terminal
               </Button>
               <Button
                 size="sm"
@@ -324,7 +324,7 @@ export function TerminalPanel(): React.JSX.Element {
                 onClick={handleCreateSsh}
               >
                 <MonitorSmartphone className="size-3.5" />
-                SSH 终端
+                SSH terminal
               </Button>
             </div>
           </div>

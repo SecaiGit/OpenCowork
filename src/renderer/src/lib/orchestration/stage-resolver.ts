@@ -6,7 +6,7 @@ import type {
   OrchestrationStageStatus
 } from './types'
 
-const STAGE_LABELS = ['创建执行单元', '分配任务', '执行中', '汇总结果', '完成'] as const
+const STAGE_LABELS = ['Creating execution units', 'Assigning tasks', 'Executing', 'Summarizing results', 'Completed'] as const
 
 function resolveStageStatus(index: number, activeIndex: number): OrchestrationStageStatus {
   if (index < activeIndex) return 'completed'

@@ -77,7 +77,7 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
               className="h-5 gap-1 px-2 text-[10px]"
               onClick={() => setMode('preview')}
             >
-              <Eye className="size-3" /> 预览
+              <Eye className="size-3" /> Preview
             </Button>
             <Button
               variant={mode === 'code' ? 'secondary' : 'ghost'}
@@ -85,7 +85,7 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
               className="h-5 gap-1 px-2 text-[10px]"
               onClick={() => setMode('code')}
             >
-              <Code2 className="size-3" /> 代码
+              <Code2 className="size-3" /> Code
             </Button>
           </div>
           {mode === 'preview' && (
@@ -96,10 +96,10 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
                 className="h-5 gap-1 px-2 text-[10px]"
                 onClick={() => setZoomOpen(true)}
                 disabled={!svg.trim()}
-                title="放大 Mermaid 图"
+                title="Zoom in Mermaid diagram"
               >
                 <ZoomIn className="size-3" />
-                <span>放大</span>
+                <span>Zoom in</span>
               </Button>
               <Button
                 variant="ghost"
@@ -107,10 +107,10 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
                 className="h-5 gap-1 px-2 text-[10px]"
                 onClick={() => void handleCopyImage()}
                 disabled={busy || !svg.trim()}
-                title="复制 Mermaid 图到剪贴板"
+                title="Copy Mermaid diagram to clipboard"
               >
                 {copied ? <Check className="size-3" /> : <ImageDown className="size-3" />}
-                <span>{copied ? '已复制' : '复制'}</span>
+                <span>{copied ? 'Copied' : 'Copy'}</span>
               </Button>
             </>
           )}
@@ -142,7 +142,7 @@ export function MermaidBlock({ code }: { code: string }): React.JSX.Element {
       </div>
       <Dialog open={zoomOpen} onOpenChange={setZoomOpen}>
         <DialogContent className="flex h-[90vh] w-[95vw] max-w-[95vw] flex-col p-4">
-          <DialogTitle className="sr-only">Mermaid 放大预览</DialogTitle>
+          <DialogTitle className="sr-only">Mermaid Zoom Preview</DialogTitle>
           <div className="flex-1 overflow-auto rounded-md bg-background p-4">
             {svg ? (
               <div

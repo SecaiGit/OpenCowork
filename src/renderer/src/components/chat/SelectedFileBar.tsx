@@ -47,9 +47,9 @@ export function SelectedFileBar({
               <FileCode2 className="size-3.5 text-blue-500" />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-xs font-medium text-foreground">已选文件</div>
+              <div className="truncate text-xs font-medium text-foreground">Selected files</div>
               <div className="text-[10px] text-muted-foreground">
-                拖入输入框后会以内联文件组件展示
+                Drag into input to display as inline file component
               </div>
             </div>
             <span className="rounded-full border border-border/60 bg-background/90 px-1.5 py-0.5 text-[10px] text-muted-foreground">
@@ -66,7 +66,7 @@ export function SelectedFileBar({
                 onClick={() => setExpanded((prev) => !prev)}
               >
                 {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
-                {expanded ? '收起' : `更多 ${hiddenCount}`}
+                {expanded ? 'Collapse' : `More ${hiddenCount}`}
               </Button>
             )}
             <Button
@@ -77,7 +77,7 @@ export function SelectedFileBar({
               onClick={onClear}
             >
               <Trash2 className="size-3" />
-              清空
+              Clear
             </Button>
           </div>
         </div>
@@ -123,7 +123,7 @@ export function SelectedFileBar({
                         <LocateFixed className="size-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent>定位正文引用</TooltipContent>
+                    <TooltipContent>Locate reference</TooltipContent>
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -135,7 +135,7 @@ export function SelectedFileBar({
                         <X className="size-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent>移除文件</TooltipContent>
+                    <TooltipContent>Remove file</TooltipContent>
                   </Tooltip>
                 </div>
               </div>

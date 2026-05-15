@@ -173,7 +173,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
     if (!label) {
       toast.error(
         t('workspace.keychain.labelRequired', {
-          defaultValue: '请输入密钥标签。'
+          defaultValue: 'Please enter key label.'
         })
       )
       return
@@ -228,7 +228,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
       setSelectedId(label)
       toast.success(
         t('workspace.keychain.saved', {
-          defaultValue: '密钥已保存。'
+          defaultValue: 'Key saved.'
         })
       )
     } catch (error) {
@@ -244,7 +244,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
     if (!publicKey) {
       toast.error(
         t('workspace.keychain.publicKeyRequired', {
-          defaultValue: '导出到主机前需要先提供公钥内容。'
+          defaultValue: 'Public key content is required before exporting to host.'
         })
       )
       return
@@ -252,7 +252,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
     if (!exportTargetId) {
       toast.error(
         t('workspace.keychain.exportTargetRequired', {
-          defaultValue: '请选择要安装公钥的 SSH 主机。'
+          defaultValue: 'Please select the SSH host to install the public key.'
         })
       )
       return
@@ -272,7 +272,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
 
       toast.success(
         t('workspace.keychain.exported', {
-          defaultValue: '公钥已安装到目标主机。'
+          defaultValue: 'Public key installed to target host.'
         })
       )
     } finally {
@@ -297,7 +297,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
       startCreate()
       toast.success(
         t('workspace.keychain.deleted', {
-          defaultValue: '密钥条目已删除。'
+          defaultValue: 'Key entry deleted.'
         })
       )
     } catch (error) {
@@ -339,7 +339,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
                 size="icon-sm"
                 className="size-10 rounded-[14px] border-border bg-card text-foreground shadow-none hover:bg-accent"
                 onClick={startCreate}
-                title={t('workspace.keychain.new', { defaultValue: '新建密钥' })}
+                title={t('workspace.keychain.new', { defaultValue: 'New key' })}
               >
                 <Plus className="size-4" />
               </Button>
@@ -364,7 +364,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
               </div>
               <div className="mt-1 text-[0.82rem] text-muted-foreground">
                 {t('workspace.keychain.subtitle', {
-                  defaultValue: '统一管理本地 ~/.ssh 中的密钥、公钥和证书。'
+                  defaultValue: 'Manage keys, public keys and certificates in local ~/.ssh.'
                 })}
               </div>
             </div>
@@ -383,11 +383,11 @@ export function SshKeychainWorkspace(): React.JSX.Element {
                 <KeyRound className="size-7" />
               </div>
               <div className="mt-5 text-[1.1rem] font-semibold text-foreground">
-                {t('workspace.keychain.emptyTitle', { defaultValue: '还没有匹配的凭据。' })}
+                {t('workspace.keychain.emptyTitle', { defaultValue: 'No matching credentials yet.' })}
               </div>
               <div className="mt-2 max-w-sm text-[0.88rem] text-muted-foreground">
                 {t('workspace.keychain.emptyBody', {
-                  defaultValue: '新建一个密钥条目，或把现有的私钥 / 公钥放进本地 ~/.ssh 目录。'
+                  defaultValue: 'Create a new key entry, or place existing private/public keys in the local ~/.ssh directory.'
                 })}
               </div>
               <Button
@@ -396,7 +396,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
                 onClick={startCreate}
               >
                 <Plus className="size-4" />
-                {t('workspace.keychain.new', { defaultValue: '新建密钥' })}
+                {t('workspace.keychain.new', { defaultValue: 'New key' })}
               </Button>
             </div>
           ) : (
@@ -462,18 +462,18 @@ export function SshKeychainWorkspace(): React.JSX.Element {
           <div>
             <div className="text-[1.12rem] font-semibold text-foreground">
               {editorMode === 'create'
-                ? t('workspace.keychain.new', { defaultValue: '新建密钥' })
-                : t('workspace.keychain.edit', { defaultValue: '编辑密钥' })}
+                ? t('workspace.keychain.new', { defaultValue: 'New key' })
+                : t('workspace.keychain.edit', { defaultValue: 'Edit key' })}
             </div>
             <div className="mt-1 text-[0.8rem] text-muted-foreground">
-              {t('workspace.personalVault', { defaultValue: '个人保险库' })}
+              {t('workspace.personalVault', { defaultValue: 'Personal vault' })}
             </div>
           </div>
           <div className="flex items-center gap-2 text-foreground">
             <button
               type="button"
               className="inline-flex size-8 items-center justify-center rounded-[12px] hover:bg-accent"
-              title={t('common.more', { defaultValue: '更多' })}
+              title={t('common.more', { defaultValue: 'More' })}
             >
               <MoreHorizontal className="size-4" />
             </button>
@@ -481,7 +481,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          <SectionCard title={t('workspace.keychain.meta', { defaultValue: '密钥内容' })}>
+          <SectionCard title={t('workspace.keychain.meta', { defaultValue: 'Key content' })}>
             <Field label={t('workspace.keychain.label', { defaultValue: 'Label' })}>
               <Input
                 value={editor.label}
@@ -516,13 +516,13 @@ export function SshKeychainWorkspace(): React.JSX.Element {
             </Field>
           </SectionCard>
 
-          <SectionCard title={t('workspace.keychain.exportTitle', { defaultValue: '密钥导出' })}>
+          <SectionCard title={t('workspace.keychain.exportTitle', { defaultValue: 'Key export' })}>
             <Field label={t('workspace.keychain.exportTarget', { defaultValue: 'Target host' })}>
               <Select value={exportTargetId} onValueChange={setExportTargetId}>
                 <SelectTrigger className="h-11 rounded-[14px] border-border bg-card">
                   <SelectValue
                     placeholder={t('workspace.keychain.chooseHost', {
-                      defaultValue: '选择要安装公钥的主机'
+                      defaultValue: 'Select host to install public key'
                     })}
                   />
                 </SelectTrigger>
@@ -541,7 +541,7 @@ export function SshKeychainWorkspace(): React.JSX.Element {
               disabled={exporting || !connections.length}
             >
               {exporting ? <Loader2 className="size-4 animate-spin" /> : null}
-              {t('workspace.keychain.exportButton', { defaultValue: '导出到主机' })}
+              {t('workspace.keychain.exportButton', { defaultValue: 'Export to host' })}
             </Button>
           </SectionCard>
         </div>

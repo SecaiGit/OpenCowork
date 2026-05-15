@@ -5,12 +5,12 @@ import { cn } from '@renderer/lib/utils'
 import { OrchestrationMemberStrip } from './OrchestrationMemberStrip'
 
 function getClusterTitle(run: OrchestrationRun): string {
-  return run.kind === 'team' ? 'Agent 集群' : 'Agent 执行'
+  return run.kind === 'team' ? 'Agent Cluster' : 'Agent Execution'
 }
 
 function getTaskCountLabel(run: OrchestrationRun): string {
-  if (run.kind === 'team') return `${run.members.length} 个并行任务`
-  return `${run.members.length} 个任务`
+  if (run.kind === 'team') return `${run.members.length} parallel tasks`
+  return `${run.members.length} tasks`
 }
 
 export function OrchestrationBlock({ run }: { run: OrchestrationRun }): React.JSX.Element {
@@ -40,7 +40,8 @@ export function OrchestrationBlock({ run }: { run: OrchestrationRun }): React.JS
             openSubAgentExecutionDetail(
               member.toolUseId,
               member.report || member.summary || undefined,
-              member.name
+              member.name,
+              run.sessionId
             )
             return
           }

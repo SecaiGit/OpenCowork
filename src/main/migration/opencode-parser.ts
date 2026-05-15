@@ -147,7 +147,7 @@ function replaceEnvTokens(input: string, warnings: string[], contextLabel: strin
     const envName = rawName.trim()
     const envValue = process.env[envName]
     if (envValue === undefined) {
-      warnings.push(`环境变量 ${envName} 未设置：${contextLabel}`)
+      warnings.push(`Environment variable ${envName} not set: ${contextLabel}`)
       return ''
     }
     return envValue
@@ -379,7 +379,7 @@ function buildManagedInstructionsContent(
   if (files.length === 0) return ''
 
   return files
-    .map((file) => `### 来源：${file.source}\n路径：${file.path}\n\n${file.content.trim()}`)
+    .map((file) => `### Source: ${file.source}\nPath: ${file.path}\n\n${file.content.trim()}`)
     .join('\n\n---\n\n')
 }
 
@@ -412,7 +412,7 @@ function resolveInstructions(
     if (existingMatches.length === 0) {
       unresolved.push({
         source: entry,
-        reason: '未找到可读取的文件'
+        reason: 'No readable files found'
       })
       continue
     }
@@ -435,7 +435,7 @@ function resolveInstructions(
   }
 
   for (const item of unresolved) {
-    warnings.push(`instructions 无法读取：${item.source}（${item.reason}）`)
+    warnings.push(`Cannot read instructions: ${item.source} (${item.reason})`)
   }
 
   return {
@@ -473,7 +473,7 @@ export function getOpenCodeConfigPath(): string {
 export function parseOpenCodeConfig(): ParsedOpenCodeConfig {
   const initial = createEmptyParsedConfig()
   if (!fs.existsSync(initial.sourcePath)) {
-    initial.warnings.push('未检测到 OpenCode 配置文件')
+    initial.warnings.push('No OpenCode configuration file detected')
     return initial
   }
 
@@ -486,7 +486,7 @@ export function parseOpenCodeConfig(): ParsedOpenCodeConfig {
     const resolved = resolveEnvTemplates(parsed, initial.warnings, 'opencode.json')
 
     if (!isPlainObject(resolved)) {
-      initial.warnings.push('OpenCode 配置根节点不是对象')
+      initial.warnings.push('OpenCode configuration root node is not an object')
       return initial
     }
 

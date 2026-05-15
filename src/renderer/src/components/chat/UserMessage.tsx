@@ -331,7 +331,7 @@ export function UserMessage({
                 ? plainText.trim()
                 : t('messageActions.imagesCollapsed', {
                     count: allImages.length,
-                    defaultValue: `${allImages.length} 张图片`
+                    defaultValue: `${allImages.length} images`
                   })}
             </div>
           </div>

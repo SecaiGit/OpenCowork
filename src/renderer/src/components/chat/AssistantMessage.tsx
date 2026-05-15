@@ -612,11 +612,11 @@ function MermaidImageCopyButton({ svg }: { svg: string }): React.JSX.Element {
     <button
       onClick={() => void handleCopy()}
       disabled={busy || !svg.trim()}
-      title="复制 Mermaid 图到剪贴板"
+      title="Copy Mermaid diagram to clipboard"
       className="flex items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
     >
       {copied ? <Check className="size-3" /> : <ImageDown className="size-3" />}
-      <span>{copied ? '已复制' : '下载'}</span>
+      <span>{copied ? 'Copied' : 'Download'}</span>
     </button>
   )
 }
@@ -667,11 +667,11 @@ function MermaidCodeBlock({ code }: { code: string }): React.JSX.Element {
           <button
             onClick={() => setZoomOpen(true)}
             disabled={!svg.trim()}
-            title="放大 Mermaid 图"
+            title="Zoom in Mermaid diagram"
             className="flex items-center rounded px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:opacity-50"
           >
             <ZoomIn className="size-3" />
-            <span>放大</span>
+            <span>Zoom in</span>
           </button>
           <MermaidImageCopyButton svg={svg} />
           <CopyButton text={code} />
@@ -699,7 +699,7 @@ function MermaidCodeBlock({ code }: { code: string }): React.JSX.Element {
       <Dialog open={zoomOpen} onOpenChange={setZoomOpen}>
         <DialogContent className="flex h-[90vh] w-[95vw] max-w-[95vw] flex-col p-4">
           <DialogHeader className="sr-only">
-            <DialogTitle>Mermaid 放大预览</DialogTitle>
+            <DialogTitle>Mermaid zoom preview</DialogTitle>
           </DialogHeader>
           <div className="flex-1 overflow-auto rounded-md bg-background p-4">
             {svg ? (
@@ -1660,6 +1660,7 @@ export function AssistantMessage({
               input={block.input}
               output={result?.content}
               isLive={!!isStreaming}
+              sessionId={sessionId}
             />
           </ScaleIn>
         )
@@ -2106,18 +2107,18 @@ export function AssistantMessage({
             <div className="min-w-0">
               <div className="font-medium">
                 {t('assistantMessage.retryingRequest', {
-                  defaultValue: '请求重试中'
+                  defaultValue: 'Request retrying'
                 })}
               </div>
               <div className="mt-0.5 break-words text-[11px] text-amber-700/80 dark:text-amber-200/80">
                 {t('assistantMessage.retryingRequestDetail', {
                   defaultValue:
-                    '第 {{attempt}} / {{maxAttempts}} 次重试，{{delay}} 后再次发送{{statusSuffix}}',
+                    'Attempt {{attempt}} / {{maxAttempts}} retry, resend after {{delay}}{{statusSuffix}}',
                   attempt: requestRetryState.attempt,
                   maxAttempts: requestRetryState.maxAttempts,
                   delay: formatRetryDelay(requestRetryState.delayMs),
                   statusSuffix: requestRetryState.statusCode
-                    ? `，状态码 ${requestRetryState.statusCode}`
+                    ? `, status code ${requestRetryState.statusCode}`
                     : ''
                 })}
                 {requestRetryState.reason ? ` · ${requestRetryState.reason}` : ''}
@@ -2224,7 +2225,7 @@ export function AssistantMessage({
                       type="button"
                       onClick={onContinue}
                       aria-label={t('assistantMessage.continueToolExecution', {
-                        defaultValue: '继续执行'
+                        defaultValue: 'Continue execution'
                       })}
                       className="flex size-7 items-center justify-center rounded-md border border-border/50 bg-background/90 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                     >
@@ -2234,7 +2235,7 @@ export function AssistantMessage({
                   <TooltipContent side="top">
                     {t('assistantMessage.continueToolExecutionHint', {
                       defaultValue:
-                        '检测到上次停在工具执行，点击后会在这条消息里继续，不会新增 AI 消息'
+                        'Detected that the last run stopped at tool execution. Click to continue in this message without creating a new AI message'
                     })}
                   </TooltipContent>
                 </Tooltip>
@@ -2242,7 +2243,7 @@ export function AssistantMessage({
               {showRetry && onRetry ? (
                 <ActionIconButton
                   label={t('assistantMessage.regenerateReference', {
-                    defaultValue: '重新生成参考'
+                    defaultValue: 'Regenerate reference'
                   })}
                   icon={<RotateCcw className="size-3.5" />}
                   onClick={() => msgId && onRetry?.(msgId)}
@@ -2297,7 +2298,7 @@ export function AssistantMessage({
                     <DropdownMenuItem onSelect={onContinue}>
                       <Play className="size-4" />
                       {t('assistantMessage.continueToolExecution', {
-                        defaultValue: '继续执行'
+                        defaultValue: 'Continue execution'
                       })}
                     </DropdownMenuItem>
                   )}
@@ -2305,7 +2306,7 @@ export function AssistantMessage({
                     <DropdownMenuItem onSelect={() => msgId && onRetry?.(msgId)}>
                       <RotateCcw className="size-4" />
                       {t('assistantMessage.regenerateReference', {
-                        defaultValue: '重新生成参考'
+                        defaultValue: 'Regenerate reference'
                       })}
                     </DropdownMenuItem>
                   )}

@@ -134,8 +134,8 @@ const SERIALIZED_TOOL_RESULT_LIMIT = 800
 const BASE_RETRY_DELAY_MS = 1_500
 const LEGACY_SUMMARY_PREFIXES = [
   '[Context Memory Compressed Summary]',
-  '[上下文记忆压缩摘要]',
-  '[上下文记忆压缩摘要'
+  '[Context Memory Compressed Summary]',
+  '[Context Memory Compressed Summary'
 ]
 
 const CLEARED_TOOL_RESULT_PLACEHOLDER = i18n.t('contextCompression.clearedToolResult', {

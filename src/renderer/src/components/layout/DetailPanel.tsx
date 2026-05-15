@@ -32,10 +32,18 @@ import {
 } from '@renderer/components/ui/collapsible'
 import { cn } from '@renderer/lib/utils'
 import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { AnimatePresence, motion } from 'motion/react'
 import { FadeIn } from '@renderer/components/animate-ui'
 import { LocalTerminal } from '@renderer/components/terminal/LocalTerminal'
+import {
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS
+} from '@renderer/lib/preview/viewers/markdown-components'
+import {
+  findSubAgentInSelection,
+  selectSessionScopedAgentState,
+  type SessionScopedAgentSelection
+} from '@renderer/lib/agent/session-scoped-agent-state'
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -242,25 +250,17 @@ function getSubAgentSummary(agent: SubAgentState, inlineText?: string): string {
 
 function findSubAgentRecord(
   toolUseId: string | undefined,
-  activeSessionId: string | null,
-  activeSubAgents: Record<string, SubAgentState>,
-  completedSubAgents: Record<string, SubAgentState>,
-  subAgentHistory: SubAgentState[]
+  selection: SessionScopedAgentSelection
 ): SubAgentState | null {
   if (toolUseId) {
-    return (
-      activeSubAgents[toolUseId] ??
-      completedSubAgents[toolUseId] ??
-      subAgentHistory.find((item) => item.toolUseId === toolUseId) ??
-      null
-    )
+    return findSubAgentInSelection(selection, toolUseId)
   }
 
   const candidates = [
-    ...Object.values(activeSubAgents),
-    ...Object.values(completedSubAgents),
-    ...subAgentHistory
-  ].filter((item) => !item.sessionId || item.sessionId === activeSessionId)
+    ...Object.values(selection.activeSubAgents),
+    ...Object.values(selection.completedSubAgents),
+    ...selection.subAgentHistory
+  ]
 
   if (!candidates.length) return null
   return candidates.sort((left, right) => {
@@ -281,22 +281,15 @@ export function SubAgentExecutionDetailContent({
 }): React.JSX.Element {
   const { t } = useTranslation('layout')
   const activeSessionId = useChatStore((s) => s.activeSessionId)
-  const activeSubAgents = useAgentStore((s) => s.activeSubAgents)
-  const completedSubAgents = useAgentStore((s) => s.completedSubAgents)
-  const subAgentHistory = useAgentStore((s) => s.subAgentHistory)
+  const sessionAgentSelection = useAgentStore((s) =>
+    selectSessionScopedAgentState(s, activeSessionId)
+  )
   const [toolsOpen, setToolsOpen] = React.useState(false)
   const [now, setNow] = React.useState(() => Date.now())
 
   const agent = React.useMemo(
-    () =>
-      findSubAgentRecord(
-        toolUseId,
-        activeSessionId,
-        activeSubAgents,
-        completedSubAgents,
-        subAgentHistory
-      ),
-    [toolUseId, activeSessionId, activeSubAgents, completedSubAgents, subAgentHistory]
+    () => findSubAgentRecord(toolUseId, sessionAgentSelection),
+    [toolUseId, sessionAgentSelection]
   )
 
   React.useEffect(() => {
@@ -327,7 +320,7 @@ export function SubAgentExecutionDetailContent({
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-0 flex-1">
             <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground/55">
-              {t('subAgentsPanel.execution', { defaultValue: '执行过程' })}
+              {t('subAgentsPanel.execution', { defaultValue: 'Execution process' })}
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h2 className="min-w-0 truncate text-lg font-semibold text-foreground">
@@ -348,10 +341,10 @@ export function SubAgentExecutionDetailContent({
                 )}
               >
                 {status === 'running'
-                  ? t('subAgentsPanel.running', { defaultValue: '运行中' })
+                  ? t('subAgentsPanel.running', { defaultValue: 'Running' })
                   : status === 'failed'
-                    ? t('status.failed', { ns: 'common', defaultValue: '失败' })
-                    : t('subAgentsPanel.completed', { defaultValue: '已完成' })}
+                    ? t('status.failed', { ns: 'common', defaultValue: 'Failed' })
+                    : t('subAgentsPanel.completed', { defaultValue: 'Completed' })}
               </Badge>
               <span className="flex items-center gap-1 text-xs text-muted-foreground/70">
                 <Clock className="size-3.5" />
@@ -381,11 +374,16 @@ export function SubAgentExecutionDetailContent({
             <section className="rounded-2xl border border-border/60 bg-background/80 p-4 sm:p-5">
               <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
                 <FileText className="size-3.5" />
-                <span>{t('subAgentsPanel.report', { defaultValue: '最终结果' })}</span>
+                <span>{t('subAgentsPanel.report', { defaultValue: 'Final results' })}</span>
               </div>
               {agent.report.trim() ? (
                 <div className="prose prose-sm max-w-none prose-headings:text-foreground prose-p:text-foreground/90 prose-li:text-foreground/90 prose-strong:text-foreground dark:prose-invert">
-                  <Markdown remarkPlugins={[remarkGfm]}>{agent.report}</Markdown>
+                  <Markdown
+                    remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                    rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                  >
+                    {agent.report}
+                  </Markdown>
                 </div>
               ) : summary ? (
                 <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground/85">
@@ -394,11 +392,13 @@ export function SubAgentExecutionDetailContent({
               ) : (
                 <div className="text-sm text-muted-foreground/70">
                   {agent.reportStatus === 'retrying'
-                    ? t('subAgentsPanel.reportStatusRetrying', { defaultValue: '补救中' })
+                    ? t('subAgentsPanel.reportStatusRetrying', { defaultValue: 'Recovering' })
                     : agent.reportStatus === 'missing'
-                      ? t('subAgentsPanel.reportMissing', { defaultValue: '未捕获到最终结果。' })
+                      ? t('subAgentsPanel.reportMissing', {
+                          defaultValue: 'No final result captured.'
+                        })
                       : t('subAgentsPanel.reportPending', {
-                          defaultValue: '当前 SubAgent 尚未产出最终结果。'
+                          defaultValue: 'Current SubAgent has not produced final results.'
                         })}
                 </div>
               )}
@@ -407,7 +407,7 @@ export function SubAgentExecutionDetailContent({
             {agent.success === false && agent.errorMessage ? (
               <section className="rounded-2xl border border-destructive/35 bg-destructive/5 p-4 sm:p-5">
                 <div className="mb-2 text-xs font-medium uppercase tracking-[0.18em] text-destructive/80">
-                  {t('status.failed', { ns: 'common', defaultValue: '失败' })}
+                  {t('status.failed', { ns: 'common', defaultValue: 'Failed' })}
                 </div>
                 <div className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground/85">
                   {agent.errorMessage}
@@ -418,7 +418,7 @@ export function SubAgentExecutionDetailContent({
             <section className="rounded-2xl border border-border/60 bg-background/80 p-4 sm:p-5">
               <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
                 <Bot className="size-3.5" />
-                <span>{t('subAgentsPanel.execution', { defaultValue: '执行过程' })}</span>
+                <span>{t('subAgentsPanel.execution', { defaultValue: 'Execution process' })}</span>
                 {agent.isRunning ? (
                   <Clock className="size-3 animate-pulse text-violet-500" />
                 ) : null}
@@ -480,19 +480,19 @@ export function SubAgentExecutionDetailContent({
           <aside className="w-full shrink-0 space-y-4 lg:sticky lg:top-0 lg:w-[320px]">
             <section className="rounded-2xl border border-border/60 bg-background/80 p-4">
               <div className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-                {t('detailPanel.details', { defaultValue: '详情' })}
+                {t('detailPanel.details', { defaultValue: 'Details' })}
               </div>
               <div className="space-y-3 text-sm">
                 <div>
                   <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground/55">
-                    {t('subAgentsPanel.running', { defaultValue: '状态' })}
+                    {t('subAgentsPanel.running', { defaultValue: 'Status' })}
                   </div>
                   <div className="mt-1 text-foreground/85">
                     {status === 'running'
-                      ? t('subAgentsPanel.running', { defaultValue: '运行中' })
+                      ? t('subAgentsPanel.running', { defaultValue: 'Running' })
                       : status === 'failed'
-                        ? t('status.failed', { ns: 'common', defaultValue: '失败' })
-                        : t('subAgentsPanel.completed', { defaultValue: '已完成' })}
+                        ? t('status.failed', { ns: 'common', defaultValue: 'Failed' })
+                        : t('subAgentsPanel.completed', { defaultValue: 'Completed' })}
                   </div>
                 </div>
                 <div>
@@ -509,14 +509,14 @@ export function SubAgentExecutionDetailContent({
                 </div>
                 <div>
                   <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground/55">
-                    {t('layout.createdAt', { defaultValue: '开始时间' })}
+                    {t('layout.createdAt', { defaultValue: 'Start time' })}
                   </div>
                   <div className="mt-1 text-foreground/85">{formatDate(agent.startedAt)}</div>
                 </div>
                 {agent.completedAt ? (
                   <div>
                     <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground/55">
-                      {t('layout.updatedAt', { defaultValue: '完成时间' })}
+                      {t('layout.updatedAt', { defaultValue: 'End time' })}
                     </div>
                     <div className="mt-1 text-foreground/85">{formatDate(agent.completedAt)}</div>
                   </div>
@@ -527,13 +527,13 @@ export function SubAgentExecutionDetailContent({
             {(agent.description || agent.prompt || taskSummary) && (
               <section className="rounded-2xl border border-border/60 bg-background/80 p-4">
                 <div className="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-                  {t('subAgentsPanel.taskInput', { defaultValue: '任务输入' })}
+                  {t('subAgentsPanel.taskInput', { defaultValue: 'Task input' })}
                 </div>
                 <div className="space-y-3 text-sm leading-6 text-foreground/85">
                   {agent.description ? (
                     <div>
                       <div className="mb-1 text-[11px] uppercase tracking-[0.14em] text-muted-foreground/55">
-                        {t('subAgentsPanel.description', { defaultValue: '描述' })}
+                        {t('subAgentsPanel.description', { defaultValue: 'Description' })}
                       </div>
                       <div className="whitespace-pre-wrap break-words">{agent.description}</div>
                     </div>
@@ -664,7 +664,7 @@ export function DetailPanel({ embedded = false }: { embedded?: boolean }): React
         : content?.type === 'terminal'
           ? t('detailPanel.terminal')
           : content?.type === 'change-review'
-            ? t('fileChange.reviewPanelTitle', { ns: 'chat', defaultValue: '更改审查' })
+            ? t('fileChange.reviewPanelTitle', { ns: 'chat', defaultValue: 'Change review' })
             : content?.type === 'document'
               ? content.title
               : content?.type === 'report'
@@ -743,7 +743,12 @@ export function DetailPanel({ embedded = false }: { embedded?: boolean }): React
           {content?.type === 'document' && (
             <FadeIn key="document" className="h-full">
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <Markdown remarkPlugins={[remarkGfm]}>{content.content}</Markdown>
+                <Markdown
+                  remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                  rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                >
+                  {content.content}
+                </Markdown>
               </div>
             </FadeIn>
           )}

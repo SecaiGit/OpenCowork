@@ -122,7 +122,7 @@ import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { cn } from '@renderer/lib/utils'
 import { resolveProjectMemoryTextFile } from '@renderer/lib/agent/memory-files'
 import { isProjectSession, workspaceContextAvailable } from '@renderer/lib/session-scope'
-import { InlineStepsPanel } from '@renderer/components/cowork/StepsPanel'
+import { GoalSessionBar } from '@renderer/components/goal/GoalSessionControls'
 
 interface ContextRingProps {
   onCompressContext?: () => void | Promise<void>
@@ -240,7 +240,7 @@ function ContextRing({
           type="button"
           aria-disabled={!canCompress}
           aria-label={t('input.doubleClickCompressContext', {
-            defaultValue: '双击压缩上下文'
+            defaultValue: 'Double-click to compress context'
           })}
           className={cn(
             'flex items-center justify-center rounded-full outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -282,16 +282,20 @@ function ContextRing({
       </TooltipTrigger>
       <TooltipContent side="top">
         <div className="text-xs space-y-0.5">
-          <p className="font-medium">Compression Budget</p>
+          <p className="font-medium">{t('input.compressionBudget')}</p>
           <p className="text-muted-foreground">
             {formatTokens(ctxUsed)} / {formatTokens(ctxGaugeLimit)} ({pct.toFixed(1)}%)
           </p>
-          <p className="text-muted-foreground">{formatTokens(remaining)} remaining</p>
+          <p className="text-muted-foreground">
+            {formatTokens(remaining)} {t('input.remaining')}
+          </p>
           {onCompressContext && (
             <p className="text-muted-foreground">
               {isCompressing
-                ? t('input.compressingContext', { defaultValue: '正在压缩上下文...' })
-                : t('input.doubleClickCompressContext', { defaultValue: '双击压缩上下文' })}
+                ? t('input.compressingContext', { defaultValue: 'Compressing context...' })
+                : t('input.doubleClickCompressContext', {
+                    defaultValue: 'Double-click to compress context'
+                  })}
             </p>
           )}
         </div>
@@ -344,17 +348,19 @@ const defaultRecommendationKeys: Record<AppMode, string> = {
   acp: 'input.recommendationDefaultAcp'
 }
 
-const composerModeOptions: Array<{
+function getComposerModeOptions(tCommon: (key: string) => string): Array<{
   value: AppMode
   label: string
   icon: React.JSX.Element
-}> = [
-  { value: 'chat', label: '聊天', icon: <Send className="size-3.5" /> },
-  { value: 'clarify', label: '澄清', icon: <CircleHelp className="size-3.5" /> },
-  { value: 'cowork', label: '协作', icon: <Briefcase className="size-3.5" /> },
-  { value: 'code', label: '代码', icon: <Code2 className="size-3.5" /> },
-  { value: 'acp', label: 'ACP', icon: <ShieldCheck className="size-3.5" /> }
-]
+}> {
+  return [
+    { value: 'chat', label: tCommon('mode.chat'), icon: <Send className="size-3.5" /> },
+    { value: 'clarify', label: tCommon('mode.clarify'), icon: <CircleHelp className="size-3.5" /> },
+    { value: 'cowork', label: tCommon('mode.cowork'), icon: <Briefcase className="size-3.5" /> },
+    { value: 'code', label: tCommon('mode.code'), icon: <Code2 className="size-3.5" /> },
+    { value: 'acp', label: tCommon('mode.acp'), icon: <ShieldCheck className="size-3.5" /> }
+  ]
+}
 
 interface FileSearchItem {
   name: string
@@ -370,6 +376,7 @@ const MIN_MESSAGE_LIST_HEIGHT = 120
 const EDITOR_MIN_HEIGHT = 60
 const FALLBACK_MAX_VIEWPORT_RATIO = 0.6
 const MAX_SLASH_COMMAND_RESULTS = 8
+const BUILTIN_SLASH_COMMANDS: CommandCatalogItem[] = []
 type ContextCompressionStatus = 'idle' | 'compressing' | ManualCompressionResult
 
 function getSlashCommandQuery(text: string): string | null {
@@ -446,6 +453,10 @@ interface InputAreaProps {
   hideWorkingFolderPicker?: boolean
   onCompressContext?: () => ManualCompressionResult | void | Promise<ManualCompressionResult | void>
   disabled?: boolean
+  draftKeyOverride?: string | null
+  suppressPendingQueue?: boolean
+  hideGoalSessionBar?: boolean
+  hideModeSwitch?: boolean
 }
 
 export function InputArea({
@@ -458,9 +469,14 @@ export function InputArea({
   hideWorkingFolderIndicator = false,
   hideWorkingFolderPicker = false,
   onCompressContext,
-  disabled = false
+  disabled = false,
+  draftKeyOverride,
+  suppressPendingQueue = false,
+  hideGoalSessionBar = false,
+  hideModeSwitch = false
 }: InputAreaProps): React.JSX.Element {
   const { t } = useTranslation('chat')
+  const { t: tCommon } = useTranslation('common')
   const chatView = useUIStore((s) => s.chatView)
   const setMode = useUIStore((s) => s.setMode)
   const isSessionComposer = chatView === 'session' || Boolean(sessionId)
@@ -777,8 +793,8 @@ export function InputArea({
     workingFolder
   })
   const activeDraftKey = React.useMemo(
-    () => (draftSessionId ? getSessionInputDraftKey(draftSessionId) : null),
-    [draftSessionId]
+    () => draftKeyOverride ?? (draftSessionId ? getSessionInputDraftKey(draftSessionId) : null),
+    [draftKeyOverride, draftSessionId]
   )
   const inputDraftHydrated = useInputDraftStore((s) => s.hydrated)
   const persistedDraft = useInputDraftStore(
@@ -792,6 +808,7 @@ export function InputArea({
   const draftReadyKeyRef = React.useRef<string | null>(null)
   const queuedMessagesSnapshotRef = React.useRef<PendingSessionMessageItem[]>(EMPTY_QUEUED_MESSAGES)
   const getQueuedMessagesSnapshot = React.useCallback(() => {
+    if (suppressPendingQueue) return EMPTY_QUEUED_MESSAGES
     const next = activeSessionId
       ? getPendingSessionMessages(activeSessionId)
       : EMPTY_QUEUED_MESSAGES
@@ -801,7 +818,7 @@ export function InputArea({
     }
     queuedMessagesSnapshotRef.current = next
     return next
-  }, [activeSessionId])
+  }, [activeSessionId, suppressPendingQueue])
   const queuedMessages = React.useSyncExternalStore(
     subscribePendingSessionMessages,
     getQueuedMessagesSnapshot,
@@ -809,7 +826,10 @@ export function InputArea({
   )
   const isQueueDispatchPaused = React.useSyncExternalStore(
     subscribePendingSessionMessages,
-    () => (activeSessionId ? isPendingSessionDispatchPaused(activeSessionId) : false),
+    () =>
+      !suppressPendingQueue && activeSessionId
+        ? isPendingSessionDispatchPaused(activeSessionId)
+        : false,
     () => false
   )
   const [editingQueueItemId, setEditingQueueItemId] = React.useState<string | null>(null)
@@ -994,7 +1014,7 @@ export function InputArea({
     if (cleared === 0) return
     setQueueClearConfirmOpen(false)
     cancelEditQueuedMessage()
-    toast.success(t('input.queueCleared', { defaultValue: '已清空排队消息' }))
+    toast.success(t('input.queueCleared', { defaultValue: 'Queued messages cleared' }))
   }, [activeSessionId, cancelEditQueuedMessage, t])
 
   const handleClearQueuedMessages = React.useCallback(() => {
@@ -1143,7 +1163,11 @@ export function InputArea({
   const slashQuery = React.useMemo(() => getSlashCommandQuery(text), [text])
   const filteredSlashCommands = React.useMemo(() => {
     const query = slashQuery ?? ''
-    return slashCommands
+    const commandsByName = new Map<string, CommandCatalogItem>()
+    for (const command of [...BUILTIN_SLASH_COMMANDS, ...slashCommands]) {
+      commandsByName.set(command.name, command)
+    }
+    return [...commandsByName.values()]
       .map((command) => ({ command, score: scoreSlashCommand(command.name, query) }))
       .filter((item) => Number.isFinite(item.score))
       .sort((left, right) => {
@@ -1606,18 +1630,19 @@ export function InputArea({
 
   const showAllComposerModesForNewSession = !draftSessionId && Boolean(activeProjectId)
   const availableComposerModes = React.useMemo(() => {
+    const options = getComposerModeOptions(tCommon)
     if (showAllComposerModesForNewSession) {
-      return composerModeOptions
+      return options
     }
     return projectScoped
-      ? composerModeOptions.filter((option) => option.value !== 'chat')
-      : composerModeOptions.filter((option) => option.value === 'chat')
-  }, [projectScoped, showAllComposerModesForNewSession])
-  const showModeSwitchControl = availableComposerModes.length > 1
+      ? options.filter((option) => option.value !== 'chat')
+      : options.filter((option) => option.value === 'chat')
+  }, [projectScoped, showAllComposerModesForNewSession, tCommon])
+  const showModeSwitchControl = !hideModeSwitch && availableComposerModes.length > 1
   const activeComposerMode =
     availableComposerModes.find((option) => option.value === mode) ??
     availableComposerModes[0] ??
-    composerModeOptions[0]!
+    getComposerModeOptions(tCommon)[0]!
   const handleModeSwitch = React.useCallback(
     (nextMode: AppMode) => {
       setMode(nextMode)
@@ -2046,15 +2071,17 @@ export function InputArea({
   const contextCompressionStatusLabel = React.useMemo(() => {
     switch (contextCompressionStatus) {
       case 'compressing':
-        return t('input.compressingContext', { defaultValue: '正在压缩上下文...' })
+        return t('input.compressingContext', { defaultValue: 'Compressing context...' })
       case 'compressed':
-        return t('input.contextCompressed', { defaultValue: '上下文已压缩' })
+        return t('input.contextCompressed', { defaultValue: 'Context compressed' })
       case 'skipped':
-        return t('input.contextCompressionSkipped', { defaultValue: '无需压缩' })
+        return t('input.contextCompressionSkipped', { defaultValue: 'No compression needed' })
       case 'blocked':
-        return t('input.contextCompressionBlocked', { defaultValue: '暂时无法压缩' })
+        return t('input.contextCompressionBlocked', {
+          defaultValue: 'Compression temporarily unavailable'
+        })
       case 'failed':
-        return t('input.contextCompressionFailed', { defaultValue: '压缩失败' })
+        return t('input.contextCompressionFailed', { defaultValue: 'Compression failed' })
       default:
         return ''
     }
@@ -2287,7 +2314,6 @@ export function InputArea({
       )}
 
       <div className="mx-auto w-full max-w-[820px]">
-        {projectScoped && draftSessionId && <InlineStepsPanel sessionId={draftSessionId} />}
         <div
           ref={containerRef}
           className={cn(
@@ -2328,7 +2354,7 @@ export function InputArea({
                     )}
                     <ClipboardList className="size-3.5 shrink-0 text-primary/80" />
                     <span className="truncate text-xs font-medium text-foreground">
-                      {t('input.queueTitle', { defaultValue: '排队消息' })}
+                      {t('input.queueTitle', { defaultValue: 'Queued messages' })}
                     </span>
                     <span className="composer-status-pill rounded-full px-1.5 py-0.5 text-[10px]">
                       {queuedMessages.length}
@@ -2336,10 +2362,10 @@ export function InputArea({
                     <span className="truncate text-[10px] text-muted-foreground/80">
                       {isQueueDispatchPaused
                         ? t('input.queuePausedHint', {
-                            defaultValue: '已暂停，点击继续发送'
+                            defaultValue: 'Paused, click to resume sending'
                           })
                         : t('input.queueRunningHint', {
-                            defaultValue: '当前任务结束后按顺序发送'
+                            defaultValue: 'Will send in order after current task completes'
                           })}
                     </span>
                   </button>
@@ -2353,7 +2379,7 @@ export function InputArea({
                         onClick={resumeQueuedMessages}
                       >
                         <Send className="size-3" />
-                        {t('input.queueResume', { defaultValue: '继续发送' })}
+                        {t('input.queueResume', { defaultValue: 'Resume sending' })}
                       </Button>
                     )}
                     <Button
@@ -2383,7 +2409,9 @@ export function InputArea({
                               <div className="space-y-2">
                                 <div className="flex items-center justify-between gap-2">
                                   <span className="text-[10px] font-medium text-muted-foreground">
-                                    {t('input.queueEditing', { defaultValue: '编辑排队消息' })}
+                                    {t('input.queueEditing', {
+                                      defaultValue: 'Edit queued message'
+                                    })}
                                   </span>
                                   <div className="flex items-center gap-1">
                                     <Button
@@ -2442,7 +2470,7 @@ export function InputArea({
                                   {editingQueueImages.length > 0 ? (
                                     <p className="text-[10px] text-muted-foreground">
                                       {t('input.queueImageCount', {
-                                        defaultValue: '{{count}} 张图片',
+                                        defaultValue: '{{count}} images',
                                         count: editingQueueImages.length
                                       })}
                                     </p>
@@ -2469,7 +2497,7 @@ export function InputArea({
                                   <div className="truncate text-xs leading-5 text-foreground/90">
                                     {summaryText ||
                                       commandLabel ||
-                                      t('input.queueImageOnly', { defaultValue: '[仅图片]' })}
+                                      t('input.queueImageOnly', { defaultValue: '[Images only]' })}
                                   </div>
                                   {commandLabel && summaryText && (
                                     <div className="mt-1 text-[10px] text-violet-700 dark:text-violet-300">
@@ -2480,7 +2508,7 @@ export function InputArea({
                                     <div className="mt-1 flex items-center gap-1.5">
                                       <span className="composer-status-pill rounded-full px-1.5 py-0.5 text-[10px]">
                                         {t('input.queueImageCount', {
-                                          defaultValue: '{{count}} 张图片',
+                                          defaultValue: '{{count}} images',
                                           count: msg.images.length
                                         })}
                                       </span>
@@ -2494,7 +2522,7 @@ export function InputArea({
                                     size="sm"
                                     className="composer-control size-7 rounded-md p-0"
                                     onClick={() => startEditQueuedMessage(msg)}
-                                    title={t('action.edit', { ns: 'common', defaultValue: '编辑' })}
+                                    title={t('action.edit', { ns: 'common', defaultValue: 'Edit' })}
                                   >
                                     <Pencil className="size-3.5" />
                                   </Button>
@@ -2524,11 +2552,14 @@ export function InputArea({
                 <AlertDialogContent size="sm">
                   <AlertDialogHeader>
                     <AlertDialogTitle>
-                      {t('input.queueClearConfirmTitle', { defaultValue: '清空排队消息？' })}
+                      {t('input.queueClearConfirmTitle', {
+                        defaultValue: 'Clear queued messages?'
+                      })}
                     </AlertDialogTitle>
                     <AlertDialogDescription>
                       {t('input.queueClearConfirmDesc', {
-                        defaultValue: '这将删除当前会话中 {{count}} 条待发送消息。',
+                        defaultValue:
+                          'This will delete {{count}} pending messages in the current session.',
                         count: queuedMessages.length
                       })}
                     </AlertDialogDescription>
@@ -2726,7 +2757,8 @@ export function InputArea({
                 placeholder={
                   pendingReviewPlanId
                     ? t('input.placeholderPlanReview', {
-                        defaultValue: '输入这份计划的修改建议，或点击上方卡片直接实施计划...'
+                        defaultValue:
+                          'Enter suggestions for this plan, or click the card above to implement it...'
                       })
                     : (effectivePlaceholder ??
                       (shouldRecommendInit
@@ -2761,7 +2793,7 @@ export function InputArea({
                 <div className="composer-flyout absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-[18px]">
                   <div className="composer-flyout-header flex items-center gap-2 px-3 py-2 text-[11px] text-muted-foreground">
                     <Command className="size-3.5" />
-                    <span>{t('input.fileSuggestions', { defaultValue: '文件建议' })}</span>
+                    <span>{t('input.fileSuggestions', { defaultValue: 'File suggestions' })}</span>
                     <span className="composer-status-pill ml-auto rounded-full px-1.5 py-0.5 text-[10px]">
                       @{fileQuery || ''}
                     </span>
@@ -2778,17 +2810,21 @@ export function InputArea({
                       >
                         <FolderOpen className="size-3.5 shrink-0" />
                         <span>
-                          {t('input.noWorkingFolderSelected', { defaultValue: '请先选择工作目录' })}
+                          {t('input.noWorkingFolderSelected', {
+                            defaultValue: 'Please select a working directory first'
+                          })}
                         </span>
                       </button>
                     ) : fileSearchLoading ? (
                       <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
                         <Spinner className="size-3.5" />
-                        <span>{t('input.loadingFiles', { defaultValue: '搜索文件中...' })}</span>
+                        <span>
+                          {t('input.loadingFiles', { defaultValue: 'Searching files...' })}
+                        </span>
                       </div>
                     ) : fileSearchResults.length === 0 ? (
                       <div className="px-2 py-3 text-xs text-muted-foreground">
-                        {t('input.noFilesFound', { defaultValue: '没有匹配的文件' })}
+                        {t('input.noFilesFound', { defaultValue: 'No matching files' })}
                       </div>
                     ) : (
                       fileSearchResults.map((file, index) => {
@@ -2828,7 +2864,9 @@ export function InputArea({
                 <div className="composer-flyout absolute inset-x-0 bottom-full z-30 mb-2 overflow-hidden rounded-[18px]">
                   <div className="composer-flyout-header flex items-center gap-2 px-3 py-2 text-[11px] text-muted-foreground">
                     <Command className="size-3.5" />
-                    <span>{t('input.commandSuggestions', { defaultValue: '命令建议' })}</span>
+                    <span>
+                      {t('input.commandSuggestions', { defaultValue: 'Command suggestions' })}
+                    </span>
                     <span className="composer-status-pill ml-auto rounded-full px-1.5 py-0.5 text-[10px]">
                       /{slashQuery ?? ''}
                     </span>
@@ -2837,11 +2875,13 @@ export function InputArea({
                     {slashCommandsLoading ? (
                       <div className="flex items-center gap-2 px-2 py-3 text-xs text-muted-foreground">
                         <Spinner className="size-3.5" />
-                        <span>{t('input.loadingCommands', { defaultValue: '加载命令中...' })}</span>
+                        <span>
+                          {t('input.loadingCommands', { defaultValue: 'Loading commands...' })}
+                        </span>
                       </div>
                     ) : filteredSlashCommands.length === 0 ? (
                       <div className="px-2 py-3 text-xs text-muted-foreground">
-                        {t('input.noCommandsFound', { defaultValue: '没有匹配的命令' })}
+                        {t('input.noCommandsFound', { defaultValue: 'No matching commands' })}
                       </div>
                     ) : (
                       filteredSlashCommands.map((command, index) => {
@@ -2973,7 +3013,7 @@ export function InputArea({
                           {queuedMessages.length > 0
                             ? t('input.clearConfirmDescWithQueue', {
                                 defaultValue:
-                                  '这将删除此对话中的所有消息，并清空当前会话的 {{count}} 条待发送消息。此操作不可撤销。',
+                                  'This will delete all messages in this conversation and clear {{count}} pending messages in the current session. This action cannot be undone.',
                                 count: queuedMessages.length
                               })
                             : t('input.clearConfirmDesc')}
@@ -3006,6 +3046,7 @@ export function InputArea({
             </div>
           </div>
         </div>
+        {!hideGoalSessionBar && draftSessionId && <GoalSessionBar sessionId={draftSessionId} />}
       </div>
     </div>
   )

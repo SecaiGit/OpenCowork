@@ -363,7 +363,7 @@ export class FeishuService implements MessagingChannelService {
 
   private _streamCardTitle(index: number): string {
     const baseTitle = this._instance.name || 'AI Assistant'
-    return index <= 1 ? baseTitle : `${baseTitle}（续 ${index}）`
+    return index <= 1 ? baseTitle : `${baseTitle} (cont. ${index})`
   }
 
   private async _createStreamingCard(params: {

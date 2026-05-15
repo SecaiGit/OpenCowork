@@ -205,7 +205,7 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
     if (!nextLine) {
       toast.error(
         t('workspace.knownHosts.lineRequired', {
-          defaultValue: '请输入 known_hosts 条目内容。'
+          defaultValue: 'Please enter known_hosts entry content.'
         })
       )
       return
@@ -232,7 +232,7 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
       setSelectedId(match?.id ?? nextRecords[0]?.id ?? null)
       toast.success(
         t('workspace.knownHosts.saved', {
-          defaultValue: 'Known hosts 已保存。'
+          defaultValue: 'Known hosts saved.'
         })
       )
     } catch (error) {
@@ -277,7 +277,7 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
               }}
             >
               <Plus className="size-3.5" />
-              {t('workspace.knownHosts.new', { defaultValue: '新增条目' })}
+              {t('workspace.knownHosts.new', { defaultValue: 'Add entry' })}
             </Button>
             <Button
               variant="outline"
@@ -299,7 +299,7 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
               </div>
               <div className="mt-1 text-[0.82rem] text-muted-foreground">
                 {t('workspace.knownHosts.subtitle', {
-                  defaultValue: '维护 SSH 主机指纹信任列表。'
+                  defaultValue: 'Maintain SSH host fingerprint trust list.'
                 })}
               </div>
             </div>
@@ -316,12 +316,12 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
             <EmptyState
               icon={Fingerprint}
               title={t('workspace.knownHosts.emptyTitle', {
-                defaultValue: 'known_hosts 还是空的。'
+                defaultValue: 'known_hosts is still empty.'
               })}
               body={t('workspace.knownHosts.emptyBody', {
-                defaultValue: '连接新主机后，或手动写入条目，这里会出现受信任的主机指纹。'
+                defaultValue: 'After connecting to a new host, or manually writing entries, trusted host fingerprints will appear here.'
               })}
-              actionLabel={t('workspace.knownHosts.new', { defaultValue: '新增条目' })}
+              actionLabel={t('workspace.knownHosts.new', { defaultValue: 'Add entry' })}
               onAction={() => {
                 setEditorMode('create')
                 setDraft('')
@@ -378,8 +378,8 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
           <div>
             <div className="text-[1.12rem] font-semibold text-foreground">
               {editorMode === 'create'
-                ? t('workspace.knownHosts.new', { defaultValue: '新增条目' })
-                : t('workspace.knownHosts.edit', { defaultValue: '编辑条目' })}
+                ? t('workspace.knownHosts.new', { defaultValue: 'Add entry' })
+                : t('workspace.knownHosts.edit', { defaultValue: 'Edit entry' })}
             </div>
             <div className="mt-1 text-[0.8rem] text-muted-foreground">{path}</div>
           </div>
@@ -392,7 +392,7 @@ export function SshKnownHostsWorkspace(): React.JSX.Element {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          <SectionCard title={t('workspace.knownHosts.raw', { defaultValue: '原始条目' })}>
+          <SectionCard title={t('workspace.knownHosts.raw', { defaultValue: 'Raw entry' })}>
             <Textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -474,7 +474,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
     if (!form.name.trim() || !effectiveConnectionId) {
       toast.error(
         t('workspace.forwarding.required', {
-          defaultValue: '请填写名称并选择主机。'
+          defaultValue: 'Please fill in the name and select a host.'
         })
       )
       return
@@ -496,7 +496,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
     setSelectedId(nextRule.id)
     toast.success(
       t('workspace.forwarding.saved', {
-        defaultValue: '端口转发模板已保存。'
+        defaultValue: 'Port forwarding template saved.'
       })
     )
   }
@@ -532,7 +532,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
               onClick={resetForm}
             >
               <Plus className="size-3.5" />
-              {t('workspace.forwarding.new', { defaultValue: '新增规则' })}
+              {t('workspace.forwarding.new', { defaultValue: 'Add rule' })}
             </Button>
           </div>
         </div>
@@ -545,7 +545,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
               </div>
               <div className="mt-1 text-[0.82rem] text-muted-foreground">
                 {t('workspace.forwarding.subtitle', {
-                  defaultValue: '保存可复用的 SSH 端口转发模板。'
+                  defaultValue: 'Save reusable SSH port forwarding templates.'
                 })}
               </div>
             </div>
@@ -558,12 +558,12 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
             <EmptyState
               icon={ArrowLeftRight}
               title={t('workspace.forwarding.emptyTitle', {
-                defaultValue: '还没有保存的端口转发模板。'
+                defaultValue: 'No saved port forwarding templates yet.'
               })}
               body={t('workspace.forwarding.emptyBody', {
-                defaultValue: '常用的本地转发、远端转发和 SOCKS 代理都可以先在这里配好。'
+                defaultValue: 'Common local forwarding, remote forwarding and SOCKS proxies can all be configured here.'
               })}
-              actionLabel={t('workspace.forwarding.new', { defaultValue: '新增规则' })}
+              actionLabel={t('workspace.forwarding.new', { defaultValue: 'Add rule' })}
               onAction={resetForm}
             />
           ) : (
@@ -620,11 +620,11 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
           <div>
             <div className="text-[1.12rem] font-semibold text-foreground">
               {editorMode === 'edit'
-                ? t('workspace.forwarding.edit', { defaultValue: '编辑规则' })
-                : t('workspace.forwarding.new', { defaultValue: '新增规则' })}
+                ? t('workspace.forwarding.edit', { defaultValue: 'Edit rule' })
+                : t('workspace.forwarding.new', { defaultValue: 'Add rule' })}
             </div>
             <div className="mt-1 text-[0.8rem] text-muted-foreground">
-              {t('workspace.personalVault', { defaultValue: '个人保险库' })}
+              {t('workspace.personalVault', { defaultValue: 'Personal vault' })}
             </div>
           </div>
           <button
@@ -636,7 +636,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          <SectionCard title={t('workspace.forwarding.meta', { defaultValue: '规则信息' })}>
+          <SectionCard title={t('workspace.forwarding.meta', { defaultValue: 'Rule info' })}>
             <Field label={t('workspace.forwarding.name', { defaultValue: 'Label' })}>
               <Input
                 value={form.name}
@@ -725,7 +725,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
             </Field>
           </SectionCard>
 
-          <SectionCard title={t('workspace.forwarding.command', { defaultValue: '命令预览' })}>
+          <SectionCard title={t('workspace.forwarding.command', { defaultValue: 'Command preview' })}>
             <div className="rounded-[18px] border border-border bg-muted/45 p-3 font-mono text-[0.78rem] leading-6 text-foreground">
               {commandPreview || 'ssh -L 8080:127.0.0.1:80 user@example.com -p 22'}
             </div>
@@ -736,7 +736,7 @@ export function SshPortForwardingWorkspace(): React.JSX.Element {
                 navigator.clipboard.writeText(commandPreview)
                 toast.success(
                   t('workspace.forwarding.copied', {
-                    defaultValue: '端口转发命令已复制。'
+                    defaultValue: 'Port forwarding command copied.'
                   })
                 )
               }}
@@ -811,7 +811,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
     if (!form.name.trim() || !form.command.trim()) {
       toast.error(
         t('workspace.snippets.required', {
-          defaultValue: '请填写名称和命令内容。'
+          defaultValue: 'Please fill in the name and command content.'
         })
       )
       return
@@ -834,7 +834,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
     setSelectedId(nextSnippet.id)
     toast.success(
       t('workspace.snippets.saved', {
-        defaultValue: '片段已保存。'
+        defaultValue: 'Snippet saved.'
       })
     )
   }
@@ -857,7 +857,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
               onClick={resetForm}
             >
               <Plus className="size-3.5" />
-              {t('workspace.snippets.new', { defaultValue: '新增片段' })}
+              {t('workspace.snippets.new', { defaultValue: 'Add snippet' })}
             </Button>
           </div>
         </div>
@@ -870,7 +870,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
               </div>
               <div className="mt-1 text-[0.82rem] text-muted-foreground">
                 {t('workspace.snippets.subtitle', {
-                  defaultValue: '保存常用的远端命令片段和运维脚本。'
+                  defaultValue: 'Save common remote command snippets and ops scripts.'
                 })}
               </div>
             </div>
@@ -883,12 +883,12 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
             <EmptyState
               icon={ScrollText}
               title={t('workspace.snippets.emptyTitle', {
-                defaultValue: '还没有保存的命令片段。'
+                defaultValue: 'No saved command snippets yet.'
               })}
               body={t('workspace.snippets.emptyBody', {
-                defaultValue: '把常用重启、部署、排障命令收进这里，之后可以直接复制复用。'
+                defaultValue: 'Store common restart, deploy, troubleshoot commands here for quick reuse.'
               })}
-              actionLabel={t('workspace.snippets.new', { defaultValue: '新增片段' })}
+              actionLabel={t('workspace.snippets.new', { defaultValue: 'Add snippet' })}
               onAction={resetForm}
             />
           ) : (
@@ -942,11 +942,11 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
           <div>
             <div className="text-[1.12rem] font-semibold text-foreground">
               {editorMode === 'edit'
-                ? t('workspace.snippets.edit', { defaultValue: '编辑片段' })
-                : t('workspace.snippets.new', { defaultValue: '新增片段' })}
+                ? t('workspace.snippets.edit', { defaultValue: 'Edit snippet' })
+                : t('workspace.snippets.new', { defaultValue: 'Add snippet' })}
             </div>
             <div className="mt-1 text-[0.8rem] text-muted-foreground">
-              {t('workspace.personalVault', { defaultValue: '个人保险库' })}
+              {t('workspace.personalVault', { defaultValue: 'Personal vault' })}
             </div>
           </div>
           <button
@@ -958,7 +958,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-          <SectionCard title={t('workspace.snippets.meta', { defaultValue: '片段信息' })}>
+          <SectionCard title={t('workspace.snippets.meta', { defaultValue: 'Snippet info' })}>
             <Field label={t('workspace.snippets.name', { defaultValue: 'Label' })}>
               <Input
                 value={form.name}
@@ -1008,7 +1008,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
             </Field>
           </SectionCard>
 
-          <SectionCard title={t('workspace.snippets.actions', { defaultValue: '快捷操作' })}>
+          <SectionCard title={t('workspace.snippets.actions', { defaultValue: 'Quick actions' })}>
             <Button
               variant="outline"
               className="h-11 w-full rounded-[14px] border-border bg-background text-muted-foreground hover:bg-muted"
@@ -1016,7 +1016,7 @@ export function SshSnippetsWorkspace(): React.JSX.Element {
                 navigator.clipboard.writeText(form.command)
                 toast.success(
                   t('workspace.snippets.copied', {
-                    defaultValue: '命令片段已复制。'
+                    defaultValue: 'Command snippet copied.'
                   })
                 )
               }}
@@ -1111,7 +1111,7 @@ export function SshLogsWorkspace(): React.JSX.Element {
             </div>
             <div className="mt-1 text-[0.82rem] text-muted-foreground">
               {t('workspace.logs.subtitle', {
-                defaultValue: '查看最近连接、会话状态和上传传输活动。'
+                defaultValue: 'View recent connections, session status and upload transfer activity.'
               })}
             </div>
           </div>
@@ -1121,10 +1121,10 @@ export function SshLogsWorkspace(): React.JSX.Element {
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <SectionCard title={t('workspace.logs.sessions', { defaultValue: '会话状态' })}>
+          <SectionCard title={t('workspace.logs.sessions', { defaultValue: 'Session status' })}>
             {liveSessions.length === 0 ? (
               <div className="text-[0.84rem] text-muted-foreground">
-                {t('workspace.logs.noSessions', { defaultValue: '当前没有活动会话。' })}
+                {t('workspace.logs.noSessions', { defaultValue: 'No active sessions.' })}
               </div>
             ) : (
               liveSessions.map((session) => (
@@ -1144,10 +1144,10 @@ export function SshLogsWorkspace(): React.JSX.Element {
             )}
           </SectionCard>
 
-          <SectionCard title={t('workspace.logs.connections', { defaultValue: '最近连接' })}>
+          <SectionCard title={t('workspace.logs.connections', { defaultValue: 'Recent connections' })}>
             {recentConnections.length === 0 ? (
               <div className="text-[0.84rem] text-muted-foreground">
-                {t('workspace.logs.noConnections', { defaultValue: '还没有连接历史。' })}
+                {t('workspace.logs.noConnections', { defaultValue: 'No connection history yet.' })}
               </div>
             ) : (
               recentConnections.map((connection) => (
@@ -1166,10 +1166,10 @@ export function SshLogsWorkspace(): React.JSX.Element {
             )}
           </SectionCard>
 
-          <SectionCard title={t('workspace.logs.uploads', { defaultValue: '上传活动' })}>
+          <SectionCard title={t('workspace.logs.uploads', { defaultValue: 'Upload activity' })}>
             {recentUploads.length === 0 ? (
               <div className="text-[0.84rem] text-muted-foreground">
-                {t('workspace.logs.noUploads', { defaultValue: '暂无上传活动。' })}
+                {t('workspace.logs.noUploads', { defaultValue: 'No upload activity.' })}
               </div>
             ) : (
               recentUploads.map((task) => (

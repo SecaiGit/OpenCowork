@@ -62,7 +62,7 @@ interface PluginAutoReplyTask {
 }
 
 const PLUGIN_STREAM_DELTA_FLUSH_MS = 66
-const PLUGIN_PROCESSING_ACK_MESSAGE = '已收到消息，正在处理，请稍候。'
+const PLUGIN_PROCESSING_ACK_MESSAGE = 'Message received, processing, please wait.'
 const pluginTaskChains = new Map<string, Promise<void>>()
 const queuedPluginTasksByScope = new Map<string, number>()
 const queuedPluginTasksBySession = new Map<string, number>()
@@ -166,7 +166,7 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
     const ready = await ensureProviderAuthReady(targetProviderId)
     if (!ready) {
       console.error('[PluginAutoReply] Provider auth missing')
-      await sendChannelNotice('未配置或未完成认证的模型服务商，请在设置中完成配置后再试。')
+      await sendChannelNotice('Model provider not configured or authentication incomplete, please configure in settings and try again.')
       return
     }
   }
@@ -174,7 +174,7 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
   const providerConfig = getProviderConfig(channelMeta?.providerId, channelMeta?.model)
   if (!providerConfig) {
     console.error('[PluginAutoReply] No provider config — API key not configured')
-    await sendChannelNotice('未配置模型服务商或 API Key，请在设置中完成配置后再试。')
+    await sendChannelNotice('Model provider or API Key not configured, please configure in settings and try again.')
     return
   }
 
@@ -190,21 +190,21 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
     const speechModelId = providerStore.activeSpeechModelId
     if (!speechProviderId || !speechModelId) {
       await sendChannelNotice(
-        '已收到语音消息，但未配置语音识别模型。请在 设置 → 模型 → 语音识别模型 中选择后再试。'
+        'Voice message received, but speech recognition model not configured. Please select one in Settings → Model → Speech Recognition Model and try again.'
       )
       return
     }
 
     const ready = await ensureProviderAuthReady(speechProviderId)
     if (!ready) {
-      await sendChannelNotice('语音识别服务商认证未完成，请在 设置 → 模型 中完成认证后再试。')
+      await sendChannelNotice('Speech recognition provider authentication incomplete, please complete authentication in Settings → Model and try again.')
       return
     }
 
     const openAiConfig = resolveOpenAiProviderConfig(speechProviderId, speechModelId)
     if (!openAiConfig) {
       await sendChannelNotice(
-        '语音识别需要 OpenAI 兼容服务商。请在 设置 → 模型 → 语音识别模型 中选择 OpenAI 兼容模型后再试。'
+        'Speech recognition requires an OpenAI-compatible provider. Please select an OpenAI-compatible model in Settings → Model → Speech Recognition Model and try again.'
       )
       return
     }
@@ -218,7 +218,7 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
       })) as { ok?: boolean; base64?: string; mediaType?: string; error?: string }
 
       if (!download?.base64 || download.error) {
-        await sendChannelNotice(`语音下载失败：${download?.error ?? 'unknown error'}`)
+        await sendChannelNotice(`Voice download failed: ${download?.error ?? 'unknown error'}`)
         return
       }
 
@@ -237,10 +237,10 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
         baseUrl: openAiConfig.config.baseUrl
       })
 
-      effectiveContent = transcript.trim() ? transcript : '[语音已转写，但内容为空]'
+      effectiveContent = transcript.trim() ? transcript : '[Voice transcribed, but content is empty]'
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      await sendChannelNotice(`语音转写失败：${msg}`)
+      await sendChannelNotice(`Voice transcription failed: ${msg}`)
       return
     }
   } else if (task.audio) {
@@ -937,8 +937,8 @@ async function _runPluginAgent(task: PluginAutoReplyTask): Promise<void> {
   }
 
   const fallbackMessage = lastError
-    ? `模型运行失败：${lastError}`
-    : '模型未返回文本回复，请检查当前模型配置'
+    ? `Model run failed: ${lastError}`
+    : 'Model did not return a text reply, please check your current model configuration'
 
   const finalText = fullText.trim() ? fullText : fallbackMessage
   let streamFinished = false
