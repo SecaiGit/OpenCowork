@@ -30,6 +30,124 @@ export interface ApiRoundGroup {
   messages: UnifiedMessage[]
 }
 
+export type ToolUseResultProtocolIssueKind =
+  | 'duplicate_tool_use'
+  | 'tool_use_invalid_role'
+  | 'unknown_tool_result'
+  | 'duplicate_tool_result'
+  | 'tool_result_invalid_role'
+  | 'unanswered_tool_use'
+
+export interface ToolUseResultProtocolIssue {
+  kind: ToolUseResultProtocolIssueKind
+  toolUseId: string
+  messageIndex: number
+}
+
+export interface ToolUseResultProtocolValidation {
+  valid: boolean
+  issues: ToolUseResultProtocolIssue[]
+}
+
+const REDACTED_VALUE = '[REDACTED]'
+const REDACTED_TOKEN = '[REDACTED TOKEN]'
+const REDACTED_AUTHORIZATION = '[REDACTED AUTHORIZATION]'
+const REDACTED_COOKIE = '[REDACTED COOKIE]'
+const REDACTED_PRIVATE_KEY = '[REDACTED PRIVATE KEY]'
+const SENSITIVE_KEY_PATTERN =
+  '(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|pwd|secret|client[_-]?secret|session(?:id)?|session[_-]?token)'
+
+export function redactTextForModelContext(text: string): string {
+  if (!text) return text
+
+  let result = text
+  result = result.replace(
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    REDACTED_PRIVATE_KEY
+  )
+  result = result.replace(/\b((?:set-)?cookie\s*:\s*)[^\r\n]+/gi, `$1${REDACTED_COOKIE}`)
+  result = result.replace(
+    /\b(authorization\s*:\s*)(?:bearer|basic)\s+[^\r\n]+/gi,
+    `$1${REDACTED_AUTHORIZATION}`
+  )
+  result = result.replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, `$1${REDACTED_TOKEN}`)
+  result = result.replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g, REDACTED_TOKEN)
+  result = result.replace(
+    new RegExp(`(["'])(${SENSITIVE_KEY_PATTERN})(\\1\\s*:\\s*)(["'])([\\s\\S]{1,512}?)(\\4)`, 'gi'),
+    (_match, keyQuote: string, key: string, separator: string, valueQuote: string) =>
+      `${keyQuote}${key}${separator}${valueQuote}${REDACTED_VALUE}${valueQuote}`
+  )
+  result = result.replace(
+    new RegExp(`\\b(${SENSITIVE_KEY_PATTERN})(\\s*[:=]\\s*)(["'])([\\s\\S]{1,512}?)(\\3)`, 'gi'),
+    (_match, key: string, separator: string, quote: string) =>
+      `${key}${separator}${quote}${REDACTED_VALUE}${quote}`
+  )
+  result = result.replace(
+    new RegExp(`\\b(${SENSITIVE_KEY_PATTERN})(\\s*[:=]\\s*)([^"'\\s,;&]{3,})`, 'gi'),
+    (_match, key: string, separator: string) => `${key}${separator}${REDACTED_VALUE}`
+  )
+  result = result.replace(
+    new RegExp(`([?&]${SENSITIVE_KEY_PATTERN}=)([^&#\\s]+)`, 'gi'),
+    `$1${REDACTED_VALUE}`
+  )
+
+  return result
+}
+
+export function validateToolUseResultProtocol(
+  messages: UnifiedMessage[]
+): ToolUseResultProtocolValidation {
+  const issues: ToolUseResultProtocolIssue[] = []
+  const seenToolUseIds = new Set<string>()
+  const pendingToolUseIds = new Set<string>()
+  const answeredToolUseIds = new Set<string>()
+
+  messages.forEach((message, messageIndex) => {
+    for (const id of collectToolUseIds(message)) {
+      if (message.role !== 'assistant') {
+        issues.push({ kind: 'tool_use_invalid_role', toolUseId: id, messageIndex })
+        continue
+      }
+
+      if (seenToolUseIds.has(id)) {
+        issues.push({ kind: 'duplicate_tool_use', toolUseId: id, messageIndex })
+        continue
+      }
+
+      seenToolUseIds.add(id)
+      pendingToolUseIds.add(id)
+    }
+
+    const seenResultIdsInMessage = new Set<string>()
+    for (const id of collectToolResultIds(message)) {
+      if (message.role !== 'user' && message.role !== 'tool') {
+        issues.push({ kind: 'tool_result_invalid_role', toolUseId: id, messageIndex })
+        continue
+      }
+
+      if (seenResultIdsInMessage.has(id) || answeredToolUseIds.has(id)) {
+        issues.push({ kind: 'duplicate_tool_result', toolUseId: id, messageIndex })
+        continue
+      }
+
+      seenResultIdsInMessage.add(id)
+      if (!pendingToolUseIds.has(id)) {
+        issues.push({ kind: 'unknown_tool_result', toolUseId: id, messageIndex })
+        continue
+      }
+
+      pendingToolUseIds.delete(id)
+      answeredToolUseIds.add(id)
+    }
+  })
+
+  for (const id of pendingToolUseIds) {
+    issues.push({ kind: 'unanswered_tool_use', toolUseId: id, messageIndex: messages.length })
+  }
+
+  return { valid: issues.length === 0, issues }
+}
+
 export function estimateTextTokens(value: string): number {
   if (!value) return 0
   return Math.ceil(value.length / APPROX_CHARS_PER_TOKEN)

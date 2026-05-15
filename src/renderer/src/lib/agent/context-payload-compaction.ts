@@ -1,6 +1,10 @@
 import type { ContentBlock, ToolResultContent, UnifiedMessage } from '../api/types'
 import type { CompressionConfig } from './context-compression'
-import { estimateToolResultChars, getLargeToolResultCharLimit } from './context-budget'
+import {
+  estimateToolResultChars,
+  getLargeToolResultCharLimit,
+  redactTextForModelContext
+} from './context-budget'
 
 const MIN_HEAD_CHARS = 2_000
 const MIN_TAIL_CHARS = 1_000
@@ -10,7 +14,10 @@ const IMPORTANT_LINE_PATTERN =
 const TOOL_RESULT_COMPACTED_MARKER = '[Tool result compacted for context budget]'
 const IMAGE_OMITTED_TEXT = '[image omitted from long-task context payload]'
 
-export type ToolPayloadCompactionReason = 'tool_result_too_large' | 'image_payload_omitted'
+export type ToolPayloadCompactionReason =
+  | 'tool_result_too_large'
+  | 'image_payload_omitted'
+  | 'sensitive_payload_redacted'
 
 export interface ToolPayloadCompactionInfo {
   compacted: boolean
@@ -47,11 +54,13 @@ function collectImportantLines(text: string, limit = IMPORTANT_LINE_LIMIT): stri
 function getOrderedReasons(flags: {
   toolResultTooLarge?: boolean
   imagePayloadOmitted?: boolean
+  sensitivePayloadRedacted?: boolean
 }): ToolPayloadCompactionReason[] | undefined {
   const reasons: ToolPayloadCompactionReason[] = []
 
   if (flags.toolResultTooLarge) reasons.push('tool_result_too_large')
   if (flags.imagePayloadOmitted) reasons.push('image_payload_omitted')
+  if (flags.sensitivePayloadRedacted) reasons.push('sensitive_payload_redacted')
 
   return reasons.length > 0 ? reasons : undefined
 }
@@ -177,42 +186,65 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
   const originalChars = estimateToolResultChars(args.content)
 
   if (typeof args.content === 'string') {
-    const compacted = compactLongTextForContext(args.content, {
+    const redactedText = redactTextForModelContext(args.content)
+    const sensitivePayloadRedacted = redactedText !== args.content
+    const compacted = compactLongTextForContext(redactedText, {
       toolName: args.toolName,
       maxChars,
       isError: args.isError
     })
+    const changed = compacted.compacted || sensitivePayloadRedacted
 
     return {
       content: compacted.text,
       info: {
-        compacted: compacted.compacted,
+        compacted: changed,
         originalChars,
         keptChars: compacted.keptChars,
-        ...(compacted.compacted
-          ? { reasons: getOrderedReasons({ toolResultTooLarge: true }) }
+        ...(changed
+          ? {
+              reasons: getOrderedReasons({
+                toolResultTooLarge: compacted.compacted,
+                sensitivePayloadRedacted
+              })
+            }
           : {})
       }
     }
   }
 
+  let sensitivePayloadRedacted = false
+  const redactedContent = args.content.map((block) => {
+    if (block.type !== 'text') return block
+
+    const redactedText = redactTextForModelContext(block.text)
+    if (redactedText === block.text) return block
+
+    sensitivePayloadRedacted = true
+    return { ...block, text: redactedText }
+  })
+
   if (originalChars <= maxChars) {
+    const keptChars = sensitivePayloadRedacted ? estimateToolResultChars(redactedContent) : originalChars
     return {
-      content: args.content,
+      content: redactedContent,
       info: {
-        compacted: false,
+        compacted: sensitivePayloadRedacted,
         originalChars,
-        keptChars: originalChars
+        keptChars,
+        ...(sensitivePayloadRedacted
+          ? { reasons: getOrderedReasons({ sensitivePayloadRedacted }) }
+          : {})
       }
     }
   }
 
-  const imageCount = args.content.filter((block) => block.type === 'image').length
-  const textBlocks = args.content.filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+  const imageCount = redactedContent.filter((block) => block.type === 'image').length
+  const textBlocks = redactedContent.filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
   const imagePlaceholderChars = imageCount * IMAGE_OMITTED_TEXT.length
   const remainingTextBudget = Math.max(0, maxChars - imagePlaceholderChars)
 
-  let changed = imageCount > 0
+  let changed = sensitivePayloadRedacted || imageCount > 0
   let keptChars = 0
   let toolResultTooLarge = false
   const imagePayloadOmitted = imageCount > 0
@@ -269,7 +301,7 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
     oversizedCharsRemaining = Math.max(0, oversizedCharsRemaining - block.text.length)
   }
 
-  const blocks: Array<Extract<ContentBlock, { type: 'text' | 'image' }>> = args.content.map((block) => {
+  const blocks: Array<Extract<ContentBlock, { type: 'text' | 'image' }>> = redactedContent.map((block) => {
     if (block.type === 'image') {
       keptChars += IMAGE_OMITTED_TEXT.length
       return { type: 'text', text: IMAGE_OMITTED_TEXT }
@@ -308,7 +340,8 @@ export function compactToolResultForContext(args: CompactToolResultArgs): Compac
         ? {
             reasons: getOrderedReasons({
               toolResultTooLarge,
-              imagePayloadOmitted
+              imagePayloadOmitted,
+              sensitivePayloadRedacted
             })
           }
         : {})
