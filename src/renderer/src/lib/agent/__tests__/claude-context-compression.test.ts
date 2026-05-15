@@ -45,7 +45,7 @@ import {
   sanitizeMessagesForClaudeCompact
 } from '../claude-compact-sanitizer'
 import { validateToolUseResultProtocol } from '../context-budget'
-import { compressMessages } from '../context-compression'
+import { compressMessages, getCompressionStrategy, shouldCompress } from '../context-compression'
 
 let nextMessageId = 0
 
@@ -392,5 +392,113 @@ describe('legacy compact summary extraction safety', () => {
     } finally {
       setTimeoutSpy.mockRestore()
     }
+  })
+})
+
+describe('claude-code-compact-v1 engine', () => {
+  it('compresses older API rounds into boundary, summary, post-compact state, and preserved tail', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<analysis>scratch</analysis><summary>## Current Work\nContinue the TDD implementation.</summary>'
+    )
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'api_key=sk-tool-secret')]),
+      message('assistant', 'first result'),
+      message('user', 'second task'),
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b')]),
+      message('assistant', 'second result')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      },
+      '## Current state\n- Active goal: keep TDD green'
+    )
+
+    expect(result.result.compressed).toBe(true)
+    expect(result.messages[0]?.meta?.compactBoundary?.strategy).toBe('claude-code-compact-v1')
+    expect(result.messages[1]?.meta?.compactSummary).toBeTruthy()
+    expect(result.messages[2]?.meta?.postCompactState).toBe(true)
+    expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
+    expect(String(result.messages[1]?.content)).toContain('Continue the TDD implementation')
+    expect(JSON.stringify(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0])).not.toContain('sk-tool-secret')
+  })
+
+  it('rejects unsafe summary output and leaves the original messages unchanged', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----</summary>'
+    )
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', 'first result'),
+      message('user', 'second task'),
+      message('assistant', 'second result'),
+      message('user', 'third task'),
+      message('assistant', 'third result')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    expect(result.result.compressed).toBe(false)
+    expect(result.result.reason).toBe('unsafe_summary_output')
+    expect(result.messages).toBe(messages)
+  })
+
+  it('uses Claude threshold logic for shouldCompress', () => {
+    expect(
+      shouldCompress(166_999, {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.3,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      })
+    ).toBe(false)
+    expect(
+      shouldCompress(167_000, {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.3,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      })
+    ).toBe(true)
+  })
+
+  it('returns the Claude strategy from the registry', () => {
+    expect(getCompressionStrategy({ strategyId: 'claude-code-compact-v1' }).id).toBe(
+      'claude-code-compact-v1'
+    )
   })
 })
