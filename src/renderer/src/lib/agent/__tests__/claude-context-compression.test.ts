@@ -530,6 +530,41 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.messages).toBe(messages)
   })
 
+  it('returns compressed renderer messages when shared recent payload fallback dehydrates tool results', async () => {
+    const messages = [
+      message('assistant', [toolUse('recent-large', 'Bash')]),
+      message('user', [toolResult('recent-large', 'warning line\n'.repeat(12_000))]),
+      message('assistant', 'continue'),
+      message('assistant', 'still current task'),
+      message('assistant', 'prepare next step'),
+      message('assistant', 'awaiting next step')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'manual',
+      190_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    expect(result.result.compressed).toBe(true)
+    expect(result.result.messagesSummarized).toBe(0)
+    expect(result.result.payloadsCompacted).toBe(1)
+    expect(JSON.stringify(result.messages)).toContain('[Tool result compacted for context budget]')
+    expect(runSidecarTextRequest).not.toHaveBeenCalled()
+  })
+
   it('uses Claude threshold logic for shouldCompress', () => {
     expect(
       shouldCompress(166_999, {

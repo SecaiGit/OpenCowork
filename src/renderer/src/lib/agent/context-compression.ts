@@ -80,7 +80,11 @@ export type CompressionSkipReason =
   | 'insufficient_messages'
   | 'insufficient_compressible_messages'
   | 'recent_segment_too_large'
+  | 'recent_payload_too_large'
   | 'single_tool_result_too_large'
+  | 'single_input_too_large'
+  | 'hard_context_limit_exceeded'
+  | 'reserved_output_budget_exceeded'
   | 'summarizer_prompt_too_long'
   | 'summarizer_failed'
   | 'circuit_breaker_open'
@@ -94,6 +98,7 @@ export interface CompressionResult {
   originalCount: number
   newCount: number
   messagesSummarized?: number
+  payloadsCompacted?: number
   reason?: CompressionSkipReason
 }
 
