@@ -1,10 +1,11 @@
 import {
-  getClaudeCompactBudget,
+  classifyClaudeContextGate,
   runClaudeCompact,
   type ClaudeCompactConfig,
   type ClaudeCompactContentBlock,
   type ClaudeCompactMessage,
-  type ClaudeCompactTrigger
+  type ClaudeCompactTrigger,
+  type ClaudeContextGateReason
 } from '../../shared/claude-context-compression'
 import { compactShellOutputPayload, compactShellText } from '../../shared/shell-output-compactor'
 
@@ -19,10 +20,19 @@ export type MainRuntimeCompressionEvent =
       newCount: number
       messages: MainRuntimeMessage[]
     }
+  | {
+      type: 'context_compression_blocked'
+      reason: ClaudeContextGateReason
+      inputTokens: number
+      contextLength: number
+      reservedOutputTokens: number
+    }
 
 export interface MainRuntimeCompressionPreflightResult {
   messages: MainRuntimeMessage[]
   compressed: boolean
+  blocked?: boolean
+  reason?: ClaudeContextGateReason
   events: MainRuntimeCompressionEvent[]
 }
 
@@ -40,11 +50,6 @@ export function findRecentMainRuntimeContextUsage(messages: MainRuntimeMessage[]
 
 function estimateMainRuntimeMessagesTokens(messages: MainRuntimeMessage[]): number {
   return Math.ceil(JSON.stringify(messages).length / 4)
-}
-
-function shouldMainRuntimeCompact(tokens: number, config: MainRuntimeCompressionConfig): boolean {
-  if (!config.enabled || config.contextLength <= 0) return false
-  return tokens >= getClaudeCompactBudget(config).autoCompactThreshold
 }
 
 function compactTextContent(
@@ -115,8 +120,9 @@ export async function maybeCompactMainRuntimeContext(args: {
   const recentUsage = findRecentMainRuntimeContextUsage(candidateMessages)
   const estimatedTokens = estimateMainRuntimeMessagesTokens(candidateMessages)
   const conservativeTokens = Math.max(recentUsage, estimatedTokens)
+  const initialGate = classifyClaudeContextGate({ inputTokens: conservativeTokens, config: args.config })
 
-  if (!shouldMainRuntimeCompact(conservativeTokens, args.config)) {
+  if (initialGate.kind === 'ok' || initialGate.kind === 'pre_compress') {
     return { messages: candidateMessages, compressed: false, events: [] }
   }
 
@@ -132,6 +138,31 @@ export async function maybeCompactMainRuntimeContext(args: {
     now: args.now,
     createId: args.createId
   })
+
+  const finalMessages = compacted.result.compressed ? compacted.messages : candidateMessages
+  const finalTokens = Math.max(
+    findRecentMainRuntimeContextUsage(finalMessages),
+    estimateMainRuntimeMessagesTokens(finalMessages)
+  )
+  const finalGate = classifyClaudeContextGate({ inputTokens: finalTokens, config: args.config })
+
+  if (finalGate.blocking) {
+    return {
+      messages: finalMessages,
+      compressed: compacted.result.compressed,
+      blocked: true,
+      reason: finalGate.reason,
+      events: [
+        {
+          type: 'context_compression_blocked',
+          reason: finalGate.reason,
+          inputTokens: finalGate.inputTokens,
+          contextLength: finalGate.contextLength,
+          reservedOutputTokens: finalGate.reservedOutputTokens
+        }
+      ]
+    }
+  }
 
   if (!compacted.result.compressed) {
     return { messages: candidateMessages, compressed: false, events: [] }

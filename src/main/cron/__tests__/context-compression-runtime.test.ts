@@ -111,4 +111,50 @@ describe('main runtime context compression preflight', () => {
     expect(JSON.stringify(result.messages).length).toBeLessThan(JSON.stringify(messages).length)
     expect(result.compactedCount).toBe(1)
   })
+
+  it('blocks when the preflight context remains above the hard context limit after compaction', async () => {
+    const hugeConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+    const messages = [message('user', 'x'.repeat(20_000))]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: hugeConfig,
+      trigger: 'auto',
+      summarize: vi.fn()
+    })
+
+    expect(result.blocked).toBe(true)
+    expect(result.reason).toBe('hard_context_limit_exceeded')
+    expect(result.compressed).toBe(false)
+    expect(result.events).toEqual([
+      expect.objectContaining({ type: 'context_compression_blocked', reason: 'hard_context_limit_exceeded' })
+    ])
+  })
+
+  it('blocks when reserved output budget would overflow the next request', async () => {
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 300
+    }
+    const messages = [message('user', 'x'.repeat(3_000))]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: tightConfig,
+      trigger: 'auto',
+      summarize: vi.fn()
+    })
+
+    expect(result.blocked).toBe(true)
+    expect(result.reason).toBe('reserved_output_budget_exceeded')
+  })
 })
