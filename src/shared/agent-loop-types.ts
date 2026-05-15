@@ -106,6 +106,13 @@ export type InteractiveAgentEvent =
       reason: string
     }
   | { type: 'request_debug'; debugInfo: RequestDebugInfoWire }
+  | { type: 'context_compression_start' }
+  | {
+      type: 'context_compressed'
+      originalCount: number
+      newCount: number
+      messages: AgentLoopMessage[]
+    }
   | {
       type: 'iteration_end'
       toolResults: { toolUseId: string; content: AgentToolResultContent; isError?: boolean }[]
@@ -133,6 +140,7 @@ export interface AgentLoopMessage {
   usage?: AgentTokenUsage
   providerResponseId?: string
   source?: string | null
+  meta?: Record<string, unknown>
 }
 
 export type AgentLoopContentBlock =

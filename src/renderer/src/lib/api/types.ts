@@ -180,10 +180,22 @@ export interface CompactBoundarySegment {
   tailId: string
 }
 
+export interface CompactBoundaryRange {
+  start: number
+  end: number
+}
+
 export interface CompactBoundaryMeta {
   trigger: 'auto' | 'manual'
   preTokens: number
+  postTokens?: number
   messagesSummarized: number
+  strategy?: string
+  compactedAt?: number
+  retryCount?: number
+  compressedRange?: CompactBoundaryRange
+  preservedRange?: CompactBoundaryRange
+  safetyFlags?: string[]
   preservedSegment?: CompactBoundarySegment
 }
 

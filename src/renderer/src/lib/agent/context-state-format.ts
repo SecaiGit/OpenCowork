@@ -24,6 +24,9 @@ export interface FormatPostCompactStateContextArgs {
   currentPlan?: PostCompactPlanSnapshot | null
   activeTasks?: PostCompactTaskSnapshot[]
   recentlyReadFiles?: PostCompactReadFileSnapshot[]
+  safetyConstraints?: string[]
+  verifiedCommands?: string[]
+  failedCommands?: string[]
 }
 
 function formatTimestamp(timestamp: number): string {
@@ -66,6 +69,26 @@ export function formatPostCompactStateContext(args: FormatPostCompactStateContex
       lines.push(`- ${file.filePath} (${formatTimestamp(file.timestamp)})`)
     }
     lines.push('- Re-read specific files if exact content is needed after compaction.')
+  }
+
+  if (args.safetyConstraints && args.safetyConstraints.length > 0) {
+    lines.push('', '### Safety and continuity constraints')
+    for (const constraint of args.safetyConstraints) {
+      lines.push(`- ${constraint}`)
+    }
+  }
+
+  if (
+    (args.verifiedCommands && args.verifiedCommands.length > 0) ||
+    (args.failedCommands && args.failedCommands.length > 0)
+  ) {
+    lines.push('', '### Verification state')
+    for (const command of args.verifiedCommands ?? []) {
+      lines.push(`- Passed: ${command}`)
+    }
+    for (const command of args.failedCommands ?? []) {
+      lines.push(`- Failed then addressed: ${command}`)
+    }
   }
 
   lines.push('', '### Continuity note')

@@ -18,6 +18,12 @@ import {
   type ContextCompressionStrategyId
 } from './context-compression-config'
 import {
+  CLAUDE_COMPACT_AUTO_BUFFER_TOKENS,
+  CLAUDE_COMPACT_RESERVED_OUTPUT_CAP
+} from './claude-compact-budget'
+import { createClaudeCodeCompactStrategy } from './claude-compact-engine'
+import { extractClaudeCompactSummary } from './claude-compact-prompt'
+import {
   groupMessagesByApiRound,
   redactTextForModelContext,
   validateToolUseResultProtocol
@@ -54,6 +60,22 @@ export interface CompressionDefaults {
   strategyId?: ContextCompressionStrategyId | null
 }
 
+type CompressionStrategySelection = CompressionConfig | Pick<CompressionConfig, 'strategyId'>
+
+function isCompleteCompressionConfig(
+  config?: CompressionStrategySelection | null
+): config is CompressionConfig {
+  return (
+    !!config &&
+    'enabled' in config &&
+    'contextLength' in config &&
+    'threshold' in config &&
+    typeof config.enabled === 'boolean' &&
+    typeof config.contextLength === 'number' &&
+    typeof config.threshold === 'number'
+  )
+}
+
 export type CompressionSkipReason =
   | 'insufficient_messages'
   | 'insufficient_compressible_messages'
@@ -62,6 +84,10 @@ export type CompressionSkipReason =
   | 'summarizer_prompt_too_long'
   | 'summarizer_failed'
   | 'circuit_breaker_open'
+  | 'unsafe_boundary'
+  | 'unsafe_summary_output'
+  | 'cancelled'
+  | 'unknown'
 
 export interface CompressionResult {
   compressed: boolean
@@ -85,13 +111,14 @@ export interface ContextCompressionStrategy {
     pinnedContext?: string,
     trigger?: CompactBoundaryMeta['trigger'],
     preTokens?: number,
+    config?: CompressionConfig | null,
     postCompactContext?: string
   ) => Promise<{ messages: UnifiedMessage[]; result: CompressionResult }>
 }
 
 export const DEFAULT_CONTEXT_COMPRESSION_LIMIT = DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH
-export const DEFAULT_CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS = 20_000
-export const CONTEXT_COMPRESSION_AUTO_BUFFER_TOKENS = 13_000
+export const DEFAULT_CONTEXT_COMPRESSION_RESERVED_OUTPUT_TOKENS = CLAUDE_COMPACT_RESERVED_OUTPUT_CAP
+export const CONTEXT_COMPRESSION_AUTO_BUFFER_TOKENS = CLAUDE_COMPACT_AUTO_BUFFER_TOKENS
 export const CONTEXT_COMPRESSION_PRE_BUFFER_TOKENS = 20_000
 export const CONTEXT_COMPRESSION_PRE_GAP_TOKENS = 8_000
 
@@ -227,15 +254,17 @@ const PARTIAL_SUMMARY_STRATEGY: ContextCompressionStrategy = {
   preCompressMessages: partialSummaryPreCompressMessages,
   compressMessages: partialSummaryCompressMessages
 }
+const CLAUDE_CODE_COMPACT_STRATEGY = createClaudeCodeCompactStrategy()
 
 const COMPRESSION_STRATEGIES: Record<ContextCompressionStrategyId, ContextCompressionStrategy> = {
-  'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY
+  'partial-summary-v1': PARTIAL_SUMMARY_STRATEGY,
+  'claude-code-compact-v1': CLAUDE_CODE_COMPACT_STRATEGY
 }
 
 export function getCompressionStrategy(
   config?: Pick<CompressionConfig, 'strategyId'> | null
 ): ContextCompressionStrategy {
-  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config?.strategyId)]
+  return COMPRESSION_STRATEGIES[resolveCompressionStrategyId(config?.strategyId)] ?? PARTIAL_SUMMARY_STRATEGY
 }
 
 export function shouldCompress(inputTokens: number, config: CompressionConfig): boolean {
@@ -542,6 +571,7 @@ async function partialSummaryCompressMessages(
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0,
+  _config?: CompressionConfig | null,
   postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
   if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
@@ -697,9 +727,11 @@ export async function compressMessages(
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0,
-  config?: Pick<CompressionConfig, 'strategyId'> | null,
+  config?: CompressionStrategySelection | null,
   postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
+  const strategyConfig = isCompleteCompressionConfig(config) ? config : null
+
   return getCompressionStrategy(config).compressMessages(
     messages,
     providerConfig,
@@ -709,6 +741,7 @@ export async function compressMessages(
     pinnedContext,
     trigger,
     preTokens,
+    strategyConfig,
     postCompactContext
   )
 }
@@ -781,13 +814,7 @@ function truncateOldestMessages(messages: UnifiedMessage[], attempt: number): Un
 }
 
 function formatCompactSummary(rawSummary: string): string {
-  let result = rawSummary
-  result = result.replace(/<analysis>[\s\S]*?<\/analysis>/gi, '')
-  const summaryMatch = result.match(/<summary>([\s\S]*?)<\/summary>/i)
-  if (summaryMatch) {
-    result = summaryMatch[1] ?? ''
-  }
-  return redactTextForModelContext(result.replace(/\n\n+/g, '\n\n').trim())
+  return redactTextForModelContext(extractClaudeCompactSummary(rawSummary))
 }
 
 function serializeCompressionInput(

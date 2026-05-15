@@ -252,6 +252,22 @@ describe('compactToolResultForContext', () => {
     )
     expect(serializeToolResultContent(result.content)).toContain('image omitted')
   })
+
+  it('redacts sensitive tool result text even when the payload is below the size limit', () => {
+    const result = compactToolResultForContext({
+      toolName: 'Read',
+      maxChars: 2_000,
+      content: 'Authorization: Bearer replay-secret-token\napi_key=sk-replay-secret'
+    })
+
+    const serialized = serializeToolResultContent(result.content)
+
+    expect(result.info.compacted).toBe(true)
+    expect(result.info.reasons).toEqual(['sensitive_payload_redacted'])
+    expect(serialized).toContain('[REDACTED')
+    expect(serialized).not.toContain('replay-secret-token')
+    expect(serialized).not.toContain('sk-replay-secret')
+  })
 })
 
 describe('compressMessages', () => {

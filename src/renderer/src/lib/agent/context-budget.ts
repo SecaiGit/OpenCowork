@@ -10,6 +10,13 @@ import {
 const APPROX_CHARS_PER_TOKEN = 4
 const IMAGE_APPROX_TOKENS = 2_000
 const FALLBACK_CONTEXT_LENGTH = 200_000
+const REDACTED_VALUE = '[REDACTED]'
+const REDACTED_TOKEN = '[REDACTED TOKEN]'
+const REDACTED_AUTHORIZATION = '[REDACTED AUTHORIZATION]'
+const REDACTED_COOKIE = '[REDACTED COOKIE]'
+const REDACTED_PRIVATE_KEY = '[REDACTED PRIVATE KEY]'
+const SENSITIVE_KEY_PATTERN =
+  '(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|pwd|secret|client[_-]?secret|session(?:id)?|session[_-]?token)'
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled content block variant: ${JSON.stringify(value)}`)
@@ -36,26 +43,21 @@ export type ToolUseResultProtocolIssueKind =
   | 'unknown_tool_result'
   | 'duplicate_tool_result'
   | 'tool_result_invalid_role'
+  | 'orphaned_tool_result'
+  | 'interleaved_user_text_before_tool_result'
+  | 'assistant_tool_use_after_user_text'
   | 'unanswered_tool_use'
 
 export interface ToolUseResultProtocolIssue {
   kind: ToolUseResultProtocolIssueKind
-  toolUseId: string
   messageIndex: number
+  toolUseId?: string
 }
 
 export interface ToolUseResultProtocolValidation {
   valid: boolean
   issues: ToolUseResultProtocolIssue[]
 }
-
-const REDACTED_VALUE = '[REDACTED]'
-const REDACTED_TOKEN = '[REDACTED TOKEN]'
-const REDACTED_AUTHORIZATION = '[REDACTED AUTHORIZATION]'
-const REDACTED_COOKIE = '[REDACTED COOKIE]'
-const REDACTED_PRIVATE_KEY = '[REDACTED PRIVATE KEY]'
-const SENSITIVE_KEY_PATTERN =
-  '(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|pwd|secret|client[_-]?secret|session(?:id)?|session[_-]?token)'
 
 export function redactTextForModelContext(text: string): string {
   if (!text) return text
@@ -92,60 +94,6 @@ export function redactTextForModelContext(text: string): string {
   )
 
   return result
-}
-
-export function validateToolUseResultProtocol(
-  messages: UnifiedMessage[]
-): ToolUseResultProtocolValidation {
-  const issues: ToolUseResultProtocolIssue[] = []
-  const seenToolUseIds = new Set<string>()
-  const pendingToolUseIds = new Set<string>()
-  const answeredToolUseIds = new Set<string>()
-
-  messages.forEach((message, messageIndex) => {
-    for (const id of collectToolUseIds(message)) {
-      if (message.role !== 'assistant') {
-        issues.push({ kind: 'tool_use_invalid_role', toolUseId: id, messageIndex })
-        continue
-      }
-
-      if (seenToolUseIds.has(id)) {
-        issues.push({ kind: 'duplicate_tool_use', toolUseId: id, messageIndex })
-        continue
-      }
-
-      seenToolUseIds.add(id)
-      pendingToolUseIds.add(id)
-    }
-
-    const seenResultIdsInMessage = new Set<string>()
-    for (const id of collectToolResultIds(message)) {
-      if (message.role !== 'user' && message.role !== 'tool') {
-        issues.push({ kind: 'tool_result_invalid_role', toolUseId: id, messageIndex })
-        continue
-      }
-
-      if (seenResultIdsInMessage.has(id) || answeredToolUseIds.has(id)) {
-        issues.push({ kind: 'duplicate_tool_result', toolUseId: id, messageIndex })
-        continue
-      }
-
-      seenResultIdsInMessage.add(id)
-      if (!pendingToolUseIds.has(id)) {
-        issues.push({ kind: 'unknown_tool_result', toolUseId: id, messageIndex })
-        continue
-      }
-
-      pendingToolUseIds.delete(id)
-      answeredToolUseIds.add(id)
-    }
-  })
-
-  for (const id of pendingToolUseIds) {
-    issues.push({ kind: 'unanswered_tool_use', toolUseId: id, messageIndex: messages.length })
-  }
-
-  return { valid: issues.length === 0, issues }
 }
 
 export function estimateTextTokens(value: string): number {
@@ -276,6 +224,115 @@ function collectToolResultIds(message: UnifiedMessage): string[] {
       (block): block is Extract<ContentBlock, { type: 'tool_result' }> => block.type === 'tool_result'
     )
     .map((block) => block.toolUseId)
+}
+
+export function validateToolUseResultProtocol(
+  messages: UnifiedMessage[]
+): ToolUseResultProtocolValidation {
+  const issues: ToolUseResultProtocolIssue[] = []
+  const seenToolUseIds = new Set<string>()
+  const pendingToolUseIds = new Set<string>()
+  const answeredToolUseIds = new Set<string>()
+
+  messages.forEach((message, messageIndex) => {
+    const toolUseIds = collectToolUseIds(message)
+    const toolResultIds = collectToolResultIds(message)
+
+    if (toolUseIds.length > 0 && message.role !== 'assistant') {
+      for (const toolUseId of toolUseIds) {
+        issues.push({ kind: 'tool_use_invalid_role', messageIndex, toolUseId })
+      }
+    }
+
+    if (toolResultIds.length > 0 && message.role !== 'user') {
+      for (const toolUseId of toolResultIds) {
+        issues.push({ kind: 'tool_result_invalid_role', messageIndex, toolUseId })
+      }
+    }
+
+    if (message.role === 'assistant') {
+      if (pendingToolUseIds.size > 0 && toolUseIds.length > 0) {
+        for (const toolUseId of toolUseIds) {
+          issues.push({
+            kind: 'assistant_tool_use_after_user_text',
+            messageIndex,
+            toolUseId
+          })
+        }
+      }
+
+      for (const toolUseId of toolUseIds) {
+        if (seenToolUseIds.has(toolUseId)) {
+          issues.push({ kind: 'duplicate_tool_use', messageIndex, toolUseId })
+          continue
+        }
+
+        seenToolUseIds.add(toolUseId)
+        pendingToolUseIds.add(toolUseId)
+      }
+
+      return
+    }
+
+    if (message.role !== 'user') return
+
+    if (typeof message.content === 'string') {
+      if (pendingToolUseIds.size > 0 && message.content.trim().length > 0) {
+        issues.push({
+          kind: 'interleaved_user_text_before_tool_result',
+          messageIndex
+        })
+      }
+      return
+    }
+
+    let sawNonToolResultContent = false
+    const seenResultIdsInMessage = new Set<string>()
+
+    for (const block of message.content) {
+      if (block.type !== 'tool_result') {
+        sawNonToolResultContent = true
+        continue
+      }
+
+      const toolUseId = block.toolUseId
+
+      if (seenResultIdsInMessage.has(toolUseId) || answeredToolUseIds.has(toolUseId)) {
+        issues.push({ kind: 'duplicate_tool_result', messageIndex, toolUseId })
+        continue
+      }
+
+      seenResultIdsInMessage.add(toolUseId)
+
+      if (!pendingToolUseIds.has(toolUseId)) {
+        issues.push({ kind: 'unknown_tool_result', messageIndex, toolUseId })
+        continue
+      }
+
+      pendingToolUseIds.delete(toolUseId)
+      answeredToolUseIds.add(toolUseId)
+    }
+
+    if (pendingToolUseIds.size > 0 && sawNonToolResultContent) {
+      issues.push({
+        kind: 'interleaved_user_text_before_tool_result',
+        messageIndex
+      })
+    }
+  })
+
+  for (const toolUseId of pendingToolUseIds) {
+    issues.push({
+      kind: 'unanswered_tool_use',
+      messageIndex: messages.length - 1,
+      toolUseId
+    })
+  }
+
+  return {
+    valid: issues.length === 0,
+    issues
+  }
 }
 
 export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGroup[] {

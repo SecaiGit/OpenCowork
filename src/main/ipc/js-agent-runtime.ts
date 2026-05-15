@@ -6,6 +6,7 @@ import type {
   ToolResultContent
 } from '../cron/cron-agent-background'
 import { runInteractiveAgentLoop } from '../cron/cron-agent-background'
+import type { MainRuntimeCompressionConfig } from '../cron/context-compression-runtime'
 import type { AgentStreamEnvelope } from '../../shared/agent-stream-protocol'
 import { AdaptiveEventBatcher } from './adaptive-event-batcher'
 
@@ -28,6 +29,7 @@ interface JsAgentRunRequest {
   pluginSenderName?: string
   sshConnectionId?: string
   captureFinalMessages?: boolean
+  compression?: MainRuntimeCompressionConfig | null
 }
 
 type RuntimeMessage = Parameters<typeof runInteractiveAgentLoop>[0][number]
@@ -247,6 +249,13 @@ export class JsAgentRuntimeManager {
       forceApproval: params.forceApproval === true,
       messageQueue,
       captureFinalMessages: params.captureFinalMessages === true,
+      ...(params.compression?.enabled
+        ? {
+            contextCompression: {
+              config: params.compression
+            }
+          }
+        : {}),
       onApprovalNeeded: async (toolCall) => {
         return await this.requestUserApproval(runId, params.sessionId, toolCall)
       }

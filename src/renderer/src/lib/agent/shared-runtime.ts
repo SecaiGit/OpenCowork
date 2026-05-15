@@ -195,7 +195,7 @@ export async function runSharedAgentRuntime(
             maxIterations: loopConfig.maxIterations,
             forceApproval: loopConfig.forceApproval === true,
             maxParallelTools: loopConfig.maxParallelTools,
-            compression: null,
+            compression: loopConfig.contextCompression?.config ?? null,
             pluginId: toolContext.pluginId,
             pluginChatId: toolContext.pluginChatId,
             pluginChatType: toolContext.pluginChatType,

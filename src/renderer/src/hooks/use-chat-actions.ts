@@ -98,6 +98,7 @@ import {
 } from '@renderer/lib/agent/context-compression'
 import { shouldUseRendererLoopForCompression } from '@renderer/lib/agent/context-compression-routing'
 import { buildPostCompactStateContext } from '@renderer/lib/agent/context-state-attachments'
+import { parseManualCompactCommand } from '@renderer/lib/agent/manual-compact-command'
 import { runAgentLoop } from '@renderer/lib/agent/agent-loop'
 import {
   liveToolInputSignature,
@@ -2536,6 +2537,14 @@ function getManualCompressionSkipDescription(reason?: CompressionResult['reason'
       return i18n.t('contextCompression.manualSkippedCircuitBreaker', { ns: 'agent' })
     case 'summarizer_prompt_too_long':
       return i18n.t('contextCompression.manualSkippedPromptTooLong', { ns: 'agent' })
+    case 'unsafe_boundary':
+      return '当前消息包含无法安全切分的工具调用链，已保留原上下文'
+    case 'unsafe_summary_output':
+      return '摘要输出包含高风险敏感信息，已拒绝写入上下文'
+    case 'cancelled':
+      return '压缩请求已取消，原上下文未改变'
+    case 'unknown':
+      return '压缩未完成，原上下文未改变'
     case 'summarizer_failed':
     default:
       return i18n.t('contextCompression.manualSkippedSummarizerFailed', { ns: 'agent' })
@@ -2580,6 +2589,155 @@ export function useChatActions(): {
       cancelled = true
     }
   }, [activeSessionId])
+
+  const performManualCompressContext = useCallback(
+    async (sessionId: string, focusPrompt?: string): Promise<ManualCompressionResult> => {
+      const chatStore = useChatStore.getState()
+      const agentStore = useAgentStore.getState()
+      await chatStore.loadSessionMessages(sessionId)
+
+      const sessionStatus = agentStore.runningSessions[sessionId]
+      if (sessionStatus === 'running' || sessionStatus === 'retrying') {
+        toast.error('无法压缩', { description: 'Agent 正在运行中，请等待完成后再手动压缩' })
+        return 'blocked'
+      }
+
+      const messages = chatStore.getSessionMessages(sessionId)
+      const MIN_MESSAGES = 8
+      if (messages.length < MIN_MESSAGES) {
+        toast.error('无法压缩', {
+          description: `至少需要 ${MIN_MESSAGES} 条消息才能进行压缩（当前 ${messages.length} 条）`
+        })
+        return 'blocked'
+      }
+
+      const hasRecentSummary = messages
+        .slice(0, 3)
+        .some((message) => isCompactSummaryLikeMessage(message))
+      if (hasRecentSummary && messages.length < MIN_MESSAGES + 4) {
+        toast.error('无法压缩', { description: '上次压缩后消息过少，请继续对话后再尝试' })
+        return 'blocked'
+      }
+
+      const settings = useSettingsStore.getState()
+      const providerStore = useProviderStore.getState()
+      const activeProvider = providerStore.getActiveProvider()
+      if (activeProvider) {
+        const ready = await ensureProviderAuthReady(activeProvider.id)
+        if (!ready) {
+          toast.error('认证缺失', { description: '请先在设置中完成服务商登录' })
+          return 'blocked'
+        }
+      }
+
+      const providerConfig = providerStore.getActiveProviderConfig()
+      const effectiveMaxTokens = providerStore.getEffectiveMaxTokens(settings.maxTokens)
+      const activeModelConfig = providerStore.getActiveModelConfig()
+      const activeModelThinkingConfig = activeModelConfig?.thinkingConfig
+      const thinkingEnabled = settings.thinkingEnabled && !!activeModelThinkingConfig
+      const reasoningEffort = resolveReasoningEffortForModel({
+        reasoningEffort: settings.reasoningEffort,
+        reasoningEffortByModel: settings.reasoningEffortByModel,
+        providerId: providerConfig?.providerId,
+        modelId: activeModelConfig?.id ?? providerConfig?.model,
+        thinkingConfig: activeModelThinkingConfig
+      })
+
+      const config: ProviderConfig | null = providerConfig
+        ? {
+            ...providerConfig,
+            maxTokens: effectiveMaxTokens,
+            temperature: settings.temperature,
+            systemPrompt: settings.systemPrompt || undefined,
+            thinkingEnabled,
+            thinkingConfig: activeModelThinkingConfig,
+            reasoningEffort
+          }
+        : null
+
+      if (!config) {
+        toast.error('无法压缩', { description: '未配置 AI 服务商' })
+        return 'blocked'
+      }
+
+      const compressSession = chatStore.sessions.find((s) => s.id === sessionId)
+      if (compressSession?.providerId && compressSession?.modelId) {
+        const ready = await ensureProviderAuthReady(compressSession.providerId)
+        if (!ready) {
+          toast.error('认证缺失', { description: '请先在设置中完成会话服务商登录' })
+          return 'blocked'
+        }
+        const sessionProviderConfig = providerStore.getProviderConfigById(
+          compressSession.providerId,
+          compressSession.modelId
+        )
+        if (sessionProviderConfig?.apiKey) {
+          config.type = sessionProviderConfig.type
+          config.apiKey = sessionProviderConfig.apiKey
+          config.baseUrl = sessionProviderConfig.baseUrl
+          config.model = sessionProviderConfig.model
+        }
+      }
+
+      try {
+        const compressionDefaults = {
+          defaultContextLength: settings.contextCompressionDefaultContextLength,
+          defaultThreshold: settings.contextCompressionDefaultThreshold,
+          strategyId: settings.contextCompressionStrategy
+        }
+        const manualCompressionConfig: CompressionConfig = {
+          enabled: true,
+          contextLength: resolveCompressionContextLength(activeModelConfig, compressionDefaults),
+          threshold: resolveCompressionThreshold(activeModelConfig, compressionDefaults),
+          strategyId: settings.contextCompressionStrategy,
+          preCompressThreshold: 0.65,
+          reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelConfig)
+        }
+        const postCompactContext = buildPostCompactStateContext({
+          sessionId,
+          workingFolder: resolveSessionWorkingFolder(compressSession)
+        })
+        const { messages: compressed, result } = await compressMessages(
+          messages,
+          config,
+          undefined,
+          undefined,
+          focusPrompt || undefined,
+          undefined,
+          'manual',
+          0,
+          manualCompressionConfig,
+          postCompactContext
+        )
+        if (!result.compressed) {
+          toast.warning('无需压缩', {
+            description: getManualCompressionSkipDescription(result.reason)
+          })
+          return 'skipped'
+        }
+        chatStore.replaceSessionMessages(sessionId, compressed)
+        return 'compressed'
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        console.error('[Manual Compress Error]', err)
+        toast.error('压缩失败', { description: errMsg })
+        return 'failed'
+      }
+    },
+    []
+  )
+
+  const manualCompressContext = useCallback(
+    async (focusPrompt?: string): Promise<ManualCompressionResult> => {
+      const sessionId = useChatStore.getState().activeSessionId
+      if (!sessionId) {
+        toast.error('无法压缩', { description: '没有活跃的会话' })
+        return 'blocked'
+      }
+      return performManualCompressContext(sessionId, focusPrompt)
+    },
+    [performManualCompressContext]
+  )
 
   const sendMessage = useCallback(
     async (
@@ -2646,6 +2804,14 @@ export function useChatActions(): {
               (message) => message.id === reuseAssistantMessageId && message.role === 'assistant'
             )
           : undefined
+
+      if (!commandOverride && source !== 'continue' && source !== 'queued') {
+        const manualCompactCommand = parseManualCompactCommand(text)
+        if (manualCompactCommand) {
+          await performManualCompressContext(sessionId, manualCompactCommand.focusPrompt)
+          return
+        }
+      }
 
       const resolvedCommand = await resolveUserCommand(text, commandOverride)
       if ('error' in resolvedCommand) {
@@ -4739,7 +4905,7 @@ export function useChatActions(): {
         throw error
       }
     },
-    []
+    [performManualCompressContext]
   )
 
   useEffect(() => {
@@ -5105,151 +5271,6 @@ export function useChatActions(): {
     },
     [stopStreaming]
   )
-
-  const manualCompressContext = useCallback(async (focusPrompt?: string) => {
-    const chatStore = useChatStore.getState()
-    const agentStore = useAgentStore.getState()
-    const sessionId = chatStore.activeSessionId
-    if (!sessionId) {
-      toast.error('无法压缩', { description: '没有活跃的会话' })
-      return 'blocked'
-    }
-    await chatStore.loadSessionMessages(sessionId)
-
-    // Limitation 1: agent must not be running
-    const sessionStatus = agentStore.runningSessions[sessionId]
-    if (sessionStatus === 'running' || sessionStatus === 'retrying') {
-      toast.error('无法压缩', { description: 'Agent 正在运行中，请等待完成后再手动压缩' })
-      return 'blocked'
-    }
-
-    const messages = chatStore.getSessionMessages(sessionId)
-    const MIN_MESSAGES = 8
-
-    // Limitation 2: minimum message count
-    if (messages.length < MIN_MESSAGES) {
-      toast.error('无法压缩', {
-        description: `至少需要 ${MIN_MESSAGES} 条消息才能进行压缩（当前 ${messages.length} 条）`
-      })
-      return 'blocked'
-    }
-
-    // Limitation 3: detect recent compressed summaries in both new and legacy top-of-session layouts.
-    const hasRecentSummary = messages
-      .slice(0, 3)
-      .some((message) => isCompactSummaryLikeMessage(message))
-    if (hasRecentSummary && messages.length < MIN_MESSAGES + 4) {
-      toast.error('无法压缩', { description: '上次压缩后消息过少，请继续对话后再尝试' })
-      return 'blocked'
-    }
-
-    // Build provider config (same as sendMessage)
-    const settings = useSettingsStore.getState()
-    const providerStore = useProviderStore.getState()
-    const activeProvider = providerStore.getActiveProvider()
-    if (activeProvider) {
-      const ready = await ensureProviderAuthReady(activeProvider.id)
-      if (!ready) {
-        toast.error('认证缺失', { description: '请先在设置中完成服务商登录' })
-        return 'blocked'
-      }
-    }
-
-    const providerConfig = providerStore.getActiveProviderConfig()
-    const effectiveMaxTokens = providerStore.getEffectiveMaxTokens(settings.maxTokens)
-    const activeModelConfig = providerStore.getActiveModelConfig()
-    const activeModelThinkingConfig = activeModelConfig?.thinkingConfig
-    const thinkingEnabled = settings.thinkingEnabled && !!activeModelThinkingConfig
-    const reasoningEffort = resolveReasoningEffortForModel({
-      reasoningEffort: settings.reasoningEffort,
-      reasoningEffortByModel: settings.reasoningEffortByModel,
-      providerId: providerConfig?.providerId,
-      modelId: activeModelConfig?.id ?? providerConfig?.model,
-      thinkingConfig: activeModelThinkingConfig
-    })
-
-    const config: ProviderConfig | null = providerConfig
-      ? {
-          ...providerConfig,
-          maxTokens: effectiveMaxTokens,
-          temperature: settings.temperature,
-          systemPrompt: settings.systemPrompt || undefined,
-          thinkingEnabled,
-          thinkingConfig: activeModelThinkingConfig,
-          reasoningEffort
-        }
-      : null
-
-    if (!config) {
-      toast.error('无法压缩', { description: '未配置 AI 服务商' })
-      return 'blocked'
-    }
-
-    // Override with session-bound provider if available
-    const compressSession = chatStore.sessions.find((s) => s.id === sessionId)
-    if (compressSession?.providerId && compressSession?.modelId) {
-      const ready = await ensureProviderAuthReady(compressSession.providerId)
-      if (!ready) {
-        toast.error('认证缺失', { description: '请先在设置中完成会话服务商登录' })
-        return 'blocked'
-      }
-      const sessionProviderConfig = providerStore.getProviderConfigById(
-        compressSession.providerId,
-        compressSession.modelId
-      )
-      if (sessionProviderConfig?.apiKey) {
-        config.type = sessionProviderConfig.type
-        config.apiKey = sessionProviderConfig.apiKey
-        config.baseUrl = sessionProviderConfig.baseUrl
-        config.model = sessionProviderConfig.model
-      }
-    }
-
-    try {
-      const compressionDefaults = {
-        defaultContextLength: settings.contextCompressionDefaultContextLength,
-        defaultThreshold: settings.contextCompressionDefaultThreshold,
-        strategyId: settings.contextCompressionStrategy
-      }
-      const manualCompressionConfig: CompressionConfig = {
-        enabled: true,
-        contextLength: resolveCompressionContextLength(activeModelConfig, compressionDefaults),
-        threshold: resolveCompressionThreshold(activeModelConfig, compressionDefaults),
-        strategyId: settings.contextCompressionStrategy,
-        preCompressThreshold: 0.65,
-        reservedOutputBudget: resolveCompressionReservedOutputBudget(activeModelConfig)
-      }
-      const postCompactContext = buildPostCompactStateContext({
-        sessionId,
-        workingFolder: resolveSessionWorkingFolder(compressSession)
-      })
-      const { messages: compressed, result } = await compressMessages(
-        messages,
-        config,
-        undefined, // no abort signal for manual
-        undefined, // adaptive preserve count
-        focusPrompt || undefined,
-        undefined,
-        'manual',
-        0,
-        manualCompressionConfig,
-        postCompactContext
-      )
-      if (!result.compressed) {
-        toast.warning('无需压缩', {
-          description: getManualCompressionSkipDescription(result.reason)
-        })
-        return 'skipped'
-      }
-      chatStore.replaceSessionMessages(sessionId, compressed)
-      return 'compressed'
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      console.error('[Manual Compress Error]', err)
-      toast.error('压缩失败', { description: errMsg })
-      return 'failed'
-    }
-  }, [])
 
   return {
     sendMessage,
