@@ -46,6 +46,7 @@ import {
 } from '../claude-compact-sanitizer'
 import { validateToolUseResultProtocol } from '../context-budget'
 import { compressMessages, getCompressionStrategy, shouldCompress } from '../context-compression'
+import { parseManualCompactCommand } from '../manual-compact-command'
 
 let nextMessageId = 0
 
@@ -547,5 +548,21 @@ describe('claude-code-compact-v1 Prompt Too Long retry', () => {
     expect(secondPrompt).not.toContain('round one')
     expect(secondPrompt).toContain('round two')
     expect(result.messages[0]?.meta?.compactBoundary?.retryCount).toBe(1)
+  })
+})
+
+describe('parseManualCompactCommand', () => {
+  it('parses /compact without focus', () => {
+    expect(parseManualCompactCommand('/compact')).toEqual({ focusPrompt: undefined })
+  })
+
+  it('parses /compact with focus text', () => {
+    expect(parseManualCompactCommand('/compact 保留所有 TDD 决策')).toEqual({
+      focusPrompt: '保留所有 TDD 决策'
+    })
+  })
+
+  it('does not treat other slash commands as compact', () => {
+    expect(parseManualCompactCommand('/plan build feature')).toBeNull()
   })
 })

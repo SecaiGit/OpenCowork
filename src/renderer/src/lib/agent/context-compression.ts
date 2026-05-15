@@ -56,6 +56,22 @@ export interface CompressionDefaults {
   strategyId?: ContextCompressionStrategyId | null
 }
 
+type CompressionStrategySelection = CompressionConfig | Pick<CompressionConfig, 'strategyId'>
+
+function isCompleteCompressionConfig(
+  config?: CompressionStrategySelection | null
+): config is CompressionConfig {
+  return (
+    !!config &&
+    'enabled' in config &&
+    'contextLength' in config &&
+    'threshold' in config &&
+    typeof config.enabled === 'boolean' &&
+    typeof config.contextLength === 'number' &&
+    typeof config.threshold === 'number'
+  )
+}
+
 export type CompressionSkipReason =
   | 'insufficient_messages'
   | 'insufficient_compressible_messages'
@@ -693,9 +709,11 @@ export async function compressMessages(
   pinnedContext?: string,
   trigger: CompactBoundaryMeta['trigger'] = 'manual',
   preTokens = 0,
-  config?: CompressionConfig | null,
+  config?: CompressionStrategySelection | null,
   postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
+  const strategyConfig = isCompleteCompressionConfig(config) ? config : null
+
   return getCompressionStrategy(config).compressMessages(
     messages,
     providerConfig,
@@ -705,7 +723,7 @@ export async function compressMessages(
     pinnedContext,
     trigger,
     preTokens,
-    config,
+    strategyConfig,
     postCompactContext
   )
 }
