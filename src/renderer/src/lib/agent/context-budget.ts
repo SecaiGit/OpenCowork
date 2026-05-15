@@ -10,6 +10,38 @@ import {
 const APPROX_CHARS_PER_TOKEN = 4
 const IMAGE_APPROX_TOKENS = 2_000
 const FALLBACK_CONTEXT_LENGTH = 200_000
+const REDACTED_VALUE = '[REDACTED]'
+const SECRET_KEY_NAMES = [
+  'apiKey',
+  'api_key',
+  'api-key',
+  'x-api-key',
+  'token',
+  'access_token',
+  'refresh_token',
+  'id_token',
+  'session_token',
+  'auth_token',
+  'client_secret',
+  'secret',
+  'password',
+  'passwd'
+] as const
+const SECRET_KEY_PATTERN = SECRET_KEY_NAMES.map((key) =>
+  key.replace(/[\\^$.*+?()[\]{}|]/g, (char) => `\\${char}`)
+).join('|')
+const PRIVATE_KEY_BLOCK_PATTERN =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi
+const KEY_VALUE_SECRET_PATTERN = new RegExp(
+  `\\b(${SECRET_KEY_PATTERN})\\b\\s*([:=])\\s*(["']?)([^\\s,;,"'{}\\]]+)\\3`,
+  'gi'
+)
+const JSON_SECRET_PATTERN = new RegExp(
+  `(["'])(${SECRET_KEY_PATTERN}|authorization|cookie|set-cookie)\\1\\s*:\\s*(["'])([\\s\\S]*?)\\3`,
+  'gi'
+)
+const AUTHORIZATION_SECRET_PATTERN = /(authorization\s*:\s*)(bearer|basic)\s+([^\r\n]+)/gi
+const COOKIE_SECRET_PATTERN = /\b(set-cookie|cookie)\s*:\s*([^\r\n]+)/gi
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled content block variant: ${JSON.stringify(value)}`)
@@ -46,6 +78,28 @@ export interface ToolUseResultProtocolIssue {
 export interface ToolUseResultProtocolValidation {
   valid: boolean
   issues: ToolUseResultProtocolIssue[]
+}
+
+export function redactTextForModelContext(value: string): string {
+  if (!value) return value
+
+  return value
+    .replace(PRIVATE_KEY_BLOCK_PATTERN, REDACTED_VALUE)
+    .replace(
+      JSON_SECRET_PATTERN,
+      (_match, keyQuote: string, key: string, valueQuote: string) =>
+        `${keyQuote}${key}${keyQuote}:${valueQuote}${REDACTED_VALUE}${valueQuote}`
+    )
+    .replace(
+      KEY_VALUE_SECRET_PATTERN,
+      (_match, key: string, separator: string, quote: string) =>
+        `${key}${separator}${quote}${REDACTED_VALUE}${quote}`
+    )
+    .replace(
+      AUTHORIZATION_SECRET_PATTERN,
+      (_match, prefix: string, scheme: string) => `${prefix}${scheme} ${REDACTED_VALUE}`
+    )
+    .replace(COOKIE_SECRET_PATTERN, (_match, header: string) => `${header}: ${REDACTED_VALUE}`)
 }
 
 export function estimateTextTokens(value: string): number {

@@ -34,6 +34,10 @@ import {
   getClaudeCompactBudget
 } from '../claude-compact-budget'
 import { selectClaudeCompactRanges } from '../claude-compact-rounds'
+import {
+  assertClaudeCompactSummarySafe,
+  sanitizeMessagesForClaudeCompact
+} from '../claude-compact-sanitizer'
 import { validateToolUseResultProtocol } from '../context-budget'
 
 let nextMessageId = 0
@@ -177,5 +181,128 @@ describe('selectClaudeCompactRanges', () => {
     expect(validateToolUseResultProtocol(selection.preservedMessages).issues.map((issue) => issue.kind)).toEqual([
       'unanswered_tool_use'
     ])
+  })
+})
+
+describe('sanitizeMessagesForClaudeCompact', () => {
+  it('redacts private key material before summarizer input', () => {
+    const sanitized = sanitizeMessagesForClaudeCompact([
+      message(
+        'user',
+        '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-secret\n-----END OPENSSH PRIVATE KEY-----'
+      )
+    ])
+    const serialized = JSON.stringify(sanitized)
+
+    expect(serialized).toContain('[REDACTED')
+    expect(serialized).not.toContain('PRIVATE KEY')
+    expect(serialized).not.toContain('private-key-secret')
+  })
+
+  it('redacts JSON-style tool input secrets and omits raw payload fields', () => {
+    const sanitized = sanitizeMessagesForClaudeCompact([
+      message('assistant', [
+        {
+          type: 'tool_use',
+          id: 'fetch-secret',
+          name: 'Fetch',
+          input: {
+            headers: {
+              Authorization: 'Bearer json-secret-token',
+              cookie: 'sid=session-secret',
+              'x-api-key': 'x-api-secret'
+            },
+            apiKey: 'camel-api-secret',
+            access_token: 'access-secret',
+            client_secret: 'client-secret',
+            filePath: 'C:/Users/He/private.png',
+            url: 'https://example.com/download?token=url-secret',
+            data: 'raw-base64-secret',
+            raw: 'raw-payload-secret',
+            nested: { password: 'nested-password-secret' }
+          }
+        }
+      ])
+    ])
+    const serialized = JSON.stringify(sanitized)
+
+    expect(serialized).toContain('[REDACTED')
+    expect(serialized).not.toContain('json-secret-token')
+    expect(serialized).not.toContain('session-secret')
+    expect(serialized).not.toContain('x-api-secret')
+    expect(serialized).not.toContain('camel-api-secret')
+    expect(serialized).not.toContain('access-secret')
+    expect(serialized).not.toContain('client-secret')
+    expect(serialized).not.toContain('private.png')
+    expect(serialized).not.toContain('url-secret')
+    expect(serialized).not.toContain('raw-base64-secret')
+    expect(serialized).not.toContain('raw-payload-secret')
+    expect(serialized).not.toContain('nested-password-secret')
+  })
+
+  it('replaces image payloads and redacts secrets before summarizer input', () => {
+    const sanitized = sanitizeMessagesForClaudeCompact([
+      message('user', 'api_key=sk-user-secret'),
+      message('assistant', [toolUse('image-tool')]),
+      message('user', [
+        toolResult('image-tool', [
+          { type: 'text', text: 'Authorization: Bearer image-secret-token' },
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              mediaType: 'image/png',
+              data: 'raw-image-secret',
+              filePath: 'C:/Users/He/private.png'
+            }
+          }
+        ])
+      ])
+    ])
+
+    const serialized = JSON.stringify(sanitized)
+
+    expect(serialized).toContain('[REDACTED')
+    expect(serialized).toContain('[image]')
+    expect(serialized).not.toContain('sk-user-secret')
+    expect(serialized).not.toContain('image-secret-token')
+    expect(serialized).not.toContain('raw-image-secret')
+    expect(serialized).not.toContain('private.png')
+  })
+
+  it('removes post-compact state messages from summarizer input', () => {
+    const sanitized = sanitizeMessagesForClaudeCompact([
+      message('user', 'old task'),
+      {
+        ...message('user', 'post compact state token=state-secret'),
+        meta: { postCompactState: true }
+      },
+      message('assistant', 'done')
+    ])
+
+    expect(sanitized.map((item) => item.content)).toEqual(['old task', 'done'])
+  })
+})
+
+describe('assertClaudeCompactSummarySafe', () => {
+  it('throws before storing cookie or authorization summary material', () => {
+    expect(() => assertClaudeCompactSummarySafe('Cookie: sid=session-secret')).toThrow(
+      'unsafe compact summary'
+    )
+    expect(() => assertClaudeCompactSummarySafe('Authorization: Basic basic-secret')).toThrow(
+      'unsafe compact summary'
+    )
+  })
+
+  it('throws before storing high-risk private key material', () => {
+    expect(() =>
+      assertClaudeCompactSummarySafe(
+        '-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-secret\n-----END OPENSSH PRIVATE KEY-----'
+      )
+    ).toThrow('unsafe compact summary')
+  })
+
+  it('returns a redacted summary for ordinary token-like values', () => {
+    expect(assertClaudeCompactSummarySafe('Keep current task. token=summary-secret')).toContain('[REDACTED')
   })
 })
