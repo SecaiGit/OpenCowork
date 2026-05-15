@@ -11,6 +11,28 @@ OpenCowork 已完成 `claude-code-compact-v1` 的核心压缩策略、renderer/m
 
 本文记录后续还缺少的实现项、优先级、建议方案和验收标准。
 
+## 已实现与未实现边界
+
+当前已经实现的压缩基础能力包括：
+
+- Claude-style 预算计算：`contextWindow - min(maxOutputTokens, 20_000) - 13_000`；
+- compact summarizer 请求自身的 Prompt Too Long retry：最多 3 次，并按完整 API round 丢弃最旧可压缩 round；
+- `/compact` 与 `/compact <focus>` 手动压缩路径；
+- renderer/main/sidecar runtime parity 的基础压缩路径；
+- API round 安全边界、summary fail-closed、敏感信息脱敏和基础 compact boundary metadata。
+
+其中 runtime parity 指基础 compact core 接入和基础压缩路径一致，不代表 warning gate、pre-compress gate、hard gate、checkpoint 调度、append/finalize guard 与诊断 taxonomy 已完全一致。
+
+现有 sanitizer 主要覆盖 compact summarizer 输入清洗，不等同于消息 append 前的 ingestion guard。也就是说，它能避免脏 payload 进入 compact 摘要请求，但不能保证超大 payload 在进入消息历史前已被脱水。
+
+本文所列缺口不是否定上述能力，而是记录还没有完整覆盖的执行路径，尤其是：
+
+- 请求发出前基于 hard context limit 的强制阻断、降级和 emergency deterministic compaction；
+- warning gate、pre-compress gate 与 hard gate 在 renderer/main/sidecar 三端的一致性；
+- 单次超大 payload 在进入消息历史前的处理；
+- 近期任务必须保留时对近期 payload 的 fallback 压缩；
+- partial compact、hooks、session memory、prompt cache、relink 等更完整的 Claude Code 机制。
+
 ## 保证边界
 
 后续实现不应承诺“任何超大返回都能被一次摘要压缩后继续”。正确保证是：
@@ -23,21 +45,23 @@ OpenCowork 已完成 `claude-code-compact-v1` 的核心压缩策略、renderer/m
 
 ## 缺口总览
 
-| 优先级 | 缺少实现 | 当前影响 | 推荐处理 |
-| --- | --- | --- | --- |
-| P0 | 单次超大 payload 入库前脱水 | 工具结果或文件内容可能一次性撑爆 context | 在 append 前执行 ingestion guard |
-| P0 | 请求前 hard gate | `inputTokens > contextWindow` 时仍可能进入下一次请求路径 | 请求前执行 emergency deterministic compaction，失败则阻断 |
-| P0 | `insufficient_compressible_messages` fallback | 历史不足但近期 payload 很大时无法压缩 | 对 preserved recent payload 做脱水 |
-| P1 | checkpoint-based auto compact | compact 主要发生在请求前或手动触发，安全中断点覆盖不足 | 在 tool result、assistant response、step boundary 后调度 compact |
-| P1 | partial compact / from-up-to compact | 单个长任务内早期已完成步骤被整段保留 | 在同一任务 round 内压缩较早闭合子步骤 |
-| P1 | 超长用户输入处理 | 用户一次粘贴超长文本无法靠历史 compact 解决 | 自动文件化或要求用户上传文件，支持 chunk summary |
-| P2 | session memory compaction | 长期有效状态与会话摘要混在一起 | 抽取 session memory 层并与 traditional compact 分层 |
-| P2 | PreCompact / PostCompact hooks | 插件、MCP、运行时状态无法在 compact 前后参与 | 增加 hook 协议、超时、失败和取消处理 |
-| P2 | prompt cache sharing / cache baseline | compact 前后缓存策略不完整，成本和性能不稳定 | 增加 cache breakpoint、baseline reset 和 provider cache-control |
-| P2 | 更完整 post-compact re-injection | 只覆盖核心连续性，未完整恢复所有运行时状态 | 注入 read file state、plan、skills、async agents、MCP 等 |
-| P2 | relink / anchor metadata | 压缩段与保留段缺少完整恢复和诊断元数据 | 增加 head/anchor/tail、compressed range、preserved range |
-| P2 | streaming output continuation | 模型自身单次长输出中途无法 compact | 支持流式预算监控、stop、checkpoint 和 continuation |
-| P2 | UI 诊断细分 | 当前提示容易把不同原因归为“历史不足” | 区分历史不足、近期 payload 过大、硬超限、协议未闭合等 |
+| 优先级 | 缺少实现 | 影响 runtime | 当前影响 | 推荐处理 |
+| --- | --- | --- | --- | --- |
+| P0 | 单次超大 payload 入库前脱水 | renderer/main/sidecar | 工具结果或文件内容可能一次性撑爆 context | 在 append 前执行 ingestion guard |
+| P0 | 请求前 hard gate | renderer/main/sidecar | `inputTokens > contextWindow` 时仍可能进入下一次请求路径 | 请求前执行 emergency deterministic compaction，失败则阻断 |
+| P0 | `insufficient_compressible_messages` fallback | renderer/main/sidecar | 历史不足但近期 payload 很大时无法压缩 | 对 preserved recent payload 做脱水 |
+| P1 | checkpoint-based auto compact | renderer/main/sidecar | compact 主要发生在请求前或手动触发，安全中断点覆盖不足 | 在 tool result、assistant response、step boundary 后调度 compact |
+| P1 | warning / pre-compress gate parity | renderer/main/sidecar | 三端 warning、pre-compress、hard gate 的触发时机和 reason 可能不一致 | 统一预算门禁、错误分类和 telemetry |
+| P1 | assistant output finalize checkpoint | renderer/main/sidecar | 非流式 assistant 单次输出过大时，append 后可能挤爆后续上下文 | response finalize / append 前做预算检查、截断或分段入库 |
+| P1 | partial compact / from-up-to compact | renderer/main/sidecar | 单个长任务内早期已完成步骤被整段保留 | 在同一任务 round 内压缩较早闭合子步骤 |
+| P1 | 超长用户输入处理 | renderer 为主，main/sidecar 需协议兼容 | 用户一次粘贴超长文本无法靠历史 compact 解决 | 自动文件化或要求用户上传文件，支持 chunk summary |
+| P2 | session memory compaction | renderer/main/sidecar | 长期有效状态与会话摘要混在一起 | 抽取 session memory 层并与 traditional compact 分层 |
+| P2 | PreCompact / PostCompact hooks | renderer/main/sidecar/plugin/MCP | 插件、MCP、运行时状态无法在 compact 前后参与 | 增加 hook 协议、超时、失败和取消处理 |
+| P2 | prompt cache sharing / cache baseline | provider/runtime 层 | compact 前后缓存策略不完整，成本和性能不稳定 | 增加 cache breakpoint、baseline reset 和 provider cache-control |
+| P2 | 更完整 post-compact re-injection | renderer/main/sidecar | 只覆盖核心连续性，未完整恢复所有运行时状态 | 注入 read file state、plan、skills、async agents、MCP 等 |
+| P2 | relink / anchor metadata | renderer UI + shared compact core | 已有基础 metadata，但不够支撑 partial compact、恢复和重复压缩判断 | 增加 generation chain、source tracing 和 UI relink 信息 |
+| P2 | streaming output continuation | renderer/main/sidecar | 模型自身单次长输出中途无法 compact | 支持流式预算监控、stop、checkpoint 和 continuation |
+| P2 | UI 诊断细分 | renderer UI 为主，main/sidecar 需 reason parity | 当前提示容易把不同原因归为“历史不足” | 区分历史不足、近期 payload 过大、硬超限、协议未闭合等 |
 
 ## P0：单次超大 payload 入库前脱水
 
@@ -181,11 +205,94 @@ pendingCompact:
   blockingNextRequest
 ```
 
+### 触发守卫
+
+checkpoint 调度必须遵守以下守卫：
+
+- compact 正在执行时不递归触发 compact；
+- compact request 自身不触发 compact；
+- auto compact 熔断打开时不触发新的 auto compact；
+- 没有安全边界时只返回诊断 reason，不强行压缩；
+- 工具协议未闭合时等待下一个安全 checkpoint。
+
 ### 验收标准
 
 - 工具闭合后如果超过阈值，会在下一次模型请求前处理；
 - compact 自身不会递归触发 compact；
 - 失败时进入熔断或明确阻断，不会无限循环。
+
+## P1：warning / pre-compress gate parity
+
+### 问题
+
+当前已实现 Claude-style 预算计算，但 warning gate、pre-compress gate、hard gate 的触发路径需要在 renderer/main/sidecar 三端继续对齐。否则同一段消息可能在 renderer 中提示可压缩，在 sidecar/main 中继续执行，或返回不同 skip reason。
+
+### 建议实现
+
+统一门禁分类：
+
+```text
+warning gate:
+  context pressure 接近阈值，提示但不阻断
+
+pre-compress gate:
+  下一次请求前应先尝试 compact 或 payload fallback
+
+hard gate:
+  不允许继续发送模型请求，必须 emergency compaction 或阻断
+```
+
+三端应共享：
+
+- token 预算计算；
+- reserved output 计算；
+- skip reason 枚举；
+- telemetry / diagnostic metadata；
+- fallback 顺序。
+
+### 验收标准
+
+- 同一组消息在 renderer/main/sidecar 中得到一致 gate 分类；
+- warning、pre-compress、hard gate 都有可诊断 reason；
+- hard gate 永远不会退化为继续发送超限模型请求；
+- 诊断脚本覆盖三端门禁一致性。
+
+## P1：assistant output finalize checkpoint
+
+### 问题
+
+如果非流式 assistant response 一次生成大量文本，运行时可能在 response 完成后才发现上下文压力过高。此时虽然不能在该次模型输出中途 compact，但仍应在写入历史前或写入后下一个 checkpoint 处理，避免它撑爆后续请求。
+
+### 建议实现
+
+在 assistant response finalize / append 前后增加预算检查：
+
+```text
+assistant output finalized
+  ↓
+estimate output size and next-context pressure
+  ↓
+if oversized:
+  truncate / segment / externalize / mark continuation
+  ↓
+append safe assistant message
+  ↓
+schedule checkpoint compact before next model request
+```
+
+约束：
+
+- 不截断 tool_use JSON 或结构化工具调用；
+- 普通文本可以分段或外部化；
+- 分段后需要记录 continuation state；
+- 如果无法安全截断，阻断下一步并给出明确 reason。
+
+### 验收标准
+
+- 单次 assistant 文本输出过大时不会原样撑爆下一轮请求；
+- 工具调用结构不会被截断破坏；
+- continuation state 可诊断；
+- renderer/main/sidecar 行为一致。
 
 ## P1：partial compact / from-up-to compact
 
@@ -250,6 +357,8 @@ current user task anchor
 - 把稳定目标、用户偏好、项目约束、长期决策抽离；
 - traditional compact 只处理短期对话历史；
 - 自动 compact 优先尝试 session memory，再回退 traditional compact。
+
+session memory 与 post-compact re-injection 的职责应分开：session memory 负责沉淀长期稳定事实，post-compact re-injection 只恢复本轮或近期执行连续性，不承担长期记忆沉淀。
 
 ### 验收标准
 
@@ -323,18 +432,19 @@ current user task anchor
 
 ### 问题
 
-当前 metadata 足够基础诊断，但对 partial compact、历史恢复和 UI relink 不够完整。
+当前已有基础 compact boundary metadata，例如 compressed range、preserved range、retry count，以及 preserved segment 的 head / anchor / tail 信息。但这些信息还不足以支撑完整 partial compact、历史恢复、UI relink、source tracing 和重复压缩判断。
 
 ### 建议实现
 
-为压缩段和保留段记录：
+为压缩段和保留段补全：
 
-- head / anchor / tail；
-- compressed range；
-- preserved range；
+- partial compact generation chain；
 - source message ids；
 - source token estimate；
-- retry count；
+- source runtime；
+- source summary id；
+- relink target ids；
+- duplicate-compaction detection key；
 - safety flags；
 - compact trigger；
 - compact generation id。
@@ -343,7 +453,8 @@ current user task anchor
 
 - UI 能展示哪些内容被压缩、哪些被保留；
 - partial compact 能基于 metadata 避免重复压缩同一段；
-- 恢复和诊断可以定位源消息。
+- resume/relink 可以定位源消息和生成链；
+- 历史恢复可以区分 legacy compact、Claude compact 和 partial compact。
 
 ## P2：Streaming output continuation
 
@@ -371,7 +482,18 @@ current user task anchor
 
 “近期任务消息必须保留，暂无足够历史消息可摘要压缩”容易让用户误解为没有解决办法。
 
-### 建议 skip reason
+### 当前 reason 与目标 reason
+
+当前共享核心已有基础 reason：
+
+- `insufficient_messages`：消息太少；
+- `insufficient_compressible_messages`：没有足够可摘要历史；
+- `unsafe_boundary`：安全边界不满足；
+- `summarizer_prompt_too_long`：compact 请求自身过长；
+- `unsafe_summary_output`：summary 输出不安全；
+- `summarizer_failed`：summary 模型调用失败。
+
+后续 UI 与 runtime 诊断应扩展为更可操作的 reason：
 
 - `insufficient_history`：确实没有旧历史；
 - `recent_payload_too_large`：近期 payload 过大，需要脱水；
@@ -387,14 +509,51 @@ current user task anchor
 - UI 文案能提示可操作下一步；
 - 诊断脚本覆盖各类 skip reason。
 
+## Claude Code 其他可借鉴机制
+
+以下机制不全属于 context compression，但与长任务稳定性、Agent loop 生命周期和本地执行安全强相关，后续可以作为独立设计或压缩二期之后的扩展方向。
+
+### P0：优先借鉴
+
+- 请求生命周期门禁：每次模型请求前统一检查 context、输出预算、工具协议闭合、pending compact、熔断状态和 runtime 是否允许继续发请求。
+- 工具结果脱水与外部化：长日志、大 JSON、diff、大文件、二进制和附件不原样进入上下文，而是保留摘要、定位信息和可按需恢复的外部引用。
+- Todo / Plan 状态显式化：把当前目标、步骤、已完成项、阻塞项、下一步和验证记录结构化保存，并在 compact 后重注入。
+- Checkpoint / Resume / Rewind：在工具执行前后、compact 前后和安全 step boundary 保存 checkpoint，支持恢复、重试和会话 fork。
+- Permission / Trust 机制：按命令、目录、网络、写文件、Git 操作等风险分级，危险操作必须确认，并保留审计记录。
+
+### P1：体验和可扩展性增强
+
+- Hook 系统：覆盖 PreToolUse、PostToolUse、PreCompact、PostCompact、PreEdit、PostEdit、PreRequest、PostRequest、OnError、OnSessionResume 等扩展点。
+- Slash Command 体系：把 `/compact`、`/resume`、`/checkpoint`、`/review`、`/plan`、`/tasks`、`/memory`、`/model`、`/permissions`、`/diagnostics` 等常用流程产品化。
+- 结构化诊断面板：展示 context 使用率、角色占比、超大 payload 来源、pending compact、压缩失败 reason、输出预算和 prompt cache 状态。
+- 多级错误恢复：区分普通失败、Prompt Too Long、工具失败、协议失败和连续失败，分别执行重试、压缩、脱水、降级、熔断或阻断。
+- Prompt cache / baseline 管理：稳定 system prompt、memory、tools、MCP 指令和 compact 后 baseline，降低成本并避免 stale cache。
+
+### P2：长期增强
+
+- Session memory 分层：区分 workspace protocol、user preference、project memory、current task state、transient observations 和 compressed summary。
+- 文件状态 re-injection：compact 后恢复已读文件、最近编辑文件、dirty files、git diff、工作目录、命令记录、测试结果和 active plan。
+- Subagent / sidecar 状态隔离：子代理独立 context，结果摘要回主会话，失败独立诊断，避免污染主上下文。
+- 工具输出 streaming 控制：边显示边检测大小，超阈值停止收集全文，完整输出写入文件，聊天中只保留摘要和引用。
+- Edit safety / patch ledger：记录文件修改范围、原因、是否读过、是否验证、是否格式化、是否有冲突和是否需要确认。
+- 模型路由：简单分类/摘要用轻模型，代码实现和复杂推理用强模型，压缩 summarizer 使用稳定模型，超大上下文切长窗口模型。
+- Agent loop 熔断：对重复工具失败、重复 Prompt Too Long、重复无效编辑、重复命令和子代理超时做循环检测和阻断。
+- MCP / tool 指令压缩：按任务筛选 MCP server 和工具 schema，inactive tools 不注入，工具定义按需加载并稳定排序。
+
+### 与当前压缩缺口的关系
+
+这些机制中，最应与 context compression 同步推进的是：请求生命周期门禁、工具结果脱水、checkpoint/resume、结构化诊断、多级错误恢复、prompt cache baseline、状态 re-injection 和 Agent loop 熔断。它们共同决定长任务是否能在高 context 压力下稳定继续。
+
 ## 推荐实施顺序
 
 1. `single-turn oversized payload guard`：先解决一次工具返回过大。
 2. `request hard gate`：禁止超限模型请求继续发出。
 3. `recent payload fallback`：解决近期消息必须保留但 payload 过大的情况。
-4. `checkpoint scheduler`：在工具闭合和 step boundary 自动触发处理。
-5. `partial compact`：解决单个长任务内早期子步骤无法压缩。
-6. 继续补 session memory、hooks、prompt cache、relink metadata、streaming continuation。
+4. `warning / pre-compress gate parity`：统一三端门禁、reason 和诊断。
+5. `checkpoint scheduler`：在工具闭合和 step boundary 自动触发处理。
+6. `assistant output finalize checkpoint`：避免非流式单次长回复撑爆后续请求。
+7. `partial compact`：解决单个长任务内早期子步骤无法压缩。
+8. 继续补 session memory、hooks、prompt cache、relink metadata、streaming continuation。
 
 ## 测试要求
 
@@ -415,6 +574,8 @@ current user task anchor
 - inputTokens 已超过 contextWindow 时阻断；
 - inputTokens + reservedOutputTokens 超过 contextWindow 时先 compact 或降低输出预算；
 - `insufficient_compressible_messages` 触发 recent payload fallback；
+- warning、pre-compress、hard gate 在 renderer/main/sidecar 三端分类一致；
+- 非流式 assistant 长输出在 finalize / append checkpoint 被截断、分段或阻断；
 - 同一长任务内 partial compact 不破坏 tool 协议；
 - 超长用户输入被文件化或分块处理；
 - main/sidecar/renderer 三个 runtime 行为一致。
