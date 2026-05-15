@@ -502,3 +502,50 @@ describe('claude-code-compact-v1 engine', () => {
     )
   })
 })
+
+describe('claude-code-compact-v1 Prompt Too Long retry', () => {
+  it('drops the oldest complete API round and retries at most three times', async () => {
+    vi.mocked(runSidecarTextRequest)
+      .mockRejectedValueOnce(new Error('prompt too long'))
+      .mockResolvedValueOnce('<summary>Retried summary after dropping old round.</summary>')
+
+    const messages = [
+      message('user', 'round one'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'old result')]),
+      message('assistant', 'round one done'),
+      message('user', 'round two'),
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b', 'new result')]),
+      message('assistant', 'round two done')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    const firstPrompt = String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? '')
+    const secondPrompt = String(vi.mocked(runSidecarTextRequest).mock.calls[1]?.[0].messages[0]?.content ?? '')
+
+    expect(result.result.compressed).toBe(true)
+    expect(vi.mocked(runSidecarTextRequest)).toHaveBeenCalledTimes(2)
+    expect(firstPrompt).toContain('round one')
+    expect(secondPrompt).not.toContain('round one')
+    expect(secondPrompt).toContain('round two')
+    expect(result.messages[0]?.meta?.compactBoundary?.retryCount).toBe(1)
+  })
+})

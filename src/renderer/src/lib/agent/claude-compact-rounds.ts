@@ -67,6 +67,20 @@ function buildClaudeCompactRounds(messages: UnifiedMessage[]): ApiRoundGroup[] {
   return merged
 }
 
+export function dropOldestClaudeCompactRounds(
+  messages: UnifiedMessage[],
+  count: number
+): UnifiedMessage[] | null {
+  const groups = buildClaudeCompactRounds(messages)
+  if (groups.length <= 1) {
+    return null
+  }
+
+  const dropCount = Math.min(Math.max(1, Math.floor(count)), groups.length - 1)
+  const remainingMessages = groups.slice(dropCount).flatMap((group) => group.messages)
+  return remainingMessages.length >= 2 ? remainingMessages : null
+}
+
 export function selectClaudeCompactRanges(
   messages: UnifiedMessage[],
   options: SelectClaudeCompactRangesOptions = {}

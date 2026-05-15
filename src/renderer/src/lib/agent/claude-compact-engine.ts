@@ -18,7 +18,10 @@ import {
   assertClaudeCompactSummarySafe,
   sanitizeMessagesForClaudeCompact
 } from './claude-compact-sanitizer'
-import { selectClaudeCompactRanges } from './claude-compact-rounds'
+import {
+  dropOldestClaudeCompactRounds,
+  selectClaudeCompactRanges
+} from './claude-compact-rounds'
 
 const MAX_CLAUDE_COMPACT_RETRIES = 3
 const MAX_CLAUDE_COMPACT_FAILURES = 3
@@ -254,12 +257,11 @@ async function claudeCompressMessages(
       lastError = error
       if (!isPromptTooLongError(error) || attempt >= MAX_CLAUDE_COMPACT_RETRIES) break
 
-      const retrySelection = selectClaudeCompactRanges(compressibleMessages, {
-        minMessages: 2,
-        preservedRoundCount: 1
-      })
-      if (!retrySelection.ok) break
-      compressibleMessages = retrySelection.preservedMessages
+      const retryMessages =
+        dropOldestClaudeCompactRounds(compressibleMessages, attempt + 1) ??
+        dropOldestClaudeCompactRounds(messages, attempt + 1)
+      if (!retryMessages) break
+      compressibleMessages = retryMessages
     }
   }
 
