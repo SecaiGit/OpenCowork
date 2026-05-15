@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UnifiedMessage, ProviderConfig, ToolDefinition } from '../../api/types'
 import { MessageQueue, type AgentLoopConfig } from '../types'
+
+vi.mock('../agent-loop', () => ({
+  runAgentLoop: vi.fn(async function* () {
+    throw new Error('renderer loop should not run for low-token sidecar compression forwarding')
+  })
+}))
+
 import { runSharedAgentRuntime } from '../shared-runtime'
 
 const capturedSidecarRequests: unknown[] = []
