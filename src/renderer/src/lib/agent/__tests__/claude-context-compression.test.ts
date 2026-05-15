@@ -47,6 +47,7 @@ import {
 import { validateToolUseResultProtocol } from '../context-budget'
 import { compressMessages, getCompressionStrategy, shouldCompress } from '../context-compression'
 import { parseManualCompactCommand } from '../manual-compact-command'
+import { formatPostCompactStateContext } from '../context-state-format'
 
 let nextMessageId = 0
 
@@ -564,5 +565,32 @@ describe('parseManualCompactCommand', () => {
 
   it('does not treat other slash commands as compact', () => {
     expect(parseManualCompactCommand('/plan build feature')).toBeNull()
+  })
+})
+
+describe('formatPostCompactStateContext Claude compact continuity', () => {
+  it('includes safety constraints and continuation guidance without raw secrets', () => {
+    const text = formatPostCompactStateContext({
+      title: 'Current state',
+      workingFolder: 'C:/projects/OpenCowork',
+      currentPlan: { title: 'Claude compact plan', status: 'in_progress' },
+      activeTasks: [{ id: 'task_1', subject: 'Write red test', status: 'in_progress' }],
+      recentlyReadFiles: [{ filePath: 'src/renderer/src/lib/agent/context-compression.ts', timestamp: 0 }],
+      safetyConstraints: [
+        'Use TDD for every behavior change',
+        'Do not store secrets in compact summaries',
+        'Continue the original task without asking whether to continue'
+      ],
+      verifiedCommands: ['npm run test:agent-context'],
+      failedCommands: ['npm run typecheck: fixed missing import']
+    })
+
+    expect(text).toContain('### Safety and continuity constraints')
+    expect(text).toContain('Use TDD for every behavior change')
+    expect(text).toContain('Continue the original task without asking whether to continue')
+    expect(text).toContain('### Verification state')
+    expect(text).toContain('Passed: npm run test:agent-context')
+    expect(text).toContain('Failed then addressed: npm run typecheck: fixed missing import')
+    expect(text).not.toContain('sk-')
   })
 })

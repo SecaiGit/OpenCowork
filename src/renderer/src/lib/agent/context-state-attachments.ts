@@ -57,6 +57,11 @@ export function buildPostCompactStateContext(args: BuildPostCompactStateContextA
         }
       : null,
     activeTasks: collectActiveTasks(args.sessionId, args.maxTasks),
-    recentlyReadFiles: collectReadFiles(args.readFileHistory, args.maxReadFiles)
+    recentlyReadFiles: collectReadFiles(args.readFileHistory, args.maxReadFiles),
+    safetyConstraints: [
+      'Use TDD for behavior changes when the user requested TDD.',
+      'Do not store secrets, raw credentials, private keys, cookies, or session tokens in compact summaries.',
+      'Continue the original task from the summary and preserved messages unless a real user decision is required.'
+    ]
   })
 }

@@ -2537,6 +2537,14 @@ function getManualCompressionSkipDescription(reason?: CompressionResult['reason'
       return i18n.t('contextCompression.manualSkippedCircuitBreaker', { ns: 'agent' })
     case 'summarizer_prompt_too_long':
       return i18n.t('contextCompression.manualSkippedPromptTooLong', { ns: 'agent' })
+    case 'unsafe_boundary':
+      return '当前消息包含无法安全切分的工具调用链，已保留原上下文'
+    case 'unsafe_summary_output':
+      return '摘要输出包含高风险敏感信息，已拒绝写入上下文'
+    case 'cancelled':
+      return '压缩请求已取消，原上下文未改变'
+    case 'unknown':
+      return '压缩未完成，原上下文未改变'
     case 'summarizer_failed':
     default:
       return i18n.t('contextCompression.manualSkippedSummarizerFailed', { ns: 'agent' })
