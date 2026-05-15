@@ -38,7 +38,7 @@ const JSON_SECRET_PATTERN = new RegExp(
   'gi'
 )
 const KEY_VALUE_SECRET_PATTERN = new RegExp(
-  `\\b(${SECRET_KEY_PATTERN}|authorization|cookie|set-cookie)\\b\\s*([:=])\\s*(["']?)([^\\s,;\"'{}\\]]+)\\3`,
+  `\\b(${SECRET_KEY_PATTERN}|authorization|cookie|set-cookie)\\b\\s*([:=])\\s*(["']?)([^\\s,;"'{}\\]]+)\\3`,
   'gi'
 )
 const AUTHORIZATION_HEADER_PATTERN = /\b(authorization\s*:\s*)[^\r\n]+/gi
