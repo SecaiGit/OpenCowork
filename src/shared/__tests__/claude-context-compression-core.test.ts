@@ -31,7 +31,10 @@ function toolUse(id: string): ClaudeCompactContentBlock {
   return { type: 'tool_use', id, name: 'Read', input: {} }
 }
 
-function toolResult(id: string, content = 'ok'): ClaudeCompactContentBlock {
+function toolResult(
+  id: string,
+  content: Extract<ClaudeCompactContentBlock, { type: 'tool_result' }>['content'] = 'ok'
+): ClaudeCompactContentBlock {
   return { type: 'tool_result', toolUseId: id, content }
 }
 

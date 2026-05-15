@@ -2,119 +2,20 @@ import { nanoid } from 'nanoid'
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import { RESPONSES_SESSION_SCOPE_CONTEXT_COMPRESSION } from '@renderer/lib/api/responses-session-policy'
 import type { CompactBoundaryMeta, ProviderConfig, UnifiedMessage } from '../api/types'
-import { estimateMessagesTokens } from './context-budget'
 import type {
   CompressionConfig,
   CompressionResult,
   ContextCompressionStrategy
 } from './context-compression'
-import { getClaudeCompactBudget } from './claude-compact-budget'
 import {
-  buildClaudeCompactSystemPrompt,
-  buildClaudeCompactUserPrompt,
-  extractClaudeCompactSummary
-} from './claude-compact-prompt'
-import {
-  assertClaudeCompactSummarySafe,
-  sanitizeMessagesForClaudeCompact
-} from './claude-compact-sanitizer'
-import {
-  dropOldestClaudeCompactRounds,
-  selectClaudeCompactRanges
-} from './claude-compact-rounds'
+  getClaudeCompactBudget,
+  runClaudeCompact,
+  sanitizeMessagesForClaudeCompact,
+  type ClaudeCompactMessage
+} from '../../../../shared/claude-context-compression'
 
-const MAX_CLAUDE_COMPACT_RETRIES = 3
 const MAX_CLAUDE_COMPACT_FAILURES = 3
-
 let claudeCompactFailures = 0
-
-function serializeCompactMessages(messages: UnifiedMessage[]): string {
-  return messages
-    .map((message) => {
-      const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
-      return `[${message.role.toUpperCase()}]: ${content}`
-    })
-    .join('\n\n')
-}
-
-function isPromptTooLongError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /prompt.?too.?long|context.?length|maximum context|too many tokens|413/i.test(message)
-}
-
-function isUnsafeSummaryOutputError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
-  return /unsafe compact summary/i.test(message)
-}
-
-function createBoundaryMessage(args: {
-  trigger: CompactBoundaryMeta['trigger']
-  preTokens: number
-  postTokens: number
-  messagesSummarized: number
-  retryCount: number
-  compressedRange?: { start: number; end: number }
-  preservedRange?: { start: number; end: number }
-  preservedMessages: UnifiedMessage[]
-}): UnifiedMessage {
-  const preservedSegment = args.preservedMessages.length
-    ? {
-        headId: args.preservedMessages[0]!.id,
-        anchorId: '',
-        tailId: args.preservedMessages[args.preservedMessages.length - 1]!.id
-      }
-    : undefined
-
-  return {
-    id: nanoid(),
-    role: 'system',
-    content: 'Conversation compacted',
-    createdAt: Date.now(),
-    meta: {
-      compactBoundary: {
-        strategy: 'claude-code-compact-v1',
-        trigger: args.trigger,
-        preTokens: args.preTokens,
-        postTokens: args.postTokens,
-        messagesSummarized: args.messagesSummarized,
-        compactedAt: Date.now(),
-        retryCount: args.retryCount,
-        ...(args.compressedRange ? { compressedRange: args.compressedRange } : {}),
-        ...(args.preservedRange ? { preservedRange: args.preservedRange } : {}),
-        safetyFlags: ['untrusted-history', 'sanitized-input', 'validated-summary'],
-        ...(preservedSegment ? { preservedSegment } : {})
-      }
-    }
-  }
-}
-
-function createSummaryMessage(summary: string, messagesSummarized: number): UnifiedMessage {
-  return {
-    id: nanoid(),
-    role: 'user',
-    content: summary,
-    createdAt: Date.now(),
-    meta: {
-      compactSummary: {
-        messagesSummarized,
-        recentMessagesPreserved: true
-      }
-    }
-  }
-}
-
-function createPostCompactStateMessage(postCompactContext?: string): UnifiedMessage | null {
-  const content = postCompactContext?.trim()
-  if (!content) return null
-
-  return {
-    id: nanoid(),
-    role: 'user',
-    content,
-    createdAt: Date.now(),
-    meta: { postCompactState: true }
-  }
-}
 
 async function callClaudeCompactSummarizer(args: {
   providerConfig: ProviderConfig
@@ -179,108 +80,36 @@ async function claudeCompressMessages(
     }
   }
 
-  const selection = selectClaudeCompactRanges(messages)
-  if (!selection.ok) {
-    return {
-      messages,
-      result: {
-        compressed: false,
-        originalCount: messages.length,
-        newCount: messages.length,
-        reason:
-          selection.reason === 'unsafe_boundary'
-            ? 'unsafe_boundary'
-            : selection.reason === 'insufficient_messages'
-              ? 'insufficient_messages'
-              : 'insufficient_compressible_messages'
-      }
-    }
-  }
-
-  let lastError: unknown = null
-  let compressibleMessages = selection.compressibleMessages
-
-  for (let attempt = 0; attempt <= MAX_CLAUDE_COMPACT_RETRIES; attempt += 1) {
-    try {
-      const sanitizedMessages = sanitizeMessagesForClaudeCompact(compressibleMessages, config)
-      const rawSummary = await callClaudeCompactSummarizer({
+  const compacted = await runClaudeCompact({
+    messages: messages as unknown as ClaudeCompactMessage[],
+    trigger,
+    preTokens,
+    config,
+    focusPrompt,
+    postCompactContext,
+    signal,
+    summarize: async ({ systemPrompt, userPrompt, signal: summarizeSignal }) =>
+      callClaudeCompactSummarizer({
         providerConfig,
-        systemPrompt: buildClaudeCompactSystemPrompt(),
-        userPrompt: buildClaudeCompactUserPrompt({
-          serializedHistory: serializeCompactMessages(sanitizedMessages),
-          focusPrompt,
-          trigger
-        }),
-        signal
-      })
-      const extracted = extractClaudeCompactSummary(rawSummary)
-      if (!extracted) throw new Error('empty compact summary')
+        systemPrompt,
+        userPrompt,
+        signal: summarizeSignal
+      }),
+    createId: nanoid,
+    now: Date.now
+  })
 
-      const summary = assertClaudeCompactSummarySafe(extracted)
-      const postCompactStateMessage = createPostCompactStateMessage(postCompactContext)
-      const summaryMessage = createSummaryMessage(summary, selection.compressibleMessages.length)
-      const compressedMessages = [
-        createBoundaryMessage({
-          trigger,
-          preTokens,
-          postTokens: 0,
-          messagesSummarized: selection.compressibleMessages.length,
-          retryCount: attempt,
-          compressedRange: selection.compressedRange,
-          preservedRange: selection.preservedRange,
-          preservedMessages: selection.preservedMessages
-        }),
-        summaryMessage,
-        ...(postCompactStateMessage ? [postCompactStateMessage] : []),
-        ...selection.preservedMessages
-      ]
-      const boundary = compressedMessages[0]
-      if (boundary.meta?.compactBoundary?.preservedSegment) {
-        boundary.meta.compactBoundary.preservedSegment.anchorId = summaryMessage.id
-      }
-      const postTokens = estimateMessagesTokens(compressedMessages)
-      if (boundary.meta?.compactBoundary) {
-        boundary.meta.compactBoundary.postTokens = postTokens
-      }
-
-      claudeCompactFailures = 0
-      return {
-        messages: compressedMessages,
-        result: {
-          compressed: true,
-          originalCount: messages.length,
-          newCount: compressedMessages.length,
-          messagesSummarized: selection.compressibleMessages.length
-        }
-      }
-    } catch (error) {
-      lastError = error
-      if (!isPromptTooLongError(error) || attempt >= MAX_CLAUDE_COMPACT_RETRIES) break
-
-      const retryMessages =
-        dropOldestClaudeCompactRounds(compressibleMessages, attempt + 1) ??
-        dropOldestClaudeCompactRounds(messages, attempt + 1)
-      if (!retryMessages) break
-      compressibleMessages = retryMessages
-    }
+  if (compacted.result.compressed) {
+    claudeCompactFailures = 0
+  } else if (
+    compacted.result.reason === 'summarizer_failed' ||
+    compacted.result.reason === 'summarizer_prompt_too_long' ||
+    compacted.result.reason === 'unsafe_summary_output'
+  ) {
+    claudeCompactFailures += 1
   }
 
-  claudeCompactFailures += 1
-  const reason = isPromptTooLongError(lastError)
-    ? 'summarizer_prompt_too_long'
-    : isUnsafeSummaryOutputError(lastError)
-      ? 'unsafe_summary_output'
-      : 'summarizer_failed'
-
-  return {
-    messages,
-    result: {
-      compressed: false,
-      originalCount: messages.length,
-      newCount: messages.length,
-      reason
-    }
-  }
+  return compacted as unknown as { messages: UnifiedMessage[]; result: CompressionResult }
 }
 
 export function createClaudeCodeCompactStrategy(): ContextCompressionStrategy {
@@ -288,7 +117,8 @@ export function createClaudeCodeCompactStrategy(): ContextCompressionStrategy {
     id: 'claude-code-compact-v1',
     shouldCompress: shouldClaudeCompress,
     shouldPreCompress: shouldClaudePreCompress,
-    preCompressMessages: (messages) => sanitizeMessagesForClaudeCompact(messages),
+    preCompressMessages: (messages) =>
+      sanitizeMessagesForClaudeCompact(messages as unknown as ClaudeCompactMessage[]) as unknown as UnifiedMessage[],
     compressMessages: claudeCompressMessages
   }
 }

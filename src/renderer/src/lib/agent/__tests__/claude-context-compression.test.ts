@@ -439,6 +439,17 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(String(result.messages[1]?.content)).toContain('Continue the TDD implementation')
     expect(JSON.stringify(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0])).not.toContain('sk-tool-secret')
+    expect(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0]).toMatchObject({
+      maxIterations: 1,
+      responsesSessionScope: false,
+      provider: {
+        model: 'test-model',
+        thinkingEnabled: false
+      }
+    })
+    expect(String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)).toContain(
+      'context compressor'
+    )
   })
 
   it('rejects unsafe summary output and leaves the original messages unchanged', async () => {

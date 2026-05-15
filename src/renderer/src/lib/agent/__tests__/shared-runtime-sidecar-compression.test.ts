@@ -84,7 +84,12 @@ describe('runSharedAgentRuntime sidecar compression routing', () => {
       toolContext: {
         sessionId: 'session-1',
         workingFolder: 'C:/projects/OpenCowork',
-        signal: config.signal
+        signal: config.signal,
+        ipc: {
+          invoke: vi.fn(async () => null),
+          send: vi.fn(),
+          on: vi.fn(() => vi.fn())
+        }
       }
     })
 

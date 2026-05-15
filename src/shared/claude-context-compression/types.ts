@@ -45,7 +45,7 @@ export interface ClaudeCompactToolUseBlock {
   id: string
   name: string
   input: Record<string, unknown>
-  extraContent?: Record<string, unknown>
+  extraContent?: unknown
 }
 
 export interface ClaudeCompactToolResultBlock {
@@ -74,13 +74,13 @@ export type ClaudeCompactContentBlock =
   | ClaudeCompactAgentErrorBlock
 
 export interface ClaudeCompactBoundaryMeta {
-  strategy: 'claude-code-compact-v1'
+  strategy?: string
   trigger: ClaudeCompactTrigger
   preTokens: number
-  postTokens: number
+  postTokens?: number
   messagesSummarized: number
-  compactedAt: number
-  retryCount: number
+  compactedAt?: number
+  retryCount?: number
   compressedRange?: { start: number; end: number }
   preservedRange?: { start: number; end: number }
   safetyFlags?: string[]
