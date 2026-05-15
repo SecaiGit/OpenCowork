@@ -9,6 +9,10 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/renderer/src/lib/agent/__tests__/*.test.ts']
+    include: [
+      'src/renderer/src/lib/agent/__tests__/*.test.ts',
+      'src/main/**/__tests__/*.test.ts',
+      'src/shared/__tests__/*.test.ts'
+    ]
   }
 })
