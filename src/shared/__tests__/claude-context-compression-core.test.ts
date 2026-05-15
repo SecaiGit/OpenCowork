@@ -435,4 +435,79 @@ describe('shared Claude compact core', () => {
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(JSON.stringify(summarizer.mock.calls[0])).not.toContain('sk-tool-secret')
   })
+
+  describe('shared Claude recent payload fallback', () => {
+    it('dehydrates recent payloads when no historical API round can be summarized', async () => {
+      nextMessageId = 0
+      const summarize = vi.fn(async () => '<summary>should not be called</summary>')
+      const messages = [
+        message('assistant', [toolUse('huge')]),
+        message('user', [toolResult('huge', 'error line\n'.repeat(12_000))]),
+        message('assistant', 'continue current task'),
+        message('assistant', 'still in current task'),
+        message('assistant', 'prepare next step'),
+        message('assistant', 'awaiting next step')
+      ]
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 190_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize,
+        now: () => 123,
+        createId: (() => {
+          let id = 0
+          return () => `fallback-${++id}`
+        })()
+      })
+
+      const serialized = JSON.stringify(result.messages)
+      expect(result.result.compressed).toBe(true)
+      expect(result.result.messagesSummarized).toBe(0)
+      expect(result.result.payloadsCompacted).toBe(1)
+      expect(result.result.reason).toBeUndefined()
+      expect(summarize).not.toHaveBeenCalled()
+      expect(serialized).toContain('[Tool result compacted for context budget]')
+      expect(serialized.length).toBeLessThan(JSON.stringify(messages).length)
+    })
+
+    it('keeps the existing skip reason when there is no payload to dehydrate', async () => {
+      nextMessageId = 0
+      const summarize = vi.fn()
+      const messages = [
+        message('assistant', [toolUse('small')]),
+        message('user', [toolResult('small', 'ok')]),
+        message('assistant', 'done current task'),
+        message('assistant', 'status confirmed'),
+        message('assistant', 'no payload to shrink'),
+        message('assistant', 'awaiting next step')
+      ]
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 1_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize
+      })
+
+      expect(result.result.compressed).toBe(false)
+      expect(result.result.reason).toBe('insufficient_compressible_messages')
+      expect(result.messages).toBe(messages)
+      expect(summarize).not.toHaveBeenCalled()
+    })
+  })
 })

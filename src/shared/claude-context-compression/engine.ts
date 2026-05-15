@@ -5,6 +5,7 @@ import type {
   RunClaudeCompactResult
 } from './types'
 import { buildClaudeCompactSystemPrompt, buildClaudeCompactUserPrompt, extractClaudeCompactSummary } from './prompt'
+import { dehydrateClaudeCompactPayloads } from './payload'
 import { assertClaudeCompactSummarySafe, sanitizeMessagesForClaudeCompact } from './sanitizer'
 import { dropOldestClaudeCompactRounds, selectClaudeCompactRanges } from './rounds'
 
@@ -117,6 +118,22 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
   const createId = args.createId ?? (() => `compact-${Math.random().toString(36).slice(2)}`)
   const selection = selectClaudeCompactRanges(args.messages)
   if (!selection.ok) {
+    if (selection.reason === 'insufficient_compressible_messages') {
+      const dehydrated = dehydrateClaudeCompactPayloads(args.messages, { config: args.config })
+      if (dehydrated.changed) {
+        return {
+          messages: dehydrated.messages,
+          result: {
+            compressed: true,
+            originalCount: args.messages.length,
+            newCount: dehydrated.messages.length,
+            messagesSummarized: 0,
+            payloadsCompacted: dehydrated.payloadsCompacted
+          }
+        }
+      }
+    }
+
     return {
       messages: args.messages,
       result: {
