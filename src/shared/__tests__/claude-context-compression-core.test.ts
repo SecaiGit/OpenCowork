@@ -10,7 +10,8 @@ import {
   selectClaudeCompactRanges,
   type ClaudeCompactContentBlock,
   type ClaudeCompactMessage,
-  classifyClaudeContextGate
+  classifyClaudeContextGate,
+  dehydrateClaudeCompactPayloads
 } from '../claude-context-compression'
 
 let nextMessageId = 0
@@ -40,6 +41,121 @@ function toolResult(
 }
 
 describe('shared Claude compact core', () => {
+  describe('shared Claude payload dehydration', () => {
+    it('dehydrates a large recent tool result without breaking tool result identity', () => {
+      nextMessageId = 0
+      const large = `${'head\n'.repeat(2_000)}Authorization: Bearer secret-token\n${'tail\n'.repeat(2_000)}`
+      const messages = [message('assistant', [toolUse('large')]), message('user', [toolResult('large', large)])]
+
+      const result = dehydrateClaudeCompactPayloads(messages, {
+        maxToolResultChars: 4_000,
+        toolNameByResultId: new Map([['large', 'Bash']])
+      })
+
+      const serialized = JSON.stringify(result.messages)
+      expect(result.changed).toBe(true)
+      expect(result.payloadsCompacted).toBe(1)
+      expect(serialized).toContain('[Tool result compacted for context budget]')
+      expect(serialized).toContain('Tool: Bash')
+      expect(serialized).toContain('Original chars:')
+      expect(serialized).not.toContain('secret-token')
+      expect(result.messages[1]?.content).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'tool_result', toolUseId: 'large' })])
+      )
+      expect(serialized.length).toBeLessThan(JSON.stringify(messages).length)
+    })
+
+    it('covers payload secret redaction matrix consistently with sanitizer rules', () => {
+      nextMessageId = 0
+      const payload = [
+        'x-api-key: header-secret',
+        'Authorization: Token abc',
+        'cookie: session=plain-secret',
+        'set-cookie: auth=plain-secret',
+        'id_token=inline-id-secret',
+        'session_token: inline-session-secret',
+        'auth_token=inline-auth-secret',
+        '{"authorization":"json-auth-secret","cookie":"json-cookie-secret","set-cookie":"json-set-cookie-secret","x-api-key":"json-api-key-secret","id_token":"json-id-secret","session_token":"json-session-secret","auth_token":"json-auth-token-secret"}'
+      ].join('\n')
+      const messages = [message('assistant', [toolUse('secret-matrix')]), message('user', [toolResult('secret-matrix', payload)])]
+
+      const result = dehydrateClaudeCompactPayloads(messages, {
+        maxToolResultChars: 4_000,
+        toolNameByResultId: new Map([['secret-matrix', 'Bash']])
+      })
+      const serialized = JSON.stringify(result.messages)
+
+      expect(serialized).toContain('[REDACTED]')
+      expect(serialized).toContain('{\\"authorization\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"cookie\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"set-cookie\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"x-api-key\\":\\"[REDACTED]\\"')
+      expect(serialized).not.toContain('header-secret')
+      expect(serialized).not.toContain('Token abc')
+      expect(serialized).not.toContain('plain-secret')
+      expect(serialized).not.toContain('inline-id-secret')
+      expect(serialized).not.toContain('inline-session-secret')
+      expect(serialized).not.toContain('inline-auth-secret')
+      expect(serialized).not.toContain('json-auth-secret')
+      expect(serialized).not.toContain('json-cookie-secret')
+      expect(serialized).not.toContain('json-set-cookie-secret')
+      expect(serialized).not.toContain('json-api-key-secret')
+      expect(serialized).not.toContain('json-id-secret')
+      expect(serialized).not.toContain('json-session-secret')
+      expect(serialized).not.toContain('json-auth-token-secret')
+    })
+
+    it('applies a single total budget across multi-block tool results and omits image payloads safely', () => {
+      nextMessageId = 0
+      const messages = [
+        message('assistant', [toolUse('image')]),
+        message('user', [
+          toolResult('image', [
+            { type: 'text', text: `first-block\n${'a'.repeat(4_500)}` },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                mediaType: 'image/png',
+                data: 'raw-image-secret',
+                filePath: 'C:/Users/He/private.png'
+              }
+            },
+            { type: 'text', text: `second-block\n${'b'.repeat(4_500)}` }
+          ])
+        ])
+      ]
+
+      const result = dehydrateClaudeCompactPayloads(messages, { maxToolResultChars: 2_000 })
+      const serialized = JSON.stringify(result.messages)
+
+      expect(result.changed).toBe(true)
+      expect(result.payloadsCompacted).toBe(1)
+      expect(result.keptChars).toBeLessThanOrEqual(2_000)
+      expect(serialized).toContain('[image omitted from long-task context payload]')
+      expect(serialized).not.toContain('raw-image-secret')
+      expect(serialized).not.toContain('private.png')
+      expect(serialized.length).toBeLessThan(JSON.stringify(messages).length)
+    })
+
+    it('uses retained head/tail wording while keptChars still reports final payload length', () => {
+      nextMessageId = 0
+      const large = `${'head\n'.repeat(2_000)}token=abc123\n${'tail\n'.repeat(2_000)}`
+      const messages = [message('assistant', [toolUse('wording')]), message('user', [toolResult('wording', large)])]
+
+      const result = dehydrateClaudeCompactPayloads(messages, {
+        maxToolResultChars: 2_000,
+        toolNameByResultId: new Map([['wording', 'Read']])
+      })
+      const serialized = JSON.stringify(result.messages)
+
+      expect(serialized).toContain('Retained head/tail chars:')
+      expect(serialized).not.toContain('Kept chars:')
+      expect(result.keptChars).toBeGreaterThan(0)
+      expect(result.keptChars).toBeLessThanOrEqual(2_000)
+    })
+  })
+
   describe('shared Claude context gate classification', () => {
     const gateConfig = {
       enabled: true,
