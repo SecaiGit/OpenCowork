@@ -26,13 +26,21 @@ const SECRET_KEY_NAMES = [
   'client_secret',
   'secret',
   'password',
-  'passwd'
+  'passwd',
+  'filePath',
+  'file_path',
+  'file-path',
+  'base64',
+  'imageBase64',
+  'image_base64',
+  'image-base64'
 ] as const
 const SECRET_KEY_PATTERN = SECRET_KEY_NAMES.map((key) =>
   key.replace(/[\\^$.*+?()[\]{}|]/g, (char) => `\\${char}`)
 ).join('|')
 const PRIVATE_KEY_BLOCK_PATTERN =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi
+const BASE64_DATA_URI_PATTERN = /data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi
 const JSON_SECRET_PATTERN = new RegExp(
   `(["'])((${SECRET_KEY_PATTERN})|authorization|cookie|set-cookie)\\1\\s*:\\s*(["'])([\\s\\S]*?)\\4`,
   'gi'
@@ -64,6 +72,7 @@ function redactText(value: string): string {
 
   return value
     .replace(PRIVATE_KEY_BLOCK_PATTERN, REDACTED_VALUE)
+    .replace(BASE64_DATA_URI_PATTERN, REDACTED_VALUE)
     .replace(JSON_SECRET_PATTERN, (_match, keyQuote: string, key: string, _secretKey: string, valueQuote: string) => {
       return `${keyQuote}${key}${keyQuote}:${valueQuote}${REDACTED_VALUE}${valueQuote}`
     })

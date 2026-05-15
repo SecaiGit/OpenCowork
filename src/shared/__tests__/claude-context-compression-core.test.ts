@@ -75,7 +75,9 @@ describe('shared Claude compact core', () => {
         'id_token=inline-id-secret',
         'session_token: inline-session-secret',
         'auth_token=inline-auth-secret',
-        '{"authorization":"json-auth-secret","cookie":"json-cookie-secret","set-cookie":"json-set-cookie-secret","x-api-key":"json-api-key-secret","id_token":"json-id-secret","session_token":"json-session-secret","auth_token":"json-auth-token-secret"}'
+        'filePath=C:/Users/He/private.png',
+        'imageBase64=data:image/png;base64,raw-image-secret',
+        '{"authorization":"json-auth-secret","cookie":"json-cookie-secret","set-cookie":"json-set-cookie-secret","x-api-key":"json-api-key-secret","id_token":"json-id-secret","session_token":"json-session-secret","auth_token":"json-auth-token-secret","filePath":"C:/Users/He/json-private.png","base64":"json-raw-image-secret"}'
       ].join('\n')
       const messages = [message('assistant', [toolUse('secret-matrix')]), message('user', [toolResult('secret-matrix', payload)])]
 
@@ -90,12 +92,18 @@ describe('shared Claude compact core', () => {
       expect(serialized).toContain('\\"cookie\\":\\"[REDACTED]\\"')
       expect(serialized).toContain('\\"set-cookie\\":\\"[REDACTED]\\"')
       expect(serialized).toContain('\\"x-api-key\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"filePath\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"base64\\":\\"[REDACTED]\\"')
       expect(serialized).not.toContain('header-secret')
       expect(serialized).not.toContain('Token abc')
       expect(serialized).not.toContain('plain-secret')
       expect(serialized).not.toContain('inline-id-secret')
       expect(serialized).not.toContain('inline-session-secret')
       expect(serialized).not.toContain('inline-auth-secret')
+      expect(serialized).not.toContain('private.png')
+      expect(serialized).not.toContain('raw-image-secret')
+      expect(serialized).not.toContain('json-private.png')
+      expect(serialized).not.toContain('json-raw-image-secret')
       expect(serialized).not.toContain('json-auth-secret')
       expect(serialized).not.toContain('json-cookie-secret')
       expect(serialized).not.toContain('json-set-cookie-secret')
