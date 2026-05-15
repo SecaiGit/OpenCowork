@@ -30,6 +30,7 @@ import {
   compactRecentToolPayloads,
   compactToolResultForContext
 } from './context-payload-compaction'
+import { classifyClaudeContextGate } from '../../../../shared/claude-context-compression'
 
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
@@ -81,6 +82,12 @@ function findRecentContextUsage(messages: UnifiedMessage[]): number {
     if (tokens > 0) return tokens
   }
   return 0
+}
+
+function createContextGateError(gate: ReturnType<typeof classifyClaudeContextGate>): Error {
+  return new Error(
+    `Context gate blocked model request: ${gate.reason}; input=${gate.inputTokens}; context=${gate.contextLength}; reservedOutput=${gate.reservedOutputTokens}`
+  )
 }
 
 /**
@@ -188,6 +195,18 @@ export async function* runAgentLoop(
           // Lightweight pre-compression: clear stale tool results + thinking blocks (no API call)
           conversationMessages = [...preCompressMessages(conversationMessages, cc.config)]
           estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+        }
+
+        const finalTokens = Math.max(
+          lastObservedContextTokens,
+          findRecentContextUsage(conversationMessages),
+          estimateMessagesTokens(conversationMessages)
+        )
+        const finalGate = classifyClaudeContextGate({ inputTokens: finalTokens, config: cc.config })
+        if (finalGate.blocking) {
+          yield { type: 'error', error: createContextGateError(finalGate), errorType: finalGate.reason }
+          yield buildLoopEndEvent('error')
+          return
         }
       }
       if (config.signal.aborted) {

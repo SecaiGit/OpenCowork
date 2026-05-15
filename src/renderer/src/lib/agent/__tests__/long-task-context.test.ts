@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ContentBlock, ToolResultContent, UnifiedMessage } from '../../api/types'
+import type { ContentBlock, ProviderConfig, ToolResultContent, UnifiedMessage } from '../../api/types'
+import { createProvider } from '../../api/provider'
+import { runAgentLoop } from '../agent-loop'
+import type { AgentEvent } from '../types'
 
 vi.mock('@renderer/locales', () => ({
   default: {
@@ -32,6 +35,10 @@ vi.mock('@renderer/lib/api/responses-session-policy', () => ({
   RESPONSES_SESSION_SCOPE_CONTEXT_COMPRESSION: false
 }))
 
+vi.mock('../../api/provider', () => ({
+  createProvider: vi.fn()
+}))
+
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import {
   groupMessagesByApiRound,
@@ -51,6 +58,7 @@ let nextMessageId = 0
 beforeEach(() => {
   nextMessageId = 0
   vi.clearAllMocks()
+  vi.mocked(createProvider).mockReset()
 })
 
 function message(role: UnifiedMessage['role'], content: UnifiedMessage['content']): UnifiedMessage {
@@ -74,6 +82,141 @@ function toolResult(id: string, content: ToolResultContent = 'ok'): ContentBlock
 function serializeToolResultContent(content: ToolResultContent): string {
   return typeof content === 'string' ? content : JSON.stringify(content)
 }
+
+const providerConfig: ProviderConfig = {
+  type: 'openai-chat',
+  apiKey: 'test-key',
+  model: 'test-model'
+}
+
+describe('runAgentLoop context gate', () => {
+  it('blocks the next provider request when context still exceeds the hard limit after compaction', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'text_delta', text: 'should not be called' }
+      yield { type: 'message_end' }
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    const messages: UnifiedMessage[] = [
+      {
+        id: 'm-hard',
+        role: 'user',
+        content: 'x'.repeat(20_000),
+        createdAt: 1
+      }
+    ]
+
+    for await (const event of runAgentLoop(
+      messages,
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 1_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 200
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).not.toHaveBeenCalled()
+    expect(events.some((event) => event.type === 'error' && /context gate blocked/i.test(event.error.message))).toBe(
+      true
+    )
+    expect(events.filter((event) => event.type === 'loop_end')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+  })
+
+  it('blocks the next provider request when reserved output budget exceeds the remaining context window', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'text_delta', text: 'should not be called' }
+      yield { type: 'message_end' }
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    const messages: UnifiedMessage[] = [
+      {
+        id: 'm-reserved',
+        role: 'user',
+        content: 'small',
+        createdAt: 1,
+        usage: { inputTokens: 0, outputTokens: 0, contextTokens: 900 }
+      }
+    ]
+
+    for await (const event of runAgentLoop(
+      messages,
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 1_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 200
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    const errorEvent = events.find((event) => event.type === 'error')
+
+    expect(providerSend).not.toHaveBeenCalled()
+    expect(errorEvent).toMatchObject({
+      type: 'error',
+      errorType: 'reserved_output_budget_exceeded'
+    })
+    expect(errorEvent?.error.message).toContain('Context gate blocked model request')
+    expect(events.filter((event) => event.type === 'loop_end')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+  })
+})
 
 describe('redactTextForModelContext', () => {
   it('redacts quoted sensitive values that contain spaces or escaped characters', () => {
