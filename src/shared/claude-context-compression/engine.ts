@@ -7,7 +7,13 @@ import type {
 import { buildClaudeCompactSystemPrompt, buildClaudeCompactUserPrompt, extractClaudeCompactSummary } from './prompt'
 import { dehydrateClaudeCompactPayloads } from './payload'
 import { assertClaudeCompactSummarySafe, sanitizeMessagesForClaudeCompact } from './sanitizer'
-import { dropOldestClaudeCompactRounds, selectClaudeCompactRanges } from './rounds'
+import {
+  dropOldestClaudeCompactRounds,
+  selectClaudeCompactRanges,
+  selectClaudePartialCompactRanges,
+  type ClaudeCompactRangeSelection,
+  type ClaudePartialCompactRangeSelection
+} from './rounds'
 
 export const MAX_CLAUDE_COMPACT_RETRIES = 3
 
@@ -44,6 +50,8 @@ function createBoundaryMessage(args: {
   retryCount: number
   compressedRange?: { start: number; end: number }
   preservedRange?: { start: number; end: number }
+  partialRange?: ClaudePartialCompactRangeSelection['partialRange']
+  partialAnchorId?: string
   preservedMessages: ClaudeCompactMessage[]
 }): ClaudeCompactMessage {
   const preservedSegment = args.preservedMessages.length
@@ -70,6 +78,17 @@ function createBoundaryMessage(args: {
         retryCount: args.retryCount,
         ...(args.compressedRange ? { compressedRange: args.compressedRange } : {}),
         ...(args.preservedRange ? { preservedRange: args.preservedRange } : {}),
+        ...(args.partialRange && args.partialAnchorId
+          ? {
+              partialRange: {
+                mode: 'from_up_to' as const,
+                anchorId: args.partialAnchorId,
+                from: args.partialRange.from,
+                upTo: args.partialRange.upTo,
+                tailStart: args.partialRange.tailStart
+              }
+            }
+          : {}),
         safetyFlags: ['untrusted-history', 'sanitized-input', 'validated-summary'],
         ...(preservedSegment ? { preservedSegment } : {})
       }
@@ -113,12 +132,59 @@ function createPostCompactStateMessage(args: {
   }
 }
 
+type EffectiveClaudeCompactSelection = ClaudeCompactRangeSelection | ClaudePartialCompactRangeSelection
+
+function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
+  if (message.role !== 'user') return false
+  if (typeof message.content === 'string') return message.content.trim().length > 0
+  return message.content.some((block) => block.type !== 'tool_result')
+}
+
+function shouldPreferPartialSelection(
+  messages: ClaudeCompactMessage[],
+  selection: ClaudeCompactRangeSelection
+): boolean {
+  if (!selection.ok) return false
+  const userAnchors = messages.filter(hasNonToolResultUserContent)
+  if (userAnchors.length !== 1) return false
+  return selection.compressibleMessages.some((message) => message.id === userAnchors[0]!.id)
+}
+
+function resolveEffectiveCompactSelection(
+  messages: ClaudeCompactMessage[]
+): EffectiveClaudeCompactSelection {
+  const fullSelection = selectClaudeCompactRanges(messages)
+  if (fullSelection.ok && !shouldPreferPartialSelection(messages, fullSelection)) {
+    return fullSelection
+  }
+
+  if (
+    !fullSelection.ok &&
+    fullSelection.reason !== 'insufficient_messages' &&
+    fullSelection.reason !== 'insufficient_compressible_messages'
+  ) {
+    return fullSelection
+  }
+
+  const partialSelection = selectClaudePartialCompactRanges(messages)
+  return partialSelection.ok ? partialSelection : fullSelection
+}
+
+function isPartialCompactSelection(
+  selection: EffectiveClaudeCompactSelection
+): selection is ClaudePartialCompactRangeSelection {
+  return selection.ok && 'partialRange' in selection
+}
+
 export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunClaudeCompactResult> {
   const now = args.now ?? Date.now
   const createId = args.createId ?? (() => `compact-${Math.random().toString(36).slice(2)}`)
-  const selection = selectClaudeCompactRanges(args.messages)
+  const selection = resolveEffectiveCompactSelection(args.messages)
   if (!selection.ok) {
-    if (selection.reason === 'insufficient_compressible_messages') {
+    if (
+      selection.reason === 'insufficient_messages' ||
+      selection.reason === 'insufficient_compressible_messages'
+    ) {
       const dehydrated = dehydrateClaudeCompactPayloads(args.messages, { config: args.config })
       if (dehydrated.changed) {
         return {
@@ -180,6 +246,7 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
         now,
         postCompactContext: args.postCompactContext
       })
+      const partialSelection = isPartialCompactSelection(selection) ? selection : null
       const compressedMessages = [
         createBoundaryMessage({
           createId,
@@ -191,6 +258,8 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           retryCount: attempt,
           compressedRange: selection.compressedRange,
           preservedRange: selection.preservedRange,
+          partialRange: partialSelection?.partialRange,
+          partialAnchorId: partialSelection?.anchorMessage.id,
           preservedMessages: selection.preservedMessages
         }),
         summaryMessage,
@@ -212,7 +281,8 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           compressed: true,
           originalCount: args.messages.length,
           newCount: compressedMessages.length,
-          messagesSummarized: selection.compressibleMessages.length
+          messagesSummarized: selection.compressibleMessages.length,
+          ...(partialSelection ? { partialCompact: true } : {})
         }
       }
     } catch (error) {

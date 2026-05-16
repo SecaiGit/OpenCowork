@@ -297,7 +297,7 @@ function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
 }
 
 function findCurrentTaskAnchorIndex(messages: ClaudeCompactMessage[]): number {
-  for (let index = 0; index < messages.length; index += 1) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (hasNonToolResultUserContent(messages[index]!)) return index
   }
   return -1

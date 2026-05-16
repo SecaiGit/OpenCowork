@@ -444,6 +444,32 @@ describe('shared Claude compact core', () => {
       expect(selection.partialRange).toEqual({ from: 1, upTo: 4, anchor: 0, tailStart: 4 })
     })
 
+    it('uses the latest user task anchor when earlier tasks remain in history', () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'old task already done'),
+        message('assistant', 'old task result'),
+        message('user', 'current task: implement the feature'),
+        message('assistant', [toolUse('current-read')]),
+        message('user', [toolResult('current-read', 'current file snapshot')]),
+        message('assistant', 'current read finished'),
+        message('assistant', [toolUse('latest-edit')]),
+        message('user', [toolResult('latest-edit', 'latest edit result')]),
+        message('assistant', 'continue with tests')
+      ]
+
+      const selection = selectClaudePartialCompactRanges(messages, {
+        minCompressibleMessages: 2,
+        preservedTailMessages: 3
+      })
+
+      expect(selection.ok).toBe(true)
+      expect(selection.anchorMessage?.id).toBe('m-3')
+      expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-4', 'm-5', 'm-6'])
+      expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-3', 'm-7', 'm-8', 'm-9'])
+      expect(selection.partialRange).toEqual({ from: 3, upTo: 6, anchor: 2, tailStart: 6 })
+    })
+
     it('refuses to compact when there is no closed current-task substep', () => {
       nextMessageId = 0
       const messages = [
@@ -483,6 +509,139 @@ describe('shared Claude compact core', () => {
       expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-2', 'm-3'])
       expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-1', 'm-4', 'm-5', 'm-6'])
       expect(selection.partialRange).toEqual({ from: 1, upTo: 3, anchor: 0, tailStart: 3 })
+    })
+  })
+
+  describe('shared Claude partial compact engine', () => {
+    it('summarizes early current-task substeps when ordinary range selection has no older rounds', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'implement the feature and keep going'),
+        message('assistant', [toolUse('read-old')]),
+        message('user', [toolResult('read-old', 'old file snapshot')]),
+        message('assistant', 'old read finished'),
+        message('assistant', [toolUse('edit-latest')]),
+        message('user', [toolResult('edit-latest', 'latest edit result')]),
+        message('assistant', 'continue with tests')
+      ]
+      const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+        expect(userPrompt).toContain('old file snapshot')
+        expect(userPrompt).not.toContain('latest edit result')
+        return '<summary>Finished the old read step and should continue with tests.</summary>'
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `partial-${++id}`
+        })(),
+        now: () => 123
+      })
+
+      expect(result.result.compressed).toBe(true)
+      expect(result.result.partialCompact).toBe(true)
+      expect(summarize).toHaveBeenCalledTimes(1)
+      expect(result.messages[0]?.meta?.compactBoundary?.partialRange).toEqual({
+        mode: 'from_up_to',
+        anchorId: 'm-1',
+        from: 1,
+        upTo: 4,
+        tailStart: 4
+      })
+      expect(result.messages[0]?.meta?.compactBoundary?.compressedRange).toEqual({ start: 1, end: 4 })
+      expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+      expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+    })
+
+    it('keeps full compact for multi-task history instead of dropping older tasks through partial compact', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'old task'),
+        message('assistant', [toolUse('old-read')]),
+        message('user', [toolResult('old-read', 'old task file snapshot')]),
+        message('assistant', 'old task finished'),
+        message('user', 'current task: implement the feature'),
+        message('assistant', [toolUse('current-read')]),
+        message('user', [toolResult('current-read', 'current file snapshot')]),
+        message('assistant', 'current read finished'),
+        message('assistant', [toolUse('latest-edit')]),
+        message('user', [toolResult('latest-edit', 'latest edit result')]),
+        message('assistant', 'continue with tests')
+      ]
+      const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+        expect(userPrompt).toContain('old task file snapshot')
+        expect(userPrompt).toContain('current file snapshot')
+        expect(userPrompt).not.toContain('latest edit result')
+        return '<summary>Old task is complete. Current read step is complete.</summary>'
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `full-${++id}`
+        })(),
+        now: () => 123
+      })
+
+      expect(result.result.compressed).toBe(true)
+      expect(result.result.partialCompact).toBeUndefined()
+      expect(result.messages[0]?.meta?.compactBoundary?.partialRange).toBeUndefined()
+      expect(result.messages[0]?.meta?.compactBoundary?.compressedRange).toEqual({ start: 0, end: 8 })
+      expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toEqual({ start: 8, end: 11 })
+      expect(result.messages.slice(-3).map((item) => item.id)).toEqual(['m-9', 'm-10', 'm-11'])
+    })
+
+    it('keeps recent payload fallback when no safe partial compact range exists', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('assistant', [toolUse('recent-large')]),
+        message('user', [toolResult('recent-large', 'warning line\n'.repeat(12_000))]),
+        message('assistant', 'continue')
+      ]
+      const summarize = vi.fn(async () => '<summary>should not be used</summary>')
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 190_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize
+      })
+
+      expect(result.result.compressed).toBe(true)
+      expect(result.result.messagesSummarized).toBe(0)
+      expect(result.result.payloadsCompacted).toBe(1)
+      expect(result.result.partialCompact).toBeUndefined()
+      expect(summarize).not.toHaveBeenCalled()
+      expect(JSON.stringify(result.messages)).toContain('[Tool result compacted for context budget]')
     })
   })
 
