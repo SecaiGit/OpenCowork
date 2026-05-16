@@ -95,6 +95,7 @@ import { ApiStreamError } from '@renderer/lib/ipc/api-stream'
 import { recordUsageEvent } from '@renderer/lib/usage-analytics'
 import {
   compressMessages,
+  formatCompressionDiagnosticText,
   isCompactSummaryLikeMessage,
   mergeCompressedMessagesIntoConversation,
   resolveCompressionContextLength,
@@ -5107,6 +5108,14 @@ export function useChatActions(): {
                 }
 
                 case 'context_compression_start':
+                  break
+
+                case 'context_payload_guarded':
+                case 'context_compression_deferred':
+                  appendRuntimeContentBlock(sessionId!, assistantMsgId, {
+                    type: 'text',
+                    text: `\n\n${formatCompressionDiagnosticText(event)}`
+                  })
                   break
 
                 case 'context_compressed':

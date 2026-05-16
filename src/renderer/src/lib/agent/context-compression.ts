@@ -105,6 +105,143 @@ export interface CompressionResult {
   reason?: CompressionSkipReason
 }
 
+export interface CompressionDiagnosticTextArgs {
+  reason: CompressionSkipReason
+  checkpoint?: 'before_model_request' | 'assistant_finalize'
+  blockingNextRequest?: boolean
+  messagesChanged?: boolean
+  originalChars?: number
+  keptChars?: number
+}
+
+function describeCompressionReason(reason: CompressionSkipReason): { title: string; action: string } {
+  switch (reason) {
+    case 'single_input_too_large':
+      return {
+        title: 'Single input is too large',
+        action:
+          'The input was compacted before the next model request. ' +
+          'Use a file or split the text if exact full content is required.'
+      }
+    case 'assistant_output_too_large':
+      return {
+        title: 'Assistant output is too large',
+        action:
+          'The assistant response was compacted at finalize. ' +
+          'The next request keeps enough context budget.'
+      }
+    case 'recent_payload_too_large':
+    case 'single_tool_result_too_large':
+      return {
+        title: 'Recent payload was too large',
+        action: 'Large recent tool output was dehydrated while preserving tool/result structure.'
+      }
+    case 'hard_context_limit_exceeded':
+      return {
+        title: 'Hard context limit exceeded',
+        action:
+          'The runtime blocked the next model request. ' +
+          'Compact, remove payloads, or switch to a larger context model.'
+      }
+    case 'reserved_output_budget_exceeded':
+      return {
+        title: 'Reserved output budget exceeded',
+        action:
+          'Reduce expected output, compact history, or use a larger context model ' +
+          'before continuing.'
+      }
+    case 'unsafe_tool_boundary':
+    case 'unsafe_boundary':
+      return {
+        title: 'Unsafe tool boundary',
+        action:
+          'The runtime deferred compression until tool_use/tool_result protocol ' +
+          'reaches a safe checkpoint.'
+      }
+    case 'summarizer_prompt_too_long':
+      return {
+        title: 'Compact request is too large',
+        action:
+          'Deterministic payload compaction or a larger context model ' +
+          'is required before summarization can run.'
+      }
+    case 'insufficient_messages':
+      return {
+        title: 'Insufficient history',
+        action: 'There are not enough historical messages to summarize safely.'
+      }
+    case 'insufficient_compressible_messages':
+      return {
+        title: 'Insufficient compressible history',
+        action:
+          'Recent task messages must be preserved. ' +
+          'Wait for a safe checkpoint or compact recent payloads.'
+      }
+    case 'circuit_breaker_open':
+      return {
+        title: 'Compression circuit breaker is open',
+        action: 'Automatic compression is paused after repeated failures.'
+      }
+    case 'unsafe_summary_output':
+      return {
+        title: 'Unsafe compact summary output',
+        action: 'The summary was rejected before storage because it contained unsafe content.'
+      }
+    case 'summarizer_failed':
+      return {
+        title: 'Compact summarizer failed',
+        action:
+          'Compression failed; retry after reducing context pressure ' +
+          'or changing provider settings.'
+      }
+    case 'cancelled':
+      return {
+        title: 'Compression was cancelled',
+        action: 'The operation was cancelled before completion.'
+      }
+    case 'recent_segment_too_large':
+      return {
+        title: 'Recent segment is too large',
+        action:
+          'The most recent preserved segment is too large. ' +
+          'Use payload dehydration or wait for a later checkpoint.'
+      }
+    case 'unknown':
+    default:
+      return {
+        title: 'Context compression diagnostic',
+        action: 'Inspect context usage, recent payloads, and compression metadata before retrying.'
+      }
+  }
+}
+
+export function formatCompressionDiagnosticText(args: CompressionDiagnosticTextArgs): string {
+  const description = describeCompressionReason(args.reason)
+  const lines = [
+    '[Context compression diagnostic]',
+    description.title,
+    `Reason: ${args.reason}`,
+    `Checkpoint: ${args.checkpoint ?? 'unknown'}`,
+    `Action: ${description.action}`
+  ]
+
+  if (args.blockingNextRequest) {
+    lines.push('Status: blocked the next model request')
+  } else if (args.blockingNextRequest === false) {
+    lines.push('Status: request can continue after this checkpoint')
+  }
+
+  if (typeof args.originalChars === 'number' || typeof args.keptChars === 'number') {
+    lines.push(`Payload chars: ${args.originalChars ?? 'unknown'} -> ${args.keptChars ?? 'unknown'}`)
+  }
+
+  if (typeof args.messagesChanged === 'boolean') {
+    lines.push(`Messages changed: ${args.messagesChanged ? 'yes' : 'no'}`)
+  }
+
+  return lines.join('\n')
+}
+
 export interface ContextCompressionStrategy {
   id: ContextCompressionStrategyId
   shouldCompress: (inputTokens: number, config: CompressionConfig) => boolean

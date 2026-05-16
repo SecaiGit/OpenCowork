@@ -176,10 +176,55 @@ check(
 )
 
 check(
+  hasAll(stateFormat, [
+    'Runtime re-injection state',
+    'loadedSkills',
+    'asyncAgents',
+    'mcpServers',
+    'memoryCache',
+    'promptCacheBaseline'
+  ]) &&
+    hasAll(stateAttachments, [
+      'getRegisteredSkills',
+      'useTeamStore',
+      'useMcpStore',
+      'getLayeredMemorySnapshot',
+      'promptCacheBaseline'
+    ]),
+  'post-compact state re-injects lifecycle and cache metadata',
+  'post-compact state is missing lifecycle or cache metadata',
+  [
+    'context-state-format.ts must expose compact-safe runtime lifecycle/cache sections',
+    'context-state-attachments.ts must collect skills, async agents, MCP, memory cache, and prompt-cache baseline state'
+  ]
+)
+
+check(
+  hasAll(stateFormat, ['sanitizePostCompactText', '[REDACTED_SECRET]', '[USER_HOME]', 'Bearer']),
+  'post-compact state redacts sensitive runtime fields',
+  'post-compact state is missing runtime field redaction',
+  ['context-state-format.ts must redact secrets and user-home paths before model re-injection']
+)
+
+check(
   !hasCompressionEnabledNullHistoryRegression(chatActions),
   'chat action does not full-load history solely for compression',
   'chat action still full-loads history when compression is enabled',
   ['use-chat-actions.ts must not set requestContextMaxMessages=null just because compression is enabled']
+)
+
+check(
+  hasAll(chatActions, [
+    'formatCompressionDiagnosticText',
+    "case 'context_payload_guarded'",
+    "case 'context_compression_deferred'"
+  ]),
+  'chat action renders context compression diagnostics',
+  'chat action does not render context compression diagnostics',
+  [
+    'use-chat-actions.ts must consume context payload/compression diagnostic events',
+    'diagnostics should be visible instead of silently dropping event reasons'
+  ]
 )
 
 check(
@@ -201,6 +246,42 @@ check(
   'partial compact metadata is typed',
   'partial compact metadata is not typed',
   ['types.ts must include ClaudeCompactPartialRangeMeta and expose it on compactBoundary metadata']
+)
+
+check(
+  hasAll(sharedTypes, [
+    'sourceMessageIds?: string[]',
+    'sourceTokenEstimate?: number',
+    'sourceRuntime?: ClaudeCompactSourceRuntime',
+    'sourceSummaryId?: string',
+    'relinkTargetIds?: string[]',
+    'duplicateCompactionKey?: string',
+    'compactGenerationId?: string'
+  ]),
+  'compact boundary relink metadata is typed',
+  'compact boundary relink metadata is not fully typed',
+  [
+    'types.ts must expose source ids/token/runtime and summary id',
+    'types.ts must expose relink targets, duplicate key, and generation id'
+  ]
+)
+
+check(
+  hasAll(sharedEngine, [
+    'sourceMessageIds',
+    'sourceTokenEstimate',
+    'sourceRuntime',
+    'sourceSummaryId',
+    'relinkTargetIds',
+    'duplicateCompactionKey',
+    'compactGenerationId'
+  ]),
+  'shared compact engine writes relink metadata',
+  'shared compact engine does not write relink metadata',
+  [
+    'engine.ts must persist relink metadata on compactBoundary',
+    'metadata must support UI relink and duplicate detection'
+  ]
 )
 
 for (const message of passes) {

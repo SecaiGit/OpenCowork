@@ -193,6 +193,8 @@ export interface CompactPartialRangeMeta {
   tailStart: number
 }
 
+export type CompactSourceRuntime = 'shared' | 'renderer' | 'main' | 'sidecar'
+
 export interface CompactBoundaryMeta {
   trigger: 'auto' | 'manual'
   preTokens: number
@@ -204,6 +206,13 @@ export interface CompactBoundaryMeta {
   compressedRange?: CompactBoundaryRange
   preservedRange?: CompactBoundaryRange
   partialRange?: CompactPartialRangeMeta
+  sourceMessageIds?: string[]
+  sourceTokenEstimate?: number
+  sourceRuntime?: CompactSourceRuntime
+  sourceSummaryId?: string
+  relinkTargetIds?: string[]
+  duplicateCompactionKey?: string
+  compactGenerationId?: string
   safetyFlags?: string[]
   preservedSegment?: CompactBoundarySegment
 }

@@ -144,6 +144,7 @@ export async function maybeCompactMainRuntimeContext(args: {
     config: args.config,
     postCompactContext: args.postCompactContext,
     focusPrompt: args.focusPrompt,
+    sourceRuntime: 'main',
     signal: args.signal,
     summarize: args.summarize,
     now: args.now,

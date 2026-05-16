@@ -80,7 +80,8 @@ describe('main runtime context compression preflight', () => {
     expect(result.messages[0]?.meta?.compactBoundary).toMatchObject({
       strategy: 'claude-code-compact-v1',
       trigger: 'auto',
-      preTokens: 180_000
+      preTokens: 180_000,
+      sourceRuntime: 'main'
     })
     expect(result.events).toEqual([
       { type: 'context_compression_start' },
@@ -95,7 +96,8 @@ describe('main runtime context compression preflight', () => {
     expect(compressedEvent && 'messages' in compressedEvent ? compressedEvent.messages[0]?.meta : null).toMatchObject({
       compactBoundary: {
         strategy: 'claude-code-compact-v1',
-        trigger: 'auto'
+        trigger: 'auto',
+        sourceRuntime: 'main'
       }
     })
     expect(JSON.stringify(summarize.mock.calls[0])).not.toContain('sk-secret')

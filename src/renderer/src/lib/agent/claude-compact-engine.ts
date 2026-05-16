@@ -87,6 +87,7 @@ async function claudeCompressMessages(
     config,
     focusPrompt,
     postCompactContext,
+    sourceRuntime: 'renderer',
     signal,
     summarize: async ({ systemPrompt, userPrompt, signal: summarizeSignal }) =>
       callClaudeCompactSummarizer({

@@ -552,15 +552,32 @@ describe('shared Claude compact core', () => {
       expect(result.result.compressed).toBe(true)
       expect(result.result.partialCompact).toBe(true)
       expect(summarize).toHaveBeenCalledTimes(1)
-      expect(result.messages[0]?.meta?.compactBoundary?.partialRange).toEqual({
+      const boundaryMeta = result.messages[0]?.meta?.compactBoundary
+      expect(boundaryMeta).toBeDefined()
+      expect(boundaryMeta?.partialRange).toEqual({
         mode: 'from_up_to',
         anchorId: 'm-1',
         from: 1,
         upTo: 4,
         tailStart: 4
       })
-      expect(result.messages[0]?.meta?.compactBoundary?.compressedRange).toEqual({ start: 1, end: 4 })
-      expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+      expect(boundaryMeta?.compressedRange).toEqual({ start: 1, end: 4 })
+      expect(boundaryMeta?.preservedRange).toBeUndefined()
+      expect(boundaryMeta?.sourceMessageIds).toEqual(['m-2', 'm-3', 'm-4'])
+      expect(boundaryMeta?.sourceTokenEstimate).toEqual(expect.any(Number))
+      expect(boundaryMeta?.sourceTokenEstimate).toBeGreaterThan(0)
+      expect(boundaryMeta?.sourceRuntime).toBe('shared')
+      expect(boundaryMeta?.compactGenerationId).toBe('partial-1')
+      expect(boundaryMeta?.sourceSummaryId).toBe('partial-2')
+      expect(boundaryMeta?.relinkTargetIds).toEqual(['partial-2', 'm-1', 'm-5', 'm-6', 'm-7'])
+      expect(boundaryMeta?.duplicateCompactionKey).toBe(
+        JSON.stringify({
+          strategy: 'claude-code-compact-v1',
+          mode: 'partial',
+          trigger: 'auto',
+          sourceMessageIds: ['m-2', 'm-3', 'm-4']
+        })
+      )
       expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
     })
 
@@ -665,6 +682,20 @@ describe('shared Claude compact core', () => {
       expect(result.messages[0]?.meta?.compactBoundary?.retryCount).toBe(1)
       expect(result.messages[0]?.meta?.compactBoundary?.compressedRange).toBeUndefined()
       expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+      expect(result.messages[0]?.meta?.compactBoundary?.sourceMessageIds).toEqual([
+        'm-5',
+        'm-6',
+        'm-7',
+        'm-8'
+      ])
+      expect(result.messages[0]?.meta?.compactBoundary?.duplicateCompactionKey).toBe(
+        JSON.stringify({
+          strategy: 'claude-code-compact-v1',
+          mode: 'full',
+          trigger: 'auto',
+          sourceMessageIds: ['m-5', 'm-6', 'm-7', 'm-8']
+        })
+      )
       expect(summarize).toHaveBeenCalledTimes(2)
     })
 
@@ -1013,6 +1044,22 @@ describe('shared Claude compact core', () => {
     })
     expect(result.messages[1]?.meta?.compactSummary).toBeTruthy()
     expect(result.messages[2]?.meta?.postCompactState).toBe(true)
+    expect(result.messages[0]?.meta?.compactBoundary?.relinkTargetIds).toEqual([
+      'compact-2',
+      'compact-3',
+      'm-5',
+      'm-6',
+      'm-7',
+      'm-8'
+    ])
+    expect(result.messages[0]?.meta?.compactBoundary?.duplicateCompactionKey).toBe(
+      JSON.stringify({
+        strategy: 'claude-code-compact-v1',
+        mode: 'full',
+        trigger: 'auto',
+        sourceMessageIds: ['m-1', 'm-2', 'm-3', 'm-4']
+      })
+    )
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(JSON.stringify(summarizer.mock.calls[0])).not.toContain('sk-tool-secret')
   })

@@ -46,9 +46,18 @@ import {
   sanitizeMessagesForClaudeCompact
 } from '../claude-compact-sanitizer'
 import { validateToolUseResultProtocol } from '../context-budget'
-import { compressMessages, getCompressionStrategy, shouldCompress } from '../context-compression'
+import {
+  compressMessages,
+  formatCompressionDiagnosticText,
+  getCompressionStrategy,
+  shouldCompress
+} from '../context-compression'
 import { parseManualCompactCommand } from '../manual-compact-command'
+import { buildPostCompactStateContext } from '../context-state-attachments'
 import { formatPostCompactStateContext } from '../context-state-format'
+import { useMcpStore } from '@renderer/stores/mcp-store'
+import { useTaskStore } from '@renderer/stores/task-store'
+import { useTeamStore } from '@renderer/stores/team-store'
 
 let nextMessageId = 0
 
@@ -91,6 +100,33 @@ describe('claude-code-compact-v1 registration', () => {
     expect(CONTEXT_COMPRESSION_STRATEGY_IDS).toContain('claude-code-compact-v1')
     expect(isContextCompressionStrategyId('claude-code-compact-v1')).toBe(true)
     expect(resolveCompressionStrategyId('claude-code-compact-v1')).toBe('claude-code-compact-v1')
+  })
+})
+
+describe('formatCompressionDiagnosticText', () => {
+  it('describes oversized input, hard gate, and deferred recent payload reasons with actions', () => {
+    expect(
+      formatCompressionDiagnosticText({
+        reason: 'single_input_too_large',
+        checkpoint: 'before_model_request',
+        originalChars: 12_000,
+        keptChars: 4_000
+      })
+    ).toContain('Single input is too large')
+    expect(
+      formatCompressionDiagnosticText({
+        reason: 'hard_context_limit_exceeded',
+        checkpoint: 'before_model_request',
+        blockingNextRequest: true
+      })
+    ).toContain('blocked the next model request')
+    expect(
+      formatCompressionDiagnosticText({
+        reason: 'recent_payload_too_large',
+        checkpoint: 'before_model_request',
+        messagesChanged: true
+      })
+    ).toContain('Recent payload was too large')
   })
 })
 
@@ -437,6 +473,39 @@ describe('legacy compact summary extraction safety', () => {
     expect(storedSummary).toContain('[REDACTED')
     expect(storedSummary).not.toContain('summary-secret-token')
   })
+
+  it('replaces stale post-compact state when compacting again', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue('<summary>Older work was summarized.</summary>')
+    const staleState: UnifiedMessage = {
+      ...message('user', 'stale post compact state'),
+      meta: { postCompactState: true }
+    }
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', 'first result'),
+      message('user', 'tail task'),
+      staleState,
+      message('assistant', 'tail result')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      3,
+      undefined,
+      undefined,
+      'manual',
+      100,
+      { strategyId: 'partial-summary-v1' },
+      '## Fresh post compact state'
+    )
+
+    expect(result.result.compressed).toBe(true)
+    expect(result.messages.filter((item) => item.meta?.postCompactState === true)).toHaveLength(1)
+    expect(JSON.stringify(result.messages)).toContain('Fresh post compact state')
+    expect(JSON.stringify(result.messages)).not.toContain('stale post compact state')
+  })
 })
 
 describe('claude-code-compact-v1 engine', () => {
@@ -476,6 +545,7 @@ describe('claude-code-compact-v1 engine', () => {
 
     expect(result.result.compressed).toBe(true)
     expect(result.messages[0]?.meta?.compactBoundary?.strategy).toBe('claude-code-compact-v1')
+    expect(result.messages[0]?.meta?.compactBoundary?.sourceRuntime).toBe('renderer')
     expect(result.messages[1]?.meta?.compactSummary).toBeTruthy()
     expect(result.messages[2]?.meta?.postCompactState).toBe(true)
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
@@ -729,5 +799,129 @@ describe('formatPostCompactStateContext Claude compact continuity', () => {
     expect(text).toContain('Passed: npm run test:agent-context')
     expect(text).toContain('Failed then addressed: npm run typecheck: fixed missing import')
     expect(text).not.toContain('sk-')
+  })
+
+  it('re-injects compact-safe runtime state for skills, async agents, MCP, memory, and prompt cache', () => {
+    const text = formatPostCompactStateContext({
+      title: 'Current state',
+      loadedSkills: [{ name: 'test-driven-development' }, { name: 'verification-before-completion' }],
+      asyncAgents: [
+        {
+          name: 'reviewer',
+          status: 'running',
+          currentTask: 'review compact metadata with Bearer runtime-secret'
+        }
+      ],
+      mcpServers: [{ name: 'filesystem', status: 'connected', toolCount: 4 }],
+      memoryCache: {
+        version: 7,
+        updatedAt: 0,
+        sources: ['C:/Users/He/.open-cowork/MEMORY.md', 'C:/projects/OpenCowork/.agents/MEMORY.md']
+      },
+      promptCacheBaseline: {
+        status: 'reset_after_compact',
+        reason: 'compact boundary changed replay baseline sk-reason-secret'
+      }
+    })
+
+    expect(text).toContain('### Runtime re-injection state')
+    expect(text).toContain('Skills: test-driven-development, verification-before-completion')
+    expect(text).toContain('Async agents: reviewer [running] - review compact metadata')
+    expect(text).toContain('MCP servers: filesystem [connected, tools: 4]')
+    expect(text).toContain('Memory cache: version 7, updated 1970-01-01T00:00:00.000Z')
+    expect(text).toContain('Memory sources: [USER_HOME]/.open-cowork/MEMORY.md; C:/projects/OpenCowork/.agents/MEMORY.md')
+    expect(text).toContain('Prompt cache baseline: reset_after_compact - compact boundary changed replay baseline')
+    expect(text).not.toContain('C:/Users/He')
+    expect(text).not.toContain('runtime-secret')
+    expect(text).not.toContain('sk-reason-secret')
+  })
+
+  it('collects renderer runtime state through the post-compact adapter without leaking home paths', () => {
+    const sessionId = 'session-reinject'
+    useTaskStore.setState({
+      tasks: [],
+      todos: [],
+      currentSessionId: null,
+      tasksBySession: {
+        [sessionId]: [
+          {
+            id: 'task-adapter',
+            sessionId,
+            subject: 'Continue adapter reinjection',
+            description: '',
+            activeForm: 'checking Bearer task-secret',
+            status: 'in_progress',
+            owner: 'reviewer',
+            blocks: [],
+            blockedBy: [],
+            createdAt: 0,
+            updatedAt: 0
+          }
+        ]
+      }
+    })
+    useTeamStore.setState({
+      activeTeam: {
+        name: 'context-team',
+        description: 'compact continuity',
+        sessionId,
+        members: [
+          {
+            id: 'agent-1',
+            name: 'reviewer',
+            model: 'test-model',
+            status: 'working',
+            currentTaskId: 'team-task-1',
+            iteration: 0,
+            toolCalls: [],
+            streamingText: '',
+            startedAt: 0,
+            completedAt: null
+          }
+        ],
+        tasks: [
+          {
+            id: 'team-task-1',
+            subject: 'Review post-compact state',
+            description: '',
+            status: 'in_progress',
+            owner: 'reviewer',
+            dependsOn: []
+          }
+        ],
+        messages: [],
+        createdAt: 0
+      },
+      teamHistory: []
+    })
+    useMcpStore.setState({
+      servers: [
+        {
+          id: 'mcp-1',
+          name: 'filesystem',
+          enabled: true,
+          transport: 'stdio',
+          createdAt: 0
+        }
+      ],
+      serverStatuses: { 'mcp-1': 'connected' },
+      serverTools: { 'mcp-1': [{ name: 'read_file', inputSchema: {} }] },
+      activeMcpIdsByProject: { __global__: ['mcp-1'] }
+    })
+
+    const text = buildPostCompactStateContext({
+      sessionId,
+      workingFolder: 'C:/Users/He/project',
+      readFileHistory: new Map([['C:/Users/He/project/src/index.ts', 0]])
+    })
+
+    expect(text).toContain('### Active tasks')
+    expect(text).toContain('task-adapter: Continue adapter reinjection [in_progress]')
+    expect(text).toContain('### Runtime re-injection state')
+    expect(text).toContain('Async agents: reviewer [working] - Review post-compact state')
+    expect(text).toContain('MCP servers: filesystem [connected, tools: 1]')
+    expect(text).toContain('Prompt cache baseline: reset_after_compact')
+    expect(text).not.toContain('C:/Users/He')
+    expect(text).not.toContain('task-secret')
   })
 })

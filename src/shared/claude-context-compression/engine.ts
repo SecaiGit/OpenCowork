@@ -1,6 +1,8 @@
 import type {
   ClaudeCompactBoundaryMeta,
   ClaudeCompactMessage,
+  ClaudeCompactSourceRuntime,
+  ClaudeCompactTrigger,
   RunClaudeCompactArgs,
   RunClaudeCompactResult
 } from './types'
@@ -40,8 +42,22 @@ function estimateSharedTokens(messages: ClaudeCompactMessage[]): number {
   return Math.ceil(JSON.stringify(messages).length / 4)
 }
 
+function createDuplicateCompactionKey(args: {
+  strategy: string
+  mode: 'full' | 'partial'
+  trigger: ClaudeCompactTrigger
+  sourceMessageIds: string[]
+}): string {
+  return JSON.stringify({
+    strategy: args.strategy,
+    mode: args.mode,
+    trigger: args.trigger,
+    sourceMessageIds: args.sourceMessageIds
+  })
+}
+
 function createBoundaryMessage(args: {
-  createId: () => string
+  compactGenerationId: string
   now: () => number
   trigger: ClaudeCompactBoundaryMeta['trigger']
   preTokens: number
@@ -53,29 +69,53 @@ function createBoundaryMessage(args: {
   partialRange?: ClaudePartialCompactRangeSelection['partialRange']
   partialAnchorId?: string
   preservedMessages: ClaudeCompactMessage[]
+  postCompactStateMessage?: ClaudeCompactMessage | null
+  sourceMessages: ClaudeCompactMessage[]
+  sourceRuntime: ClaudeCompactSourceRuntime
+  sourceSummaryId: string
 }): ClaudeCompactMessage {
+  const compactGenerationId = args.compactGenerationId
+  const strategy = 'claude-code-compact-v1'
+  const sourceMessageIds = args.sourceMessages.map((message) => message.id)
+  const relinkTargetIds = [
+    args.sourceSummaryId,
+    ...(args.postCompactStateMessage ? [args.postCompactStateMessage.id] : []),
+    ...args.preservedMessages.map((message) => message.id)
+  ]
   const preservedSegment = args.preservedMessages.length
     ? {
         headId: args.preservedMessages[0]!.id,
-        anchorId: '',
+        anchorId: args.sourceSummaryId,
         tailId: args.preservedMessages[args.preservedMessages.length - 1]!.id
       }
     : undefined
 
   return {
-    id: args.createId(),
+    id: compactGenerationId,
     role: 'system',
     content: 'Conversation compacted',
     createdAt: args.now(),
     meta: {
       compactBoundary: {
-        strategy: 'claude-code-compact-v1',
+        strategy,
         trigger: args.trigger,
         preTokens: args.preTokens,
         postTokens: args.postTokens,
         messagesSummarized: args.messagesSummarized,
         compactedAt: args.now(),
         retryCount: args.retryCount,
+        compactGenerationId,
+        sourceMessageIds,
+        sourceTokenEstimate: estimateSharedTokens(args.sourceMessages),
+        sourceRuntime: args.sourceRuntime,
+        sourceSummaryId: args.sourceSummaryId,
+        relinkTargetIds,
+        duplicateCompactionKey: createDuplicateCompactionKey({
+          strategy,
+          mode: args.partialRange ? 'partial' : 'full',
+          trigger: args.trigger,
+          sourceMessageIds
+        }),
         ...(args.compressedRange ? { compressedRange: args.compressedRange } : {}),
         ...(args.preservedRange ? { preservedRange: args.preservedRange } : {}),
         ...(args.partialRange && args.partialAnchorId
@@ -237,12 +277,14 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
       const summary = assertClaudeCompactSummarySafe(extracted)
 
       const messagesSummarized = compressibleMessages.length
+      const compactGenerationId = createId()
       const summaryMessage = createSummaryMessage({
         createId,
         now,
         summary,
         messagesSummarized
       })
+      const sourceRuntime = args.sourceRuntime ?? 'shared'
       const postCompactStateMessage = createPostCompactStateMessage({
         createId,
         now,
@@ -252,7 +294,7 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
         rangeMetadataValid && isPartialCompactSelection(selection) ? selection : null
       const compressedMessages = [
         createBoundaryMessage({
-          createId,
+          compactGenerationId,
           now,
           trigger: args.trigger,
           preTokens: args.preTokens,
@@ -263,7 +305,11 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           preservedRange: rangeMetadataValid ? selection.preservedRange : undefined,
           partialRange: partialSelection?.partialRange,
           partialAnchorId: partialSelection?.anchorMessage.id,
-          preservedMessages: selection.preservedMessages
+          preservedMessages: selection.preservedMessages,
+          postCompactStateMessage,
+          sourceMessages: compressibleMessages,
+          sourceRuntime,
+          sourceSummaryId: summaryMessage.id
         }),
         summaryMessage,
         ...(postCompactStateMessage ? [postCompactStateMessage] : []),
@@ -271,9 +317,6 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
       ]
 
       const boundary = compressedMessages[0]
-      if (boundary.meta?.compactBoundary?.preservedSegment) {
-        boundary.meta.compactBoundary.preservedSegment.anchorId = summaryMessage.id
-      }
       if (boundary.meta?.compactBoundary) {
         boundary.meta.compactBoundary.postTokens = estimateSharedTokens(compressedMessages)
       }

@@ -1,4 +1,5 @@
 export type ClaudeCompactTrigger = 'auto' | 'manual'
+export type ClaudeCompactSourceRuntime = 'shared' | 'renderer' | 'main' | 'sidecar'
 
 export interface ClaudeCompactConfig {
   enabled: boolean
@@ -92,6 +93,13 @@ export interface ClaudeCompactBoundaryMeta {
   compressedRange?: { start: number; end: number }
   preservedRange?: { start: number; end: number }
   partialRange?: ClaudeCompactPartialRangeMeta
+  sourceMessageIds?: string[]
+  sourceTokenEstimate?: number
+  sourceRuntime?: ClaudeCompactSourceRuntime
+  sourceSummaryId?: string
+  relinkTargetIds?: string[]
+  duplicateCompactionKey?: string
+  compactGenerationId?: string
   safetyFlags?: string[]
   preservedSegment?: {
     headId: string
@@ -163,6 +171,7 @@ export interface RunClaudeCompactArgs {
   config?: ClaudeCompactConfig | null
   focusPrompt?: string
   postCompactContext?: string
+  sourceRuntime?: ClaudeCompactSourceRuntime
   signal?: AbortSignal
   summarize: (args: {
     systemPrompt: string
