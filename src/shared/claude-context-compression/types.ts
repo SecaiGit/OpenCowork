@@ -82,6 +82,47 @@ export interface ClaudeCompactPartialRangeMeta {
   tailStart: number
 }
 
+export type ClaudeCompactHookStage = 'pre_compact' | 'post_compact'
+export type ClaudeCompactHookRunStatus = 'completed' | 'failed' | 'timeout' | 'cancelled'
+
+export interface ClaudeCompactHookStatusMeta {
+  stage: ClaudeCompactHookStage
+  name: string
+  status: ClaudeCompactHookRunStatus
+  durationMs?: number
+  outputChars?: number
+  reason?: string
+}
+
+export interface ClaudeCompactHookResult {
+  context?: string
+  safetyFlags?: string[]
+}
+
+export interface ClaudeCompactHookInvocationArgs {
+  stage: ClaudeCompactHookStage
+  messages: ClaudeCompactMessage[]
+  compressibleMessages: ClaudeCompactMessage[]
+  preservedMessages: ClaudeCompactMessage[]
+  trigger: ClaudeCompactTrigger
+  sourceRuntime: ClaudeCompactSourceRuntime
+  summary?: string
+  signal?: AbortSignal
+}
+
+export interface ClaudeCompactHook {
+  name: string
+  timeoutMs?: number
+  run: (
+    args: ClaudeCompactHookInvocationArgs
+  ) => ClaudeCompactHookResult | null | undefined | Promise<ClaudeCompactHookResult | null | undefined>
+}
+
+export interface ClaudeCompactHooks {
+  preCompact?: ClaudeCompactHook | ClaudeCompactHook[]
+  postCompact?: ClaudeCompactHook | ClaudeCompactHook[]
+}
+
 export interface ClaudeCompactBoundaryMeta {
   strategy?: string
   trigger: ClaudeCompactTrigger
@@ -100,6 +141,7 @@ export interface ClaudeCompactBoundaryMeta {
   relinkTargetIds?: string[]
   duplicateCompactionKey?: string
   compactGenerationId?: string
+  hookStatuses?: ClaudeCompactHookStatusMeta[]
   safetyFlags?: string[]
   preservedSegment?: {
     headId: string
@@ -172,6 +214,7 @@ export interface RunClaudeCompactArgs {
   focusPrompt?: string
   postCompactContext?: string
   sourceRuntime?: ClaudeCompactSourceRuntime
+  compactHooks?: ClaudeCompactHooks
   signal?: AbortSignal
   summarize: (args: {
     systemPrompt: string

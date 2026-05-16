@@ -768,6 +768,177 @@ describe('shared Claude compact core', () => {
     })
   })
 
+  describe('shared Claude compact hooks', () => {
+    it('runs pre/post compact hooks with sanitized context and metadata', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+        expect(userPrompt).toContain('PreCompact hook context')
+        expect(userPrompt).toContain('pre-hook memory token=[REDACTED]')
+        expect(userPrompt).not.toContain('pre-hook-secret')
+        return '<summary>First task is complete.</summary>'
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        compactHooks: {
+          preCompact: [
+            {
+              name: 'session-memory',
+              run: () => ({
+                context: 'pre-hook memory token=pre-hook-secret',
+                safetyFlags: ['precompact-hook:safe-state']
+              })
+            }
+          ],
+          postCompact: [
+            {
+              name: 'runtime-reinject',
+              run: () => ({
+                context: 'post-hook state token=post-hook-secret',
+                safetyFlags: ['postcompact-hook:runtime-state']
+              })
+            }
+          ]
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `hook-${++id}`
+        })(),
+        now: () => 123
+      })
+
+      const serialized = JSON.stringify(result.messages)
+      const boundaryMeta = result.messages[0]?.meta?.compactBoundary
+      expect(result.result.compressed).toBe(true)
+      expect(boundaryMeta?.hookStatuses).toEqual([
+        expect.objectContaining({ stage: 'pre_compact', name: 'session-memory', status: 'completed' }),
+        expect.objectContaining({ stage: 'post_compact', name: 'runtime-reinject', status: 'completed' })
+      ])
+      expect(boundaryMeta?.safetyFlags).toEqual(
+        expect.arrayContaining(['precompact-hook:safe-state', 'postcompact-hook:runtime-state'])
+      )
+      expect(result.messages[2]?.meta?.postCompactState).toBe(true)
+      expect(serialized).toContain('post-hook state token=[REDACTED]')
+      expect(serialized).not.toContain('post-hook-secret')
+      expect(boundaryMeta?.relinkTargetIds).toEqual(['hook-2', 'hook-3', 'm-5', 'm-6', 'm-7', 'm-8'])
+    })
+
+    it('records failed hooks without blocking compaction or leaking hook errors', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async () => '<summary>First task is complete.</summary>')
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        compactHooks: {
+          preCompact: [
+            {
+              name: 'failing-hook',
+              run: () => {
+                throw new Error('Authorization: Bearer hook-failure-secret')
+              }
+            }
+          ]
+        },
+        summarize
+      })
+
+      const serialized = JSON.stringify(result.messages)
+      expect(result.result.compressed).toBe(true)
+      expect(summarize).toHaveBeenCalledTimes(1)
+      expect(result.messages[0]?.meta?.compactBoundary?.hookStatuses).toEqual([
+        expect.objectContaining({ stage: 'pre_compact', name: 'failing-hook', status: 'failed' })
+      ])
+      expect(serialized).not.toContain('hook-failure-secret')
+    })
+
+    it('records timeout and cancelled hook statuses without blocking compaction', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async () => '<summary>First task is complete.</summary>')
+      const abortError = new Error('aborted by hook')
+      abortError.name = 'AbortError'
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        compactHooks: {
+          preCompact: [{ name: 'slow-hook', timeoutMs: 1, run: () => new Promise(() => {}) }],
+          postCompact: [
+            {
+              name: 'cancelled-hook',
+              run: () => {
+                throw abortError
+              }
+            }
+          ]
+        },
+        summarize
+      })
+
+      expect(result.result.compressed).toBe(true)
+      expect(result.messages[0]?.meta?.compactBoundary?.hookStatuses).toEqual([
+        expect.objectContaining({ stage: 'pre_compact', name: 'slow-hook', status: 'timeout' }),
+        expect.objectContaining({ stage: 'post_compact', name: 'cancelled-hook', status: 'cancelled' })
+      ])
+    })
+  })
+
   describe('shared Claude context gate classification', () => {
     const gateConfig = {
       enabled: true,

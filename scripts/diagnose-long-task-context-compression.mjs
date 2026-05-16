@@ -284,6 +284,37 @@ check(
   ]
 )
 
+check(
+  hasAll(sharedTypes, [
+    'ClaudeCompactHooks',
+    'ClaudeCompactHookStatusMeta',
+    'hookStatuses?: ClaudeCompactHookStatusMeta[]',
+    "'pre_compact' | 'post_compact'"
+  ]),
+  'compact hook protocol is typed',
+  'compact hook protocol is not typed',
+  [
+    'types.ts must expose PreCompact/PostCompact hook contracts',
+    'compact boundary metadata must record hook statuses'
+  ]
+)
+
+check(
+  hasAll(sharedEngine, [
+    'runCompactHooks',
+    'PreCompact hook context',
+    'PostCompact hook context',
+    'hookStatuses',
+    'hookSafetyFlags'
+  ]),
+  'shared compact engine executes compact hooks safely',
+  'shared compact engine does not execute compact hooks safely',
+  [
+    'engine.ts must run PreCompact/PostCompact hooks',
+    'hook output must be sanitized and recorded without blocking compaction on hook failure'
+  ]
+)
+
 for (const message of passes) {
   console.log(`[PASS] ${message}`)
 }
