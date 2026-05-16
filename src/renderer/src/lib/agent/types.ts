@@ -10,7 +10,7 @@ import type {
   ImageErrorCode,
   ToolCallExtraContent
 } from '../api/types'
-import type { CompressionConfig } from './context-compression'
+import type { CompressionConfig, CompressionResult, CompressionSkipReason } from './context-compression'
 
 // --- Tool Call Runtime State ---
 
@@ -67,6 +67,13 @@ export class MessageQueue {
 
 // --- Agent Loop Config ---
 
+export type AgentLoopCompressionResult =
+  | UnifiedMessage[]
+  | {
+      messages: UnifiedMessage[]
+      result: CompressionResult
+    }
+
 export interface AgentLoopConfig {
   /** Max loop iterations. Set <= 0 for unlimited iterations. */
   maxIterations: number
@@ -85,12 +92,12 @@ export interface AgentLoopConfig {
   /** Context compression configuration */
   contextCompression?: {
     config: CompressionConfig
-    /** Compress messages using the main model. Returns the compressed message array. */
+    /** Compress messages using the main model and return metadata when the strategy can report it. */
     compressFn: (
       messages: UnifiedMessage[],
       trigger?: 'auto' | 'manual',
       preTokens?: number
-    ) => Promise<UnifiedMessage[]>
+    ) => Promise<AgentLoopCompressionResult>
   }
   /** Force all tool calls through the approval callback, even if the tool declares requiresApproval=false.
    *  Used by plugin auto-reply to enforce security permissions on all tools. */
@@ -176,6 +183,16 @@ export type AgentEvent =
       stackTrace?: string
     }
   | { type: 'request_debug'; debugInfo: RequestDebugInfo }
+  | {
+      type: 'context_compression_deferred'
+      checkpoint: 'before_model_request'
+      reason: CompressionSkipReason
+      inputTokens: number
+      contextLength: number
+      reservedOutputTokens: number
+      blockingNextRequest: boolean
+      messagesChanged: boolean
+    }
   | { type: 'context_compression_start' }
   | {
       type: 'context_compressed'

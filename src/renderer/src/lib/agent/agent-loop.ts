@@ -9,7 +9,7 @@ import type {
 } from '../api/types'
 import { createProvider } from '../api/provider'
 import { toolRegistry } from './tool-registry'
-import type { AgentEvent, AgentLoopConfig, ToolCallState } from './types'
+import type { AgentEvent, AgentLoopCompressionResult, AgentLoopConfig, ToolCallState } from './types'
 import type { ToolContext, ToolHandler } from '../tools/tool-types'
 import { compactBashToolResultContent } from '../tools/bash-output'
 import { decodeStructuredToolResult, encodeToolError } from '../tools/tool-result-format'
@@ -88,6 +88,13 @@ function createContextGateError(gate: ReturnType<typeof classifyClaudeContextGat
   return new Error(
     `Context gate blocked model request: ${gate.reason}; input=${gate.inputTokens}; context=${gate.contextLength}; reservedOutput=${gate.reservedOutputTokens}`
   )
+}
+
+function normalizeCompressionResult(value: AgentLoopCompressionResult): {
+  messages: UnifiedMessage[]
+  result?: Extract<AgentLoopCompressionResult, { messages: UnifiedMessage[] }>['result']
+} {
+  return Array.isArray(value) ? { messages: value } : value
 }
 
 /**
@@ -171,21 +178,35 @@ export async function* runAgentLoop(
           }
           try {
             const originalCount = conversationMessages.length
-            const compressedMessages = await cc.compressFn(
-              conversationMessages,
-              'auto',
-              conservativeContextTokens
+            const compression = normalizeCompressionResult(
+              await cc.compressFn(conversationMessages, 'auto', conservativeContextTokens)
             )
+            const messagesChanged = compression.messages !== conversationMessages
             // Keep loop-local history mutable even if external stores freeze shared arrays.
-            conversationMessages = [...compressedMessages]
+            conversationMessages = [...compression.messages]
             estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
-            lastObservedContextTokens = 0
-            fullCompressionApplied = true
-            yield {
-              type: 'context_compressed',
-              originalCount,
-              newCount: conversationMessages.length,
-              messages: [...conversationMessages]
+            const compressed = compression.result?.compressed ?? true
+            const skipReason = compression.result?.reason ?? 'unknown'
+            if (compressed) {
+              lastObservedContextTokens = 0
+              fullCompressionApplied = true
+              yield {
+                type: 'context_compressed',
+                originalCount,
+                newCount: conversationMessages.length,
+                messages: [...conversationMessages]
+              }
+            } else {
+              yield {
+                type: 'context_compression_deferred',
+                checkpoint: 'before_model_request',
+                reason: skipReason,
+                inputTokens: conservativeContextTokens,
+                contextLength: cc.config.contextLength,
+                reservedOutputTokens: cc.config.reservedOutputBudget ?? 20_000,
+                blockingNextRequest: false,
+                messagesChanged
+              }
             }
           } catch (compErr) {
             // The compression strategy tracks consecutive failures and opens its circuit breaker.

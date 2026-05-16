@@ -4231,7 +4231,7 @@ export function useChatActions(): {
                             workingFolder: sessionWorkingFolder,
                             readFileHistory: toolCtx.readFileHistory
                           })
-                          const { messages: compressed } = await compressMessages(
+                          return compressMessages(
                             msgs,
                             agentProviderConfig,
                             abortController.signal,
@@ -4243,7 +4243,6 @@ export function useChatActions(): {
                             compressionConfig,
                             postCompactContext
                           )
-                          return compressed
                         }
                       }
                     }

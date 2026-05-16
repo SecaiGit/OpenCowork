@@ -216,6 +216,89 @@ describe('runAgentLoop context gate', () => {
     expect(events.filter((event) => event.type === 'loop_end')).toHaveLength(1)
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
   })
+
+  it('emits a deferred checkpoint event instead of a false compressed event when auto compact cannot shrink a safe request', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'text_delta', text: 'continued safely' }
+      yield { type: 'message_end' }
+    })
+    const compressFn = vi.fn(async (input: UnifiedMessage[]) => ({
+      messages: input,
+      result: {
+        compressed: false,
+        originalCount: input.length,
+        newCount: input.length,
+        reason: 'insufficient_compressible_messages' as const
+      }
+    }))
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    const messages: UnifiedMessage[] = [
+      {
+        id: 'm-soft-pressure',
+        role: 'user',
+        content: 'current task is large but still request-safe',
+        createdAt: 1,
+        usage: { inputTokens: 0, outputTokens: 0, contextTokens: 170_000 }
+      }
+    ]
+
+    for await (const event of runAgentLoop(
+      messages,
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(compressFn).toHaveBeenCalledTimes(1)
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(events.some((event) => event.type === 'context_compressed')).toBe(false)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_compression_deferred',
+          checkpoint: 'before_model_request',
+          reason: 'insufficient_compressible_messages',
+          blockingNextRequest: false,
+          messagesChanged: false,
+          inputTokens: 170_000,
+          contextLength: 200_000,
+          reservedOutputTokens: 20_000
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
 })
 
 describe('redactTextForModelContext', () => {

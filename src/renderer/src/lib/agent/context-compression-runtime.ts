@@ -62,19 +62,7 @@ export function buildRuntimeCompression(
 
   return {
     config,
-    compressFn: async (messages: UnifiedMessage[]) => {
-      const { messages: compressed } = await compressMessages(
-        messages,
-        providerConfig,
-        signal,
-        undefined,
-        undefined,
-        undefined,
-        'manual',
-        0,
-        config
-      )
-      return compressed
-    }
+    compressFn: async (messages: UnifiedMessage[]) =>
+      compressMessages(messages, providerConfig, signal, undefined, undefined, undefined, 'manual', 0, config)
   }
 }
