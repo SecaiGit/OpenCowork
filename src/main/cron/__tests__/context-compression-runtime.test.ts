@@ -101,6 +101,54 @@ describe('main runtime context compression preflight', () => {
     expect(JSON.stringify(summarize.mock.calls[0])).not.toContain('sk-secret')
   })
 
+  it('compacts early current-task substeps through shared partial compact fallback', async () => {
+    nextMessageId = 0
+    const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+      expect(userPrompt).toContain('old file snapshot')
+      expect(userPrompt).not.toContain('latest edit result')
+      return '<summary>Old read step is complete. Continue with latest edit validation.</summary>'
+    })
+    const messages = [
+      message('user', 'implement the feature and keep going'),
+      message('assistant', [toolUse('read-old')]),
+      message('user', [toolResult('read-old', 'old file snapshot')]),
+      message('assistant', 'old read finished'),
+      message('assistant', [toolUse('edit-latest')]),
+      message('user', [toolResult('edit-latest', 'latest edit result')]),
+      {
+        ...message('assistant', 'continue with tests'),
+        usage: { inputTokens: 0, outputTokens: 0, contextTokens: 180_000 }
+      }
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config,
+      trigger: 'auto',
+      summarize,
+      now: () => 123,
+      createId: (() => {
+        let id = 0
+        return () => `main-partial-${++id}`
+      })()
+    })
+
+    expect(result.compressed).toBe(true)
+    expect(result.events).toEqual([
+      { type: 'context_compression_start' },
+      expect.objectContaining({ type: 'context_compressed', originalCount: 7 })
+    ])
+    expect(result.messages[0]?.meta?.compactBoundary?.partialRange).toMatchObject({
+      mode: 'from_up_to',
+      anchorId: 'm-1',
+      from: 1,
+      upTo: 4,
+      tailStart: 4
+    })
+    expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+    expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+  })
+
   it('pre-compresses recent large tool result payloads without calling the model', () => {
     const large = 'x'.repeat(50_000)
     const messages = [message('assistant', [toolUse('large')]), message('user', [toolResult('large', large)])]

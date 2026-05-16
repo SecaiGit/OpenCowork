@@ -101,6 +101,7 @@ export interface CompressionResult {
   newCount: number
   messagesSummarized?: number
   payloadsCompacted?: number
+  partialCompact?: boolean
   reason?: CompressionSkipReason
 }
 

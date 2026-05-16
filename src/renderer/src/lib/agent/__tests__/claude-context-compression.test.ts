@@ -565,6 +565,55 @@ describe('claude-code-compact-v1 engine', () => {
     expect(runSidecarTextRequest).not.toHaveBeenCalled()
   })
 
+  it('uses partial compact metadata when only current-task substeps are safely compressible', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Old read step is complete. Continue with latest edit validation.</summary>'
+    )
+    const messages = [
+      message('user', 'implement the feature and keep going'),
+      message('assistant', [toolUse('read-old')]),
+      message('user', [toolResult('read-old', 'old file snapshot')]),
+      message('assistant', 'old read finished'),
+      message('assistant', [toolUse('edit-latest')]),
+      message('user', [toolResult('edit-latest', 'latest edit result')]),
+      message('assistant', 'continue with tests')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    const prompt = String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? '')
+
+    expect(result.result.compressed).toBe(true)
+    expect(result.result.partialCompact).toBe(true)
+    expect(result.messages[0]?.meta?.compactBoundary?.partialRange).toMatchObject({
+      mode: 'from_up_to',
+      anchorId: 'm-1',
+      from: 1,
+      upTo: 4,
+      tailStart: 4
+    })
+    expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+    expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+    expect(prompt).toContain('old file snapshot')
+    expect(prompt).not.toContain('latest edit result')
+  })
+
   it('uses Claude threshold logic for shouldCompress', () => {
     expect(
       shouldCompress(166_999, {
