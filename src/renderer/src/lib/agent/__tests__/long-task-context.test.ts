@@ -90,6 +90,150 @@ const providerConfig: ProviderConfig = {
 }
 
 describe('runAgentLoop context gate', () => {
+  it('guards a single oversized user input before sending the provider request', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    let sentMessages: UnifiedMessage[] = []
+    const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+      sentMessages = messages
+      yield { type: 'text_delta', text: 'guarded safely' }
+      yield { type: 'message_end' }
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    const messages: UnifiedMessage[] = [
+      {
+        id: 'm-user-large',
+        role: 'user',
+        content: 'large-user-input\n'.repeat(10_000),
+        createdAt: 1
+      }
+    ]
+
+    for await (const event of runAgentLoop(
+      messages,
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 20_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 2_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    const serialized = JSON.stringify(sentMessages)
+
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(serialized).toContain('[User input compacted for context budget]')
+    expect(serialized).not.toContain('large-user-input\nlarge-user-input\nlarge-user-input')
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_payload_guarded',
+          checkpoint: 'before_model_request',
+          reason: 'single_input_too_large',
+          messageId: 'm-user-large'
+        })
+      ])
+    )
+  })
+
+  it('preserves renderer message metadata while guarding user input', async () => {
+    const abortController = new AbortController()
+    let sentMessages: UnifiedMessage[] = []
+    const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+      sentMessages = messages.map((message) => ({ ...message }))
+      yield { type: 'text_delta', text: 'ok' }
+      yield { type: 'message_end' }
+    })
+    const usage = { inputTokens: 1, outputTokens: 2, contextTokens: 3 }
+    const meta = { postCompactState: true as const }
+    const guardedMessage: UnifiedMessage = {
+      id: 'm-user-meta',
+      role: 'user',
+      content: 'metadata-input\n'.repeat(10_000),
+      createdAt: 1,
+      usage,
+      providerResponseId: 'response-1',
+      source: 'team',
+      meta,
+      _revision: 7
+    }
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const _event of runAgentLoop(
+      [guardedMessage],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 1_000_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 2_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      // consume generator
+    }
+
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(sentMessages[0]).toMatchObject({
+      id: guardedMessage.id,
+      role: 'user',
+      createdAt: guardedMessage.createdAt,
+      providerResponseId: 'response-1',
+      source: 'team',
+      _revision: 7
+    })
+    expect(sentMessages[0]?.usage).toBe(usage)
+    expect(sentMessages[0]?.meta).toBe(meta)
+    expect(JSON.stringify(sentMessages[0])).toContain('[User input compacted for context budget]')
+  })
+
   it('blocks the next provider request when context still exceeds the hard limit after compaction', async () => {
     const events: AgentEvent[] = []
     const abortController = new AbortController()
@@ -105,7 +249,8 @@ describe('runAgentLoop context gate', () => {
         id: 'm-hard',
         role: 'user',
         content: 'x'.repeat(20_000),
-        createdAt: 1
+        createdAt: 1,
+        usage: { inputTokens: 0, outputTokens: 0, contextTokens: 2_000 }
       }
     ]
 

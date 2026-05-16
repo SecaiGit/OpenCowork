@@ -193,6 +193,14 @@ export type AgentEvent =
       blockingNextRequest: boolean
       messagesChanged: boolean
     }
+  | {
+      type: 'context_payload_guarded'
+      checkpoint: 'before_model_request' | 'assistant_finalize'
+      reason: CompressionSkipReason
+      originalChars: number
+      keptChars: number
+      messageId: string
+    }
   | { type: 'context_compression_start' }
   | {
       type: 'context_compressed'

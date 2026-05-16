@@ -30,7 +30,11 @@ import {
   compactRecentToolPayloads,
   compactToolResultForContext
 } from './context-payload-compaction'
-import { classifyClaudeContextGate } from '../../../../shared/claude-context-compression'
+import {
+  classifyClaudeContextGate,
+  guardClaudeSingleInputPayload,
+  type ClaudeCompactMessage
+} from '../../../../shared/claude-context-compression'
 
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
@@ -97,6 +101,52 @@ function normalizeCompressionResult(value: AgentLoopCompressionResult): {
   return Array.isArray(value) ? { messages: value } : value
 }
 
+function toClaudeTextGuardMessage(message: UnifiedMessage): ClaudeCompactMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content as ClaudeCompactMessage['content'],
+    createdAt: message.createdAt,
+    ...(message.usage ? { usage: message.usage } : {}),
+    ...(message.providerResponseId ? { providerResponseId: message.providerResponseId } : {}),
+    ...(message.source ? { source: message.source } : {})
+  }
+}
+
+function mergeGuardedContent(original: UnifiedMessage, guarded: ClaudeCompactMessage): UnifiedMessage {
+  return {
+    ...original,
+    content: guarded.content as UnifiedMessage['content']
+  }
+}
+
+function guardUserInputsForContext(
+  messages: UnifiedMessage[],
+  config: NonNullable<AgentLoopConfig['contextCompression']>['config']
+): {
+  messages: UnifiedMessage[]
+  events: Array<Extract<AgentEvent, { type: 'context_payload_guarded' }>>
+} {
+  let changed = false
+  const events: Array<Extract<AgentEvent, { type: 'context_payload_guarded' }>> = []
+  const nextMessages = messages.map((message) => {
+    const guarded = guardClaudeSingleInputPayload(toClaudeTextGuardMessage(message), { config })
+    if (!guarded.changed || guarded.reason !== 'single_input_too_large') return message
+    changed = true
+    events.push({
+      type: 'context_payload_guarded',
+      checkpoint: 'before_model_request',
+      reason: guarded.reason,
+      originalChars: guarded.originalChars,
+      keptChars: guarded.keptChars,
+      messageId: message.id
+    })
+    return mergeGuardedContent(message, guarded.message)
+  })
+
+  return { messages: changed ? nextMessages : messages, events }
+}
+
 /**
  * Core Agentic Loop - an AsyncGenerator that yields AgentEvents.
  *
@@ -155,6 +205,13 @@ export async function* runAgentLoop(
       // --- Context management (between iterations) ---
       if (config.contextCompression) {
         const cc = config.contextCompression
+        const guardedInputs = guardUserInputsForContext(conversationMessages, cc.config)
+        if (guardedInputs.events.length > 0) {
+          conversationMessages = [...guardedInputs.messages]
+          for (const event of guardedInputs.events) {
+            yield event
+          }
+        }
         // First shrink oversized recent payloads; preCompressMessages below only clears stale history.
         const compactedPayloads = compactRecentToolPayloads(conversationMessages, cc.config)
         if (compactedPayloads.compactedCount > 0) {
