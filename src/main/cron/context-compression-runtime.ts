@@ -4,6 +4,7 @@ import {
   type ClaudeCompactConfig,
   type ClaudeCompactContentBlock,
   type ClaudeCompactMessage,
+  type ClaudeCompactSkipReason,
   type ClaudeCompactTrigger,
   type ClaudeContextGateReason
 } from '../../shared/claude-context-compression'
@@ -19,6 +20,16 @@ export type MainRuntimeCompressionEvent =
       originalCount: number
       newCount: number
       messages: MainRuntimeMessage[]
+    }
+  | {
+      type: 'context_compression_deferred'
+      checkpoint: 'before_model_request'
+      reason: ClaudeCompactSkipReason
+      inputTokens: number
+      contextLength: number
+      reservedOutputTokens: number
+      blockingNextRequest: boolean
+      messagesChanged: boolean
     }
   | {
       type: 'context_compression_blocked'
@@ -165,7 +176,22 @@ export async function maybeCompactMainRuntimeContext(args: {
   }
 
   if (!compacted.result.compressed) {
-    return { messages: candidateMessages, compressed: false, events: [] }
+    return {
+      messages: finalMessages,
+      compressed: false,
+      events: [
+        {
+          type: 'context_compression_deferred',
+          checkpoint: 'before_model_request',
+          reason: compacted.result.reason ?? 'unknown',
+          inputTokens: finalGate.inputTokens,
+          contextLength: finalGate.contextLength,
+          reservedOutputTokens: finalGate.reservedOutputTokens,
+          blockingNextRequest: finalGate.blocking,
+          messagesChanged: finalMessages !== candidateMessages
+        }
+      ]
+    }
   }
 
   return {

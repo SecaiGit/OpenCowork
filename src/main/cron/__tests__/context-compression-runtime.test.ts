@@ -157,4 +157,44 @@ describe('main runtime context compression preflight', () => {
     expect(result.blocked).toBe(true)
     expect(result.reason).toBe('reserved_output_budget_exceeded')
   })
+
+  it('reports a deferred checkpoint when auto compact cannot shrink a non-blocking current tool round', async () => {
+    nextMessageId = 0
+    const summarize = vi.fn()
+    const messages = [
+      message('assistant', [toolUse('current')]),
+      message('user', [toolResult('current', 'ok')]),
+      message('assistant', 'continue current task'),
+      message('assistant', 'still in current task'),
+      message('assistant', 'prepare next step'),
+      {
+        ...message('assistant', 'awaiting next step'),
+        usage: { inputTokens: 0, outputTokens: 0, contextTokens: 170_000 }
+      }
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config,
+      trigger: 'auto',
+      summarize
+    })
+
+    expect(result.compressed).toBe(false)
+    expect(result.blocked).toBeUndefined()
+    expect(result.messages).toBe(messages)
+    expect(summarize).not.toHaveBeenCalled()
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: 'context_compression_deferred',
+        checkpoint: 'before_model_request',
+        reason: 'insufficient_compressible_messages',
+        messagesChanged: false,
+        inputTokens: 170_000,
+        contextLength: 200_000,
+        reservedOutputTokens: 20_000,
+        blockingNextRequest: false
+      })
+    ])
+  })
 })
