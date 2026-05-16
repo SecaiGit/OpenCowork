@@ -12,6 +12,7 @@ export default defineConfig(
       '**/dist',
       '**/out',
       '**/.claude/**',
+      '**/.worktrees/**',
       '**/build',
       'build/**',
       '**/.next/**',
