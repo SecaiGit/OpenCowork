@@ -11,7 +11,9 @@ import {
   type ClaudeCompactContentBlock,
   type ClaudeCompactMessage,
   classifyClaudeContextGate,
-  dehydrateClaudeCompactPayloads
+  dehydrateClaudeCompactPayloads,
+  guardClaudeAssistantFinalizePayload,
+  guardClaudeSingleInputPayload
 } from '../claude-context-compression'
 
 let nextMessageId = 0
@@ -161,6 +163,255 @@ describe('shared Claude compact core', () => {
       expect(serialized).not.toContain('Kept chars:')
       expect(result.keptChars).toBeGreaterThan(0)
       expect(result.keptChars).toBeLessThanOrEqual(2_000)
+    })
+  })
+
+  describe('shared Claude text guards', () => {
+    it('compacts oversized assistant text output with deterministic marker metadata', () => {
+      nextMessageId = 0
+      const assistantMessage = message('assistant', `head\n${'a'.repeat(20_000)}\ntail`)
+
+      const result = guardClaudeAssistantFinalizePayload(assistantMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 4_000
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('assistant_output_too_large')
+      expect(result.originalChars).toBe(20_010)
+      expect(result.keptChars).toBe((result.message.content as string).length)
+      expect(result.message).not.toBe(assistantMessage)
+      expect(typeof result.message.content).toBe('string')
+      expect(result.message.content).toContain('[Assistant response compacted for context budget]')
+      expect(result.message.content).toContain('Original chars:')
+      expect(result.message.content).toContain('Retained head/tail chars:')
+      expect(result.message.content).toContain('Omitted middle chars:')
+      expect(result.message.content).toContain('## Head')
+      expect(result.message.content).toContain('## Tail')
+      expect(JSON.stringify(result.message).length).toBeLessThan(JSON.stringify(assistantMessage).length)
+    })
+
+    it('does not compact assistant tool_use content and returns the original reference', () => {
+      nextMessageId = 0
+      const assistantMessage = message('assistant', [toolUse('guarded'), { type: 'text', text: 'x'.repeat(20_000) }])
+
+      const result = guardClaudeAssistantFinalizePayload(assistantMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 4_000
+      })
+
+      expect(result.changed).toBe(false)
+      expect(result.reason).toBe('unsafe_tool_boundary')
+      expect(result.message).toBe(assistantMessage)
+      expect(result.originalChars).toBe(0)
+      expect(result.keptChars).toBe(0)
+    })
+
+    it('compacts oversized single user text input while preserving the user role', () => {
+      nextMessageId = 0
+      const userMessage = message('user', `head\n${'u'.repeat(20_000)}\ntail`)
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 4_000
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.originalChars).toBe(20_010)
+      expect(result.keptChars).toBe((result.message.content as string).length)
+      expect(result.reason).toBe('single_input_too_large')
+      expect(result.message).not.toBe(userMessage)
+      expect(result.message.role).toBe('user')
+      expect(typeof result.message.content).toBe('string')
+      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(result.message.content).toContain('Original chars:')
+      expect(result.message.content).toContain('Retained head/tail chars:')
+      expect(result.message.content).toContain('Omitted middle chars:')
+      expect(result.message.content).toContain('## Head')
+      expect(result.message.content).toContain('## Tail')
+      expect(JSON.stringify(result.message).length).toBeLessThan(JSON.stringify(userMessage).length)
+    })
+
+    it('compacts oversized user text blocks inside content arrays', () => {
+      nextMessageId = 0
+      const userMessage = message('user', [{ type: 'text', text: `head\n${'u'.repeat(20_000)}\ntail` }])
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 4_000
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('single_input_too_large')
+      expect(result.message).not.toBe(userMessage)
+      expect(Array.isArray(result.message.content)).toBe(true)
+      expect(result.message.content).toEqual([
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('[User input compacted for context budget]')
+        })
+      ])
+    })
+
+    it('derives the default max chars from the Claude compact budget', () => {
+      nextMessageId = 0
+      const guardConfig = {
+        contextLength: 400,
+        reservedOutputBudget: 20_000
+      }
+      const budget = getClaudeCompactBudget(guardConfig)
+      const expectedMaxChars = Math.max(1_000, Math.min(12_000, Math.floor(budget.effectiveContextWindow * 2)))
+      const userMessage = message('user', 'x'.repeat(expectedMaxChars + 500))
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: guardConfig
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('single_input_too_large')
+      expect(typeof result.message.content).toBe('string')
+      expect(result.message.content).toContain(`Original chars: ${expectedMaxChars + 500}`)
+      expect(JSON.stringify(result.message).length).toBeLessThan(JSON.stringify(userMessage).length)
+    })
+
+    it('compacts oversized assistant text blocks inside content arrays without tool use', () => {
+      nextMessageId = 0
+      const guardConfig = {
+        contextLength: 200_000,
+        reservedOutputBudget: 20_000
+      }
+      const assistantMessage = message('assistant', [{ type: 'text', text: 'assistant-block\n'.repeat(2_000) }])
+
+      const result = guardClaudeAssistantFinalizePayload(assistantMessage, {
+        config: guardConfig,
+        maxChars: 1_500
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('assistant_output_too_large')
+      expect(result.message).not.toBe(assistantMessage)
+      expect(Array.isArray(result.message.content)).toBe(true)
+      const guardedText = Array.isArray(result.message.content)
+        ? result.message.content.find((block) => block.type === 'text')?.text
+        : ''
+      expect(guardedText).toContain('[Assistant response compacted for context budget]')
+      expect(guardedText).toContain('Original chars:')
+      expect(result.keptChars).toBe(guardedText?.length)
+    })
+
+    it('keeps compacted text within a small explicit max char budget', () => {
+      nextMessageId = 0
+      const userMessage = message('user', 'x'.repeat(220))
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 200
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('single_input_too_large')
+      expect(typeof result.message.content).toBe('string')
+      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(result.message.content.length).toBeLessThanOrEqual(200)
+      expect(result.keptChars).toBe(result.message.content.length)
+      expect(result.originalChars).toBe(220)
+    })
+
+    it('falls back safely when compact budget config contains non-finite values', () => {
+      nextMessageId = 0
+      const userMessage = message('user', 'x'.repeat(2_000))
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: Number.NaN,
+          reservedOutputBudget: Number.NaN
+        }
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.reason).toBe('single_input_too_large')
+      expect(typeof result.message.content).toBe('string')
+      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(Number.isFinite(result.keptChars)).toBe(true)
+      expect(result.keptChars).toBeGreaterThan(0)
+    })
+
+    it('preserves message metadata while compacting text payloads', () => {
+      nextMessageId = 0
+      const userMessage: ClaudeCompactMessage = {
+        ...message('user', 'metadata-input\n'.repeat(2_000)),
+        usage: { inputTokens: 1, outputTokens: 2, contextTokens: 3 },
+        providerResponseId: 'response-1',
+        source: 'queued',
+        meta: { postCompactState: true }
+      }
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 1_500
+      })
+
+      expect(result.changed).toBe(true)
+      expect(result.message.id).toBe(userMessage.id)
+      expect(result.message.role).toBe('user')
+      expect(result.message.createdAt).toBe(userMessage.createdAt)
+      expect(result.message.usage).toBe(userMessage.usage)
+      expect(result.message.providerResponseId).toBe('response-1')
+      expect(result.message.source).toBe('queued')
+      expect(result.message.meta).toBe(userMessage.meta)
+    })
+
+    it('keeps non-text user content blocks unchanged while compacting text blocks', () => {
+      nextMessageId = 0
+      const imageBlock: ClaudeCompactContentBlock = {
+        type: 'image',
+        source: {
+          type: 'base64',
+          mediaType: 'image/png',
+          data: 'raw-image-data'
+        }
+      }
+      const userMessage = message('user', [
+        { type: 'text', text: 'array-input\n'.repeat(2_000) },
+        imageBlock
+      ])
+
+      const result = guardClaudeSingleInputPayload(userMessage, {
+        config: {
+          contextLength: 200_000,
+          reservedOutputBudget: 20_000
+        },
+        maxChars: 1_500
+      })
+
+      expect(result.changed).toBe(true)
+      expect(Array.isArray(result.message.content)).toBe(true)
+      const content = Array.isArray(result.message.content) ? result.message.content : []
+      expect(content[0]).toEqual(
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('[User input compacted for context budget]')
+        })
+      )
+      expect(content[1]).toBe(imageBlock)
     })
   })
 

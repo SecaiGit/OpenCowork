@@ -125,6 +125,8 @@ export type ClaudeCompactSkipReason =
   | 'insufficient_compressible_messages'
   | 'recent_payload_too_large'
   | 'single_input_too_large'
+  | 'assistant_output_too_large'
+  | 'unsafe_tool_boundary'
   | 'hard_context_limit_exceeded'
   | 'reserved_output_budget_exceeded'
   | 'summarizer_prompt_too_long'
