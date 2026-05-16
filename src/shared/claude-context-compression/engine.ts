@@ -218,6 +218,7 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
 
   let lastError: unknown = null
   let compressibleMessages = selection.compressibleMessages
+  let rangeMetadataValid = true
 
   for (let attempt = 0; attempt <= MAX_CLAUDE_COMPACT_RETRIES; attempt += 1) {
     try {
@@ -235,18 +236,20 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
       if (!extracted) throw new Error('empty compact summary')
       const summary = assertClaudeCompactSummarySafe(extracted)
 
+      const messagesSummarized = compressibleMessages.length
       const summaryMessage = createSummaryMessage({
         createId,
         now,
         summary,
-        messagesSummarized: selection.compressibleMessages.length
+        messagesSummarized
       })
       const postCompactStateMessage = createPostCompactStateMessage({
         createId,
         now,
         postCompactContext: args.postCompactContext
       })
-      const partialSelection = isPartialCompactSelection(selection) ? selection : null
+      const partialSelection =
+        rangeMetadataValid && isPartialCompactSelection(selection) ? selection : null
       const compressedMessages = [
         createBoundaryMessage({
           createId,
@@ -254,10 +257,10 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           trigger: args.trigger,
           preTokens: args.preTokens,
           postTokens: 0,
-          messagesSummarized: selection.compressibleMessages.length,
+          messagesSummarized,
           retryCount: attempt,
-          compressedRange: selection.compressedRange,
-          preservedRange: selection.preservedRange,
+          compressedRange: rangeMetadataValid ? selection.compressedRange : undefined,
+          preservedRange: rangeMetadataValid ? selection.preservedRange : undefined,
           partialRange: partialSelection?.partialRange,
           partialAnchorId: partialSelection?.anchorMessage.id,
           preservedMessages: selection.preservedMessages
@@ -281,7 +284,7 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           compressed: true,
           originalCount: args.messages.length,
           newCount: compressedMessages.length,
-          messagesSummarized: selection.compressibleMessages.length,
+          messagesSummarized,
           ...(partialSelection ? { partialCompact: true } : {})
         }
       }
@@ -290,9 +293,12 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
       if (!isPromptTooLongError(error) || attempt >= MAX_CLAUDE_COMPACT_RETRIES) break
       const retryMessages =
         dropOldestClaudeCompactRounds(compressibleMessages, attempt + 1) ??
-        dropOldestClaudeCompactRounds(args.messages, attempt + 1)
+        (isPartialCompactSelection(selection)
+          ? null
+          : dropOldestClaudeCompactRounds(args.messages, attempt + 1))
       if (!retryMessages) break
       compressibleMessages = retryMessages
+      rangeMetadataValid = false
     }
   }
 

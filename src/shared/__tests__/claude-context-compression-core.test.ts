@@ -613,6 +613,98 @@ describe('shared Claude compact core', () => {
       expect(result.messages.slice(-3).map((item) => item.id)).toEqual(['m-9', 'm-10', 'm-11'])
     })
 
+    it('omits stale range metadata and counts actual summarized messages after prompt-too-long retry', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'round one'),
+        message('assistant', [toolUse('round-one')]),
+        message('user', [toolResult('round-one', 'round one result')]),
+        message('assistant', 'round one done'),
+        message('user', 'round two'),
+        message('assistant', [toolUse('round-two')]),
+        message('user', [toolResult('round-two', 'round two result')]),
+        message('assistant', 'round two done'),
+        message('user', 'round three'),
+        message('assistant', [toolUse('round-three')]),
+        message('user', [toolResult('round-three', 'round three result')]),
+        message('assistant', 'round three done')
+      ]
+      const summarize = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('prompt too long'))
+        .mockImplementationOnce(async ({ userPrompt }: { userPrompt: string }) => {
+          expect(userPrompt).not.toContain('round one result')
+          expect(userPrompt).toContain('round two result')
+          expect(userPrompt).not.toContain('round three result')
+          return '<summary>Round two is complete.</summary>'
+        })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `retry-${++id}`
+        })(),
+        now: () => 123
+      })
+
+      expect(result.result.compressed).toBe(true)
+      expect(result.result.messagesSummarized).toBe(4)
+      expect(result.messages[0]?.meta?.compactBoundary?.messagesSummarized).toBe(4)
+      expect(result.messages[1]?.meta?.compactSummary?.messagesSummarized).toBe(4)
+      expect(result.messages[0]?.meta?.compactBoundary?.retryCount).toBe(1)
+      expect(result.messages[0]?.meta?.compactBoundary?.compressedRange).toBeUndefined()
+      expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
+      expect(summarize).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not retry partial compact by summarizing its preserved tail', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'implement the feature and keep going'),
+        message('assistant', [toolUse('read-old')]),
+        message('user', [toolResult('read-old', 'old file snapshot')]),
+        message('assistant', 'old read finished'),
+        message('assistant', [toolUse('edit-latest')]),
+        message('user', [toolResult('edit-latest', 'latest edit result')]),
+        message('assistant', 'continue with tests')
+      ]
+      const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+        expect(userPrompt).toContain('old file snapshot')
+        expect(userPrompt).not.toContain('latest edit result')
+        throw new Error('prompt too long')
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize
+      })
+
+      expect(result.result.compressed).toBe(false)
+      expect(result.result.reason).toBe('summarizer_prompt_too_long')
+      expect(result.messages).toBe(messages)
+      expect(summarize).toHaveBeenCalledTimes(1)
+    })
+
     it('keeps recent payload fallback when no safe partial compact range exists', async () => {
       nextMessageId = 0
       const messages = [
