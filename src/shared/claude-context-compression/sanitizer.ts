@@ -221,12 +221,16 @@ function sanitizeContentBlock(
   }
 }
 
+function isInternalCompactControlMessage(message: ClaudeCompactMessage): boolean {
+  return message.meta?.postCompactState === true || typeof message.meta?.streamingContinuation === 'object'
+}
+
 export function sanitizeMessagesForClaudeCompact(
   messages: ClaudeCompactMessage[],
   config?: ClaudeCompactConfig | null
 ): ClaudeCompactMessage[] {
   return messages
-    .filter((message) => message.meta?.postCompactState !== true)
+    .filter((message) => !isInternalCompactControlMessage(message))
     .map((message) => {
       if (typeof message.content === 'string') {
         return {
