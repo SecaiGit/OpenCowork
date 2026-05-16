@@ -144,6 +144,36 @@ export interface ClaudeCompactPromptCacheMeta {
   staleSourceMessageIds: string[]
 }
 
+export type ClaudeCompactSessionMemoryKind =
+  | 'goal'
+  | 'preference'
+  | 'constraint'
+  | 'decision'
+  | 'memory'
+
+export interface ClaudeCompactSessionMemoryEntry {
+  kind: ClaudeCompactSessionMemoryKind
+  content: string
+  source?: string
+}
+
+export interface ClaudeCompactSessionMemoryConfig {
+  enabled?: boolean
+  entries?: ClaudeCompactSessionMemoryEntry[]
+  maxEntries?: number
+  maxChars?: number
+}
+
+export type ClaudeCompactSessionMemoryStatus = 'injected' | 'empty' | 'disabled'
+
+export interface ClaudeCompactSessionMemoryMeta {
+  status: ClaudeCompactSessionMemoryStatus
+  entries: number
+  sourceKinds: ClaudeCompactSessionMemoryKind[]
+  outputChars: number
+  truncated: boolean
+}
+
 export interface ClaudeCompactBoundaryMeta {
   strategy?: string
   trigger: ClaudeCompactTrigger
@@ -164,6 +194,7 @@ export interface ClaudeCompactBoundaryMeta {
   compactGenerationId?: string
   hookStatuses?: ClaudeCompactHookStatusMeta[]
   promptCache?: ClaudeCompactPromptCacheMeta
+  sessionMemory?: ClaudeCompactSessionMemoryMeta
   safetyFlags?: string[]
   preservedSegment?: {
     headId: string
@@ -181,6 +212,7 @@ export interface ClaudeCompactMessageMeta {
   compactBoundary?: ClaudeCompactBoundaryMeta
   compactSummary?: ClaudeCompactSummaryMeta
   postCompactState?: boolean
+  sessionMemoryCompact?: ClaudeCompactSessionMemoryMeta
   [key: string]: unknown
 }
 
@@ -238,6 +270,7 @@ export interface RunClaudeCompactArgs {
   sourceRuntime?: ClaudeCompactSourceRuntime
   compactHooks?: ClaudeCompactHooks
   promptCache?: ClaudeCompactPromptCacheConfig
+  sessionMemory?: ClaudeCompactSessionMemoryConfig
   signal?: AbortSignal
   summarize: (args: {
     systemPrompt: string

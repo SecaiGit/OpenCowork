@@ -1052,6 +1052,131 @@ describe('shared Claude compact core', () => {
     })
   })
 
+  describe('shared Claude session memory compact layer', () => {
+    it('injects sanitized session memory separately from the summary prompt after successful compaction', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {
+        expect(userPrompt).not.toContain('stable decision')
+        expect(userPrompt).not.toContain('memory-secret')
+        return '<summary>First task is complete.</summary>'
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'auto',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        sessionMemory: {
+          enabled: true,
+          entries: [
+            {
+              kind: 'decision',
+              content: 'stable decision: keep TDD evidence. Authorization: Bearer memory-secret',
+              source: 'session-goal'
+            },
+            {
+              kind: 'constraint',
+              content: 'Do not store raw credentials in summaries.',
+              source: 'workspace-policy'
+            }
+          ]
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `memory-${++id}`
+        })(),
+        now: () => 123
+      })
+
+      const serialized = JSON.stringify(result.messages)
+      const boundaryMeta = result.messages[0]?.meta?.compactBoundary
+      expect(result.result.compressed).toBe(true)
+      expect(boundaryMeta?.sessionMemory).toEqual({
+        status: 'injected',
+        entries: 2,
+        sourceKinds: ['decision', 'constraint'],
+        outputChars: expect.any(Number),
+        truncated: false
+      })
+      expect(result.messages[2]).toEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining('## Session memory compact layer'),
+          meta: expect.objectContaining({
+            sessionMemoryCompact: expect.objectContaining({ status: 'injected' })
+          })
+        })
+      )
+      expect(serialized).toContain('stable decision: keep TDD evidence')
+      expect(serialized).toContain('[REDACTED]')
+      expect(serialized).not.toContain('memory-secret')
+      expect(boundaryMeta?.relinkTargetIds).toEqual([
+        'memory-2',
+        'memory-3',
+        'm-5',
+        'm-6',
+        'm-7',
+        'm-8'
+      ])
+    })
+
+    it('does not inject session memory when compaction fails', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async () => {
+        throw new Error('summarizer failed')
+      })
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        sessionMemory: {
+          enabled: true,
+          entries: [{ kind: 'decision', content: 'stable decision should not be injected' }]
+        },
+        summarize
+      })
+
+      expect(result.result.compressed).toBe(false)
+      expect(result.messages).toBe(messages)
+      expect(JSON.stringify(result.messages)).not.toContain('stable decision should not be injected')
+    })
+  })
+
   describe('shared Claude context gate classification', () => {
     const gateConfig = {
       enabled: true,

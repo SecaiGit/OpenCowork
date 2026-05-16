@@ -67,7 +67,7 @@ export interface ClaudePayloadDehydrationResult {
   keptChars: number
 }
 
-function redactText(value: string): string {
+export function redactClaudeCompactText(value: string): string {
   if (!value) return value
 
   return value
@@ -109,7 +109,7 @@ function compactLongText(
   text: string,
   args: { toolName: string; maxChars: number; isError?: boolean }
 ): { text: string; compacted: boolean } {
-  const redacted = redactText(text)
+  const redacted = redactClaudeCompactText(text)
   if (redacted.length <= args.maxChars) {
     return { text: redacted, compacted: redacted !== text }
   }
