@@ -13,6 +13,7 @@ import {
   type ClaudeCompactMessage,
   classifyClaudeContextGate,
   dehydrateClaudeCompactPayloads,
+  redactClaudeCompactText,
   guardClaudeAssistantFinalizePayload,
   guardClaudeSingleInputPayload
 } from '../claude-context-compression'
@@ -79,6 +80,8 @@ describe('shared Claude compact core', () => {
         'session_token: inline-session-secret',
         'auth_token=inline-auth-secret',
         'filePath=C:/Users/He/private.png',
+        'file_path="C:/Users/He/My Folder/private spaced.txt"',
+        'file-path=""',
         'imageBase64=data:image/png;base64,raw-image-secret',
         '{"authorization":"json-auth-secret","cookie":"json-cookie-secret","set-cookie":"json-set-cookie-secret","x-api-key":"json-api-key-secret","id_token":"json-id-secret","session_token":"json-session-secret","auth_token":"json-auth-token-secret","filePath":"C:/Users/He/json-private.png","base64":"json-raw-image-secret"}'
       ].join('\n')
@@ -95,7 +98,10 @@ describe('shared Claude compact core', () => {
       expect(serialized).toContain('\\"cookie\\":\\"[REDACTED]\\"')
       expect(serialized).toContain('\\"set-cookie\\":\\"[REDACTED]\\"')
       expect(serialized).toContain('\\"x-api-key\\":\\"[REDACTED]\\"')
-      expect(serialized).toContain('\\"filePath\\":\\"[REDACTED]\\"')
+      expect(serialized).toContain('\\"filePath\\":\\"[PATH:json-private.png]\\"')
+      expect(serialized).toContain('filePath=[PATH:private.png]')
+      expect(serialized).toContain('file_path=\\"[PATH:private spaced.txt]\\"')
+      expect(serialized).toContain('file-path=\\"[PATH:omitted]\\"')
       expect(serialized).toContain('\\"base64\\":\\"[REDACTED]\\"')
       expect(serialized).not.toContain('header-secret')
       expect(serialized).not.toContain('Token abc')
@@ -103,9 +109,9 @@ describe('shared Claude compact core', () => {
       expect(serialized).not.toContain('inline-id-secret')
       expect(serialized).not.toContain('inline-session-secret')
       expect(serialized).not.toContain('inline-auth-secret')
-      expect(serialized).not.toContain('private.png')
+      expect(serialized).not.toContain('C:/Users/He')
+      expect(serialized).not.toContain('My Folder')
       expect(serialized).not.toContain('raw-image-secret')
-      expect(serialized).not.toContain('json-private.png')
       expect(serialized).not.toContain('json-raw-image-secret')
       expect(serialized).not.toContain('json-auth-secret')
       expect(serialized).not.toContain('json-cookie-secret')
@@ -114,6 +120,12 @@ describe('shared Claude compact core', () => {
       expect(serialized).not.toContain('json-id-secret')
       expect(serialized).not.toContain('json-session-secret')
       expect(serialized).not.toContain('json-auth-token-secret')
+    })
+
+    it('does not rewrite embedded file path examples inside unrelated prose', () => {
+      const prose = 'diagnostic note: literal file_path="relative/path/note.txt" appeared in user text'
+
+      expect(redactClaudeCompactText(prose)).toBe(prose)
     })
 
     it('applies a single total budget across multi-block tool results and omits image payloads safely', () => {
@@ -214,7 +226,7 @@ describe('shared Claude compact core', () => {
       expect(result.keptChars).toBe(0)
     })
 
-    it('compacts oversized single user text input while preserving the user role', () => {
+    it('externalizes oversized single user text input while preserving the user role', () => {
       nextMessageId = 0
       const userMessage = message('user', `head\n${'u'.repeat(20_000)}\ntail`)
 
@@ -233,16 +245,18 @@ describe('shared Claude compact core', () => {
       expect(result.message).not.toBe(userMessage)
       expect(result.message.role).toBe('user')
       expect(typeof result.message.content).toBe('string')
-      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(result.message.content).toContain('[User input externalized for context budget]')
       expect(result.message.content).toContain('Original chars:')
-      expect(result.message.content).toContain('Retained head/tail chars:')
-      expect(result.message.content).toContain('Omitted middle chars:')
-      expect(result.message.content).toContain('## Head')
-      expect(result.message.content).toContain('## Tail')
+      expect(result.message.content).toContain('Original content omitted from model context')
+      expect(result.message.content).toContain('upload the content as a file')
+      expect(result.message.content).not.toContain('Retained head/tail chars:')
+      expect(result.message.content).not.toContain('## Head')
+      expect(result.message.content).not.toContain('head\n')
+      expect(result.message.content).not.toContain('tail')
       expect(JSON.stringify(result.message).length).toBeLessThan(JSON.stringify(userMessage).length)
     })
 
-    it('compacts oversized user text blocks inside content arrays', () => {
+    it('externalizes oversized user text blocks inside content arrays', () => {
       nextMessageId = 0
       const userMessage = message('user', [{ type: 'text', text: `head\n${'u'.repeat(20_000)}\ntail` }])
 
@@ -261,7 +275,7 @@ describe('shared Claude compact core', () => {
       expect(result.message.content).toEqual([
         expect.objectContaining({
           type: 'text',
-          text: expect.stringContaining('[User input compacted for context budget]')
+          text: expect.stringContaining('[User input externalized for context budget]')
         })
       ])
     })
@@ -312,7 +326,7 @@ describe('shared Claude compact core', () => {
       expect(result.keptChars).toBe(guardedText?.length)
     })
 
-    it('keeps compacted text within a small explicit max char budget', () => {
+    it('keeps externalized user input notice within a small explicit max char budget', () => {
       nextMessageId = 0
       const userMessage = message('user', 'x'.repeat(220))
 
@@ -327,7 +341,7 @@ describe('shared Claude compact core', () => {
       expect(result.changed).toBe(true)
       expect(result.reason).toBe('single_input_too_large')
       expect(typeof result.message.content).toBe('string')
-      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(result.message.content).toContain('[User input externalized for context budget]')
       expect(result.message.content.length).toBeLessThanOrEqual(200)
       expect(result.keptChars).toBe(result.message.content.length)
       expect(result.originalChars).toBe(220)
@@ -347,12 +361,12 @@ describe('shared Claude compact core', () => {
       expect(result.changed).toBe(true)
       expect(result.reason).toBe('single_input_too_large')
       expect(typeof result.message.content).toBe('string')
-      expect(result.message.content).toContain('[User input compacted for context budget]')
+      expect(result.message.content).toContain('[User input externalized for context budget]')
       expect(Number.isFinite(result.keptChars)).toBe(true)
       expect(result.keptChars).toBeGreaterThan(0)
     })
 
-    it('preserves message metadata while compacting text payloads', () => {
+    it('preserves message metadata while externalizing text payloads', () => {
       nextMessageId = 0
       const userMessage: ClaudeCompactMessage = {
         ...message('user', 'metadata-input\n'.repeat(2_000)),
@@ -380,7 +394,7 @@ describe('shared Claude compact core', () => {
       expect(result.message.meta).toBe(userMessage.meta)
     })
 
-    it('keeps non-text user content blocks unchanged while compacting text blocks', () => {
+    it('keeps non-text user content blocks unchanged while externalizing text blocks', () => {
       nextMessageId = 0
       const imageBlock: ClaudeCompactContentBlock = {
         type: 'image',
@@ -409,7 +423,7 @@ describe('shared Claude compact core', () => {
       expect(content[0]).toEqual(
         expect.objectContaining({
           type: 'text',
-          text: expect.stringContaining('[User input compacted for context budget]')
+          text: expect.stringContaining('[User input externalized for context budget]')
         })
       )
       expect(content[1]).toBe(imageBlock)

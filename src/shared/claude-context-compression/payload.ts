@@ -27,9 +27,6 @@ const SECRET_KEY_NAMES = [
   'secret',
   'password',
   'passwd',
-  'filePath',
-  'file_path',
-  'file-path',
   'base64',
   'imageBase64',
   'image_base64',
@@ -38,9 +35,26 @@ const SECRET_KEY_NAMES = [
 const SECRET_KEY_PATTERN = SECRET_KEY_NAMES.map((key) =>
   key.replace(/[\\^$.*+?()[\]{}|]/g, (char) => `\\${char}`)
 ).join('|')
+const FILE_PATH_KEY_NAMES = ['filePath', 'file_path', 'file-path'] as const
+const FILE_PATH_KEY_PATTERN = FILE_PATH_KEY_NAMES.map((key) =>
+  key.replace(/[\\^$.*+?()[\]{}|]/g, (char) => `\\${char}`)
+).join('|')
 const PRIVATE_KEY_BLOCK_PATTERN =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi
 const BASE64_DATA_URI_PATTERN = /data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi
+const JSON_FILE_PATH_PATTERN = new RegExp(
+  `(["'])((${FILE_PATH_KEY_PATTERN}))\\1\\s*:\\s*(["'])([\\s\\S]*?)\\4`,
+  'gi'
+)
+const KEY_VALUE_FILE_PATH_PREFIX_PATTERN = '(^|[\\r\\n])([ \\t]*)'
+const QUOTED_KEY_VALUE_FILE_PATH_PATTERN = new RegExp(
+  `${KEY_VALUE_FILE_PATH_PREFIX_PATTERN}(${FILE_PATH_KEY_PATTERN})\\b\\s*([:=])\\s*(["'])([^\\r\\n]*?)\\5`,
+  'gi'
+)
+const KEY_VALUE_FILE_PATH_PATTERN = new RegExp(
+  `${KEY_VALUE_FILE_PATH_PREFIX_PATTERN}(${FILE_PATH_KEY_PATTERN})\\b\\s*([:=])\\s*([^\\s,;"'{}\\]]+)`,
+  'gi'
+)
 const JSON_SECRET_PATTERN = new RegExp(
   `(["'])((${SECRET_KEY_PATTERN})|authorization|cookie|set-cookie)\\1\\s*:\\s*(["'])([\\s\\S]*?)\\4`,
   'gi'
@@ -52,6 +66,13 @@ const KEY_VALUE_SECRET_PATTERN = new RegExp(
 const AUTHORIZATION_HEADER_PATTERN = /\b(authorization\s*:\s*)[^\r\n]+/gi
 const COOKIE_HEADER_PATTERN = /\b((?:set-)?cookie\s*:\s*)[^\r\n]+/gi
 const API_KEY_HEADER_PATTERN = /\b(x-api-key\s*:\s*)[^\r\n]+/gi
+
+function formatFilePathForContext(value: string): string {
+  const normalized = value.trim().replace(/\\/g, '/')
+  const basename = normalized.replace(/\/+$/g, '').split('/').pop()?.trim() ?? ''
+  const safeName = basename.replace(/[^a-zA-Z0-9._ -]+/g, '_').slice(0, 120).trim()
+  return safeName ? `[PATH:${safeName}]` : '[PATH:omitted]'
+}
 
 export interface ClaudePayloadDehydrationOptions {
   config?: Pick<ClaudeCompactConfig, 'contextLength' | 'reservedOutputBudget'> | null
@@ -73,6 +94,30 @@ export function redactClaudeCompactText(value: string): string {
   return value
     .replace(PRIVATE_KEY_BLOCK_PATTERN, REDACTED_VALUE)
     .replace(BASE64_DATA_URI_PATTERN, REDACTED_VALUE)
+    .replace(
+      JSON_FILE_PATH_PATTERN,
+      (_match, keyQuote: string, key: string, _pathKey: string, valueQuote: string, pathValue: string) => {
+        return `${keyQuote}${key}${keyQuote}:${valueQuote}${formatFilePathForContext(pathValue)}${valueQuote}`
+      }
+    )
+    .replace(
+      QUOTED_KEY_VALUE_FILE_PATH_PATTERN,
+      (
+        _match,
+        linePrefix: string,
+        indent: string,
+        key: string,
+        separator: string,
+        quote: string,
+        pathValue: string
+      ) =>
+        `${linePrefix}${indent}${key}${separator}${quote}${formatFilePathForContext(pathValue)}${quote}`
+    )
+    .replace(
+      KEY_VALUE_FILE_PATH_PATTERN,
+      (_match, linePrefix: string, indent: string, key: string, separator: string, pathValue: string) =>
+        `${linePrefix}${indent}${key}${separator}${formatFilePathForContext(pathValue)}`
+    )
     .replace(JSON_SECRET_PATTERN, (_match, keyQuote: string, key: string, _secretKey: string, valueQuote: string) => {
       return `${keyQuote}${key}${keyQuote}:${valueQuote}${REDACTED_VALUE}${valueQuote}`
     })

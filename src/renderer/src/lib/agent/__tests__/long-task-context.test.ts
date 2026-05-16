@@ -150,7 +150,7 @@ describe('runAgentLoop context gate', () => {
     const serialized = JSON.stringify(sentMessages)
 
     expect(providerSend).toHaveBeenCalledTimes(1)
-    expect(serialized).toContain('[User input compacted for context budget]')
+    expect(serialized).toContain('[User input externalized for context budget]')
     expect(serialized).not.toContain('large-user-input\nlarge-user-input\nlarge-user-input')
     expect(events).toEqual(
       expect.arrayContaining([
@@ -233,7 +233,7 @@ describe('runAgentLoop context gate', () => {
     })
     expect(sentMessages[0]?.usage).toBe(usage)
     expect(sentMessages[0]?.meta).toBe(meta)
-    expect(JSON.stringify(sentMessages[0])).toContain('[User input compacted for context budget]')
+    expect(JSON.stringify(sentMessages[0])).toContain('[User input externalized for context budget]')
   })
 
   it('blocks the next provider request when context still exceeds the hard limit after compaction', async () => {

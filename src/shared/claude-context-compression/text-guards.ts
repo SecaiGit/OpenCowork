@@ -18,7 +18,7 @@ const DEFAULT_MIN_MAX_CHARS = 1_000
 const DEFAULT_MAX_MAX_CHARS = 12_000
 const EXPLICIT_MIN_MAX_CHARS = 200
 const ASSISTANT_MARKER = '[Assistant response compacted for context budget]'
-const USER_MARKER = '[User input compacted for context budget]'
+const USER_MARKER = '[User input externalized for context budget]'
 
 function resolveMaxChars(options: ClaudeTextGuardOptions): number {
   if (typeof options.maxChars === 'number' && Number.isFinite(options.maxChars)) {
@@ -122,6 +122,37 @@ function compactTextIfNeeded(
   }
 }
 
+function buildExternalizedInputReference(text: string, maxChars: number): string {
+  const body = [
+    USER_MARKER,
+    `Original chars: ${text.length}`,
+    'Original content omitted from model context instead of being truncated.',
+    'Action required: ask the user to upload the content as a file, provide a local file path, or resend it in smaller chunks.'
+  ].join('\n')
+
+  return trimCompactedTextToMax(body, USER_MARKER, maxChars)
+}
+
+function externalizeTextIfNeeded(
+  text: string,
+  maxChars: number
+): { changed: boolean; text: string; originalChars: number; keptChars: number } {
+  const originalChars = text.length
+
+  if (originalChars <= maxChars) {
+    return { changed: false, text, originalChars, keptChars: originalChars }
+  }
+
+  const externalizedText = buildExternalizedInputReference(text, maxChars)
+
+  return {
+    changed: true,
+    text: externalizedText,
+    originalChars,
+    keptChars: externalizedText.length
+  }
+}
+
 function isToolUseBlock(block: ClaudeCompactContentBlock): boolean {
   return block.type === 'tool_use'
 }
@@ -210,22 +241,22 @@ export function guardClaudeSingleInputPayload(
   const maxChars = resolveMaxChars(options)
 
   if (typeof message.content === 'string') {
-    const compacted = compactTextIfNeeded(message.content, USER_MARKER, maxChars)
-    if (!compacted.changed) {
+    const externalized = externalizeTextIfNeeded(message.content, maxChars)
+    if (!externalized.changed) {
       return {
         changed: false,
         message,
-        originalChars: compacted.originalChars,
-        keptChars: compacted.keptChars
+        originalChars: externalized.originalChars,
+        keptChars: externalized.keptChars
       }
     }
 
     return {
       changed: true,
       reason: 'single_input_too_large',
-      message: { ...message, content: compacted.text },
-      originalChars: compacted.originalChars,
-      keptChars: compacted.keptChars
+      message: { ...message, content: externalized.text },
+      originalChars: externalized.originalChars,
+      keptChars: externalized.keptChars
     }
   }
 
@@ -237,16 +268,16 @@ export function guardClaudeSingleInputPayload(
       return block
     }
 
-    const compacted = compactTextIfNeeded(block.text, USER_MARKER, maxChars)
-    originalChars += compacted.originalChars
-    keptChars += compacted.keptChars
+    const externalized = externalizeTextIfNeeded(block.text, maxChars)
+    originalChars += externalized.originalChars
+    keptChars += externalized.keptChars
 
-    if (!compacted.changed) {
+    if (!externalized.changed) {
       return block
     }
 
     changed = true
-    return { ...block, text: compacted.text }
+    return { ...block, text: externalized.text }
   })
 
   if (!changed) {
