@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid'
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import { RESPONSES_SESSION_SCOPE_CONTEXT_COMPRESSION } from '@renderer/lib/api/responses-session-policy'
+import { getGlobalPromptCacheKey, resetGlobalPromptCacheKey } from '../api/provider'
 import type { CompactBoundaryMeta, ProviderConfig, UnifiedMessage } from '../api/types'
 import type {
   CompressionConfig,
@@ -11,11 +12,57 @@ import {
   getClaudeCompactBudget,
   runClaudeCompact,
   sanitizeMessagesForClaudeCompact,
-  type ClaudeCompactMessage
+  type ClaudeCompactMessage,
+  type ClaudeCompactPromptCacheConfig
 } from '../../../../shared/claude-context-compression'
 
 const MAX_CLAUDE_COMPACT_FAILURES = 3
 let claudeCompactFailures = 0
+
+function providerSupportsPromptCache(providerConfig: ProviderConfig): boolean {
+  return (
+    providerConfig.type === 'anthropic' ||
+    providerConfig.type === 'openai-chat' ||
+    providerConfig.type === 'openai-responses'
+  )
+}
+
+function providerUsesGlobalPromptCacheKey(providerConfig: ProviderConfig): boolean {
+  return providerConfig.type === 'openai-chat' || providerConfig.type === 'openai-responses'
+}
+
+function isProviderPromptCacheEnabled(providerConfig: ProviderConfig): boolean {
+  if (!providerSupportsPromptCache(providerConfig)) return false
+  if (providerConfig.type === 'anthropic') {
+    return providerConfig.enablePromptCache !== false || providerConfig.enableSystemPromptCache !== false
+  }
+  return providerConfig.enablePromptCache !== false
+}
+
+function buildClaudePromptCacheConfig(providerConfig: ProviderConfig): ClaudeCompactPromptCacheConfig {
+  const providerSupportsCache = providerSupportsPromptCache(providerConfig)
+  const enabled = isProviderPromptCacheEnabled(providerConfig)
+  return {
+    enabled,
+    providerSupportsCache,
+    ...(enabled && providerSupportsCache && providerUsesGlobalPromptCacheKey(providerConfig)
+      ? { previousBaselineId: getGlobalPromptCacheKey(providerConfig) }
+      : {})
+  }
+}
+
+function resetRendererPromptCacheBaseline(
+  messages: UnifiedMessage[],
+  providerConfig: ProviderConfig
+): void {
+  if (!isProviderPromptCacheEnabled(providerConfig)) return
+  if (!providerUsesGlobalPromptCacheKey(providerConfig)) return
+  const promptCache = messages[0]?.meta?.compactBoundary?.promptCache
+  if (!promptCache || promptCache.status !== 'reset') return
+  promptCache.baselineId = resetGlobalPromptCacheKey(providerConfig)
+  promptCache.baselineKind = 'provider_key'
+  promptCache.providerKeyRotated = true
+}
 
 async function callClaudeCompactSummarizer(args: {
   providerConfig: ProviderConfig
@@ -88,6 +135,8 @@ async function claudeCompressMessages(
     focusPrompt,
     postCompactContext,
     sourceRuntime: 'renderer',
+    compactHooks: undefined,
+    promptCache: buildClaudePromptCacheConfig(providerConfig),
     signal,
     summarize: async ({ systemPrompt, userPrompt, signal: summarizeSignal }) =>
       callClaudeCompactSummarizer({
@@ -101,6 +150,7 @@ async function claudeCompressMessages(
   })
 
   if (compacted.result.compressed) {
+    resetRendererPromptCacheBaseline(compacted.messages as unknown as UnifiedMessage[], providerConfig)
     claudeCompactFailures = 0
   } else if (
     compacted.result.reason === 'summarizer_failed' ||

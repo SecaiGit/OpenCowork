@@ -939,6 +939,119 @@ describe('shared Claude compact core', () => {
     })
   })
 
+  describe('shared Claude prompt cache baseline', () => {
+    it('records cache baseline reset metadata after successful compaction', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'old result')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const summarize = vi.fn(async () => '<summary>First task is complete.</summary>')
+      const compactArgs = {
+        messages,
+        trigger: 'auto' as const,
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1' as const,
+          reservedOutputBudget: 20_000
+        },
+        promptCache: {
+          enabled: true,
+          providerSupportsCache: true,
+          previousBaselineId: 'baseline-before'
+        },
+        summarize,
+        createId: (() => {
+          let id = 0
+          return () => `cache-${++id}`
+        })(),
+        now: () => 123
+      }
+
+      const result = await runClaudeCompact(compactArgs)
+
+      const boundaryMeta = result.messages[0]?.meta?.compactBoundary as
+        | Record<string, unknown>
+        | undefined
+      expect(result.result.compressed).toBe(true)
+      expect(boundaryMeta?.promptCache).toEqual({
+        status: 'reset',
+        providerSupported: true,
+        previousBaselineId: 'baseline-before',
+        baselineId: 'cache-1',
+        baselineKind: 'compact_generation',
+        providerKeyRotated: false,
+        resetReason: 'context_compacted',
+        cacheBreakpointMessageIds: ['cache-2', 'm-5', 'm-6', 'm-7', 'm-8'],
+        staleSourceMessageIds: ['m-1', 'm-2', 'm-3', 'm-4']
+      })
+    })
+
+    it('records unsupported prompt cache metadata without blocking compaction', async () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'first task'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a')]),
+        message('assistant', 'first result'),
+        message('user', 'second task'),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b')]),
+        message('assistant', 'second result')
+      ]
+      const compactArgs = {
+        messages,
+        trigger: 'manual' as const,
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1' as const,
+          reservedOutputBudget: 20_000
+        },
+        promptCache: {
+          enabled: true,
+          providerSupportsCache: false,
+          previousBaselineId: 'unsupported-before'
+        },
+        summarize: vi.fn(async () => '<summary>First task is complete.</summary>'),
+        createId: (() => {
+          let id = 0
+          return () => `unsupported-cache-${++id}`
+        })(),
+        now: () => 123
+      }
+
+      const result = await runClaudeCompact(compactArgs)
+      const boundaryMeta = result.messages[0]?.meta?.compactBoundary as
+        | Record<string, unknown>
+        | undefined
+
+      expect(result.result.compressed).toBe(true)
+      expect(boundaryMeta?.promptCache).toEqual({
+        status: 'unsupported',
+        providerSupported: false,
+        previousBaselineId: 'unsupported-before',
+        baselineId: 'unsupported-cache-1',
+        baselineKind: 'compact_generation',
+        providerKeyRotated: false,
+        resetReason: 'context_compacted',
+        cacheBreakpointMessageIds: [],
+        staleSourceMessageIds: ['m-1', 'm-2', 'm-3', 'm-4']
+      })
+    })
+  })
+
   describe('shared Claude context gate classification', () => {
     const gateConfig = {
       enabled: true,

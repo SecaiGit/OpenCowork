@@ -123,6 +123,27 @@ export interface ClaudeCompactHooks {
   postCompact?: ClaudeCompactHook | ClaudeCompactHook[]
 }
 
+export type ClaudeCompactPromptCacheStatus = 'reset' | 'disabled' | 'unsupported'
+export type ClaudeCompactPromptCacheBaselineKind = 'compact_generation' | 'provider_key'
+
+export interface ClaudeCompactPromptCacheConfig {
+  enabled?: boolean
+  providerSupportsCache?: boolean
+  previousBaselineId?: string
+}
+
+export interface ClaudeCompactPromptCacheMeta {
+  status: ClaudeCompactPromptCacheStatus
+  providerSupported: boolean
+  previousBaselineId?: string
+  baselineId: string
+  baselineKind: ClaudeCompactPromptCacheBaselineKind
+  providerKeyRotated: boolean
+  resetReason: 'context_compacted'
+  cacheBreakpointMessageIds: string[]
+  staleSourceMessageIds: string[]
+}
+
 export interface ClaudeCompactBoundaryMeta {
   strategy?: string
   trigger: ClaudeCompactTrigger
@@ -142,6 +163,7 @@ export interface ClaudeCompactBoundaryMeta {
   duplicateCompactionKey?: string
   compactGenerationId?: string
   hookStatuses?: ClaudeCompactHookStatusMeta[]
+  promptCache?: ClaudeCompactPromptCacheMeta
   safetyFlags?: string[]
   preservedSegment?: {
     headId: string
@@ -215,6 +237,7 @@ export interface RunClaudeCompactArgs {
   postCompactContext?: string
   sourceRuntime?: ClaudeCompactSourceRuntime
   compactHooks?: ClaudeCompactHooks
+  promptCache?: ClaudeCompactPromptCacheConfig
   signal?: AbortSignal
   summarize: (args: {
     systemPrompt: string

@@ -5,6 +5,8 @@ import type {
   ClaudeCompactHookStage,
   ClaudeCompactHookStatusMeta,
   ClaudeCompactMessage,
+  ClaudeCompactPromptCacheConfig,
+  ClaudeCompactPromptCacheMeta,
   ClaudeCompactSourceRuntime,
   ClaudeCompactTrigger,
   RunClaudeCompactArgs,
@@ -202,6 +204,41 @@ function createDuplicateCompactionKey(args: {
   })
 }
 
+function sanitizePromptCacheId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  try {
+    return sanitizeHookText(trimmed, 240)
+  } catch {
+    return '[redacted-cache-baseline]'
+  }
+}
+
+function createPromptCacheMeta(args: {
+  promptCache?: ClaudeCompactPromptCacheConfig
+  compactGenerationId: string
+  sourceMessageIds: string[]
+  cacheBreakpointMessageIds: string[]
+}): ClaudeCompactPromptCacheMeta | undefined {
+  if (!args.promptCache) return undefined
+  const enabled = args.promptCache.enabled !== false
+  const providerSupported = args.promptCache.providerSupportsCache !== false
+  const status = !enabled ? 'disabled' : providerSupported ? 'reset' : 'unsupported'
+  const previousBaselineId = sanitizePromptCacheId(args.promptCache.previousBaselineId)
+
+  return {
+    status,
+    providerSupported,
+    ...(previousBaselineId ? { previousBaselineId } : {}),
+    baselineId: args.compactGenerationId,
+    baselineKind: 'compact_generation',
+    providerKeyRotated: false,
+    resetReason: 'context_compacted',
+    cacheBreakpointMessageIds: status === 'reset' ? args.cacheBreakpointMessageIds : [],
+    staleSourceMessageIds: args.sourceMessageIds
+  }
+}
+
 function createBoundaryMessage(args: {
   compactGenerationId: string
   now: () => number
@@ -221,6 +258,7 @@ function createBoundaryMessage(args: {
   sourceSummaryId: string
   hookStatuses: ClaudeCompactHookStatusMeta[]
   hookSafetyFlags: string[]
+  promptCache?: ClaudeCompactPromptCacheConfig
 }): ClaudeCompactMessage {
   const compactGenerationId = args.compactGenerationId
   const strategy = 'claude-code-compact-v1'
@@ -237,6 +275,12 @@ function createBoundaryMessage(args: {
         tailId: args.preservedMessages[args.preservedMessages.length - 1]!.id
       }
     : undefined
+  const promptCacheMeta = createPromptCacheMeta({
+    promptCache: args.promptCache,
+    compactGenerationId,
+    sourceMessageIds,
+    cacheBreakpointMessageIds: [args.sourceSummaryId, ...args.preservedMessages.map((message) => message.id)]
+  })
 
   return {
     id: compactGenerationId,
@@ -265,6 +309,7 @@ function createBoundaryMessage(args: {
           sourceMessageIds
         }),
         ...(args.hookStatuses.length > 0 ? { hookStatuses: args.hookStatuses } : {}),
+        ...(promptCacheMeta ? { promptCache: promptCacheMeta } : {}),
         ...(args.compressedRange ? { compressedRange: args.compressedRange } : {}),
         ...(args.preservedRange ? { preservedRange: args.preservedRange } : {}),
         ...(args.partialRange && args.partialAnchorId
@@ -486,7 +531,8 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           sourceRuntime,
           sourceSummaryId: summaryMessage.id,
           hookStatuses,
-          hookSafetyFlags
+          hookSafetyFlags,
+          promptCache: args.promptCache
         }),
         summaryMessage,
         ...(postCompactStateMessage ? [postCompactStateMessage] : []),

@@ -58,6 +58,7 @@ import { formatPostCompactStateContext } from '../context-state-format'
 import { useMcpStore } from '@renderer/stores/mcp-store'
 import { useTaskStore } from '@renderer/stores/task-store'
 import { useTeamStore } from '@renderer/stores/team-store'
+import * as providerRegistry from '../../api/provider'
 
 let nextMessageId = 0
 
@@ -100,6 +101,48 @@ describe('claude-code-compact-v1 registration', () => {
     expect(CONTEXT_COMPRESSION_STRATEGY_IDS).toContain('claude-code-compact-v1')
     expect(isContextCompressionStrategyId('claude-code-compact-v1')).toBe(true)
     expect(resolveCompressionStrategyId('claude-code-compact-v1')).toBe('claude-code-compact-v1')
+  })
+})
+
+describe('prompt cache baseline keys', () => {
+  it('rotates the session prompt cache key when a compact baseline reset is requested', () => {
+    const resetPromptCacheKey = (providerRegistry as unknown as {
+      resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
+    }).resetGlobalPromptCacheKey
+
+    expect(typeof resetPromptCacheKey).toBe('function')
+
+    const config = { sessionId: 'compact-cache-reset-session' }
+    const before = providerRegistry.getGlobalPromptCacheKey(config)
+    const reset = resetPromptCacheKey?.(config)
+    const after = providerRegistry.getGlobalPromptCacheKey(config)
+
+    expect(reset).toBeDefined()
+    expect(reset).not.toBe(before)
+    expect(after).toBe(reset)
+  })
+
+  it('hashes normalized session ids before using them in prompt cache keys', () => {
+    const resetPromptCacheKey = (providerRegistry as unknown as {
+      resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
+    }).resetGlobalPromptCacheKey
+
+    const rawSessionId = 'session / with token=value and spaces'
+    const equivalentSessionId = 'session-with-token-value-and-spaces'
+    const before = providerRegistry.getGlobalPromptCacheKey({ sessionId: rawSessionId })
+    const equivalentBefore = providerRegistry.getGlobalPromptCacheKey({ sessionId: equivalentSessionId })
+    const reset = resetPromptCacheKey?.({ sessionId: rawSessionId })
+    const after = providerRegistry.getGlobalPromptCacheKey({ sessionId: equivalentSessionId })
+
+    expect(before).toBe(equivalentBefore)
+    expect(reset).toBeDefined()
+    expect(reset).toMatch(/^opencowork-s-[a-z0-9]+-/)
+    expect(reset).not.toContain('session')
+    expect(reset).not.toContain('token')
+    expect(reset).not.toContain(' ')
+    expect(reset).not.toContain('/')
+    expect(reset).not.toContain('=')
+    expect(after).toBe(reset)
   })
 })
 
@@ -682,6 +725,59 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
     expect(prompt).toContain('old file snapshot')
     expect(prompt).not.toContain('latest edit result')
+  })
+
+  it('resets prompt cache baseline after successful renderer Claude compaction', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue('<summary>Old task is complete.</summary>')
+    const cacheProviderConfig: ProviderConfig = {
+      ...providerConfig,
+      sessionId: 'renderer-compact-cache-reset-session',
+      enablePromptCache: true
+    }
+    const before = providerRegistry.getGlobalPromptCacheKey(cacheProviderConfig)
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'old result')]),
+      message('assistant', 'first result'),
+      message('user', 'second task'),
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b')]),
+      message('assistant', 'second result')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      cacheProviderConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    const after = providerRegistry.getGlobalPromptCacheKey(cacheProviderConfig)
+    const promptCache = result.messages[0]?.meta?.compactBoundary?.promptCache
+
+    expect(result.result.compressed).toBe(true)
+    expect(after).not.toBe(before)
+    expect(promptCache).toMatchObject({
+      status: 'reset',
+      providerSupported: true,
+      previousBaselineId: before,
+      baselineId: after,
+      baselineKind: 'provider_key',
+      providerKeyRotated: true,
+      resetReason: 'context_compacted'
+    })
   })
 
   it('uses Claude threshold logic for shouldCompress', () => {

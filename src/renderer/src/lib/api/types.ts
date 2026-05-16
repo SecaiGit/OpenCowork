@@ -194,6 +194,20 @@ export interface CompactPartialRangeMeta {
 }
 
 export type CompactSourceRuntime = 'shared' | 'renderer' | 'main' | 'sidecar'
+export type CompactPromptCacheStatus = 'reset' | 'disabled' | 'unsupported'
+export type CompactPromptCacheBaselineKind = 'compact_generation' | 'provider_key'
+
+export interface CompactPromptCacheMeta {
+  status: CompactPromptCacheStatus
+  providerSupported: boolean
+  previousBaselineId?: string
+  baselineId: string
+  baselineKind: CompactPromptCacheBaselineKind
+  providerKeyRotated: boolean
+  resetReason: 'context_compacted'
+  cacheBreakpointMessageIds: string[]
+  staleSourceMessageIds: string[]
+}
 
 export interface CompactBoundaryMeta {
   trigger: 'auto' | 'manual'
@@ -213,6 +227,7 @@ export interface CompactBoundaryMeta {
   relinkTargetIds?: string[]
   duplicateCompactionKey?: string
   compactGenerationId?: string
+  promptCache?: CompactPromptCacheMeta
   safetyFlags?: string[]
   preservedSegment?: CompactBoundarySegment
 }

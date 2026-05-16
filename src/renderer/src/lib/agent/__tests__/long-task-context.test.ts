@@ -36,7 +36,9 @@ vi.mock('@renderer/lib/api/responses-session-policy', () => ({
 }))
 
 vi.mock('../../api/provider', () => ({
-  createProvider: vi.fn()
+  createProvider: vi.fn(),
+  getGlobalPromptCacheKey: vi.fn(() => 'mock-prompt-cache-before'),
+  resetGlobalPromptCacheKey: vi.fn(() => 'mock-prompt-cache-after')
 }))
 
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
