@@ -197,14 +197,20 @@ export async function* runAgentLoop(
                 messages: [...conversationMessages]
               }
             } else {
+              const deferredTokens = Math.max(
+                lastObservedContextTokens,
+                findRecentContextUsage(conversationMessages),
+                estimatedReplayTokens
+              )
+              const deferredGate = classifyClaudeContextGate({ inputTokens: deferredTokens, config: cc.config })
               yield {
                 type: 'context_compression_deferred',
                 checkpoint: 'before_model_request',
                 reason: skipReason,
-                inputTokens: conservativeContextTokens,
-                contextLength: cc.config.contextLength,
-                reservedOutputTokens: cc.config.reservedOutputBudget ?? 20_000,
-                blockingNextRequest: false,
+                inputTokens: deferredGate.inputTokens,
+                contextLength: deferredGate.contextLength,
+                reservedOutputTokens: deferredGate.reservedOutputTokens,
+                blockingNextRequest: deferredGate.blocking,
                 messagesChanged
               }
             }
