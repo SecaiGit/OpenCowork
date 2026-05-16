@@ -32,6 +32,7 @@ import {
 } from './context-payload-compaction'
 import {
   classifyClaudeContextGate,
+  guardClaudeAssistantFinalizePayload,
   guardClaudeSingleInputPayload,
   type ClaudeCompactMessage
 } from '../../../../shared/claude-context-compression'
@@ -643,7 +644,27 @@ export async function* runAgentLoop(
         ...(assistantUsage ? { usage: assistantUsage } : {}),
         ...(providerResponseId ? { providerResponseId } : {})
       }
-      conversationMessages.push(assistantMsg)
+      const finalizedAssistant = config.contextCompression
+        ? guardClaudeAssistantFinalizePayload(toClaudeTextGuardMessage(assistantMsg), {
+            config: config.contextCompression.config
+          })
+        : {
+            message: toClaudeTextGuardMessage(assistantMsg),
+            changed: false,
+            originalChars: 0,
+            keptChars: 0
+          }
+      if (finalizedAssistant.changed && finalizedAssistant.reason === 'assistant_output_too_large') {
+        yield {
+          type: 'context_payload_guarded',
+          checkpoint: 'assistant_finalize',
+          reason: finalizedAssistant.reason,
+          originalChars: finalizedAssistant.originalChars,
+          keptChars: finalizedAssistant.keptChars,
+          messageId: assistantMsg.id
+        }
+      }
+      conversationMessages.push(mergeGuardedContent(assistantMsg, finalizedAssistant.message))
       conversationMessages = sanitizeMessagesForToolReplay(conversationMessages)
 
       // 2. No tool calls → done

@@ -444,6 +444,81 @@ describe('runAgentLoop context gate', () => {
     )
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
+
+  it('guards oversized assistant text at finalize before appending it to final messages', async () => {
+    const events: AgentEvent[] = []
+    const finalMessages: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    const assistantOutput = 'assistant-output\n'.repeat(10_000)
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'text_delta', text: assistantOutput }
+      yield { type: 'message_end' }
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [message('user', 'write a long answer')],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        captureFinalMessages: (messages) => finalMessages.push(messages),
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 20_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 2_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    const finalAssistant = finalMessages.at(-1)?.find((item) => item.role === 'assistant')
+    const finalAssistantText =
+      typeof finalAssistant?.content === 'string'
+        ? finalAssistant.content
+        : (finalAssistant?.content ?? [])
+            .filter(
+              (block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text'
+            )
+            .map((block) => block.text)
+            .join('\n')
+
+    expect(finalAssistant).toBeDefined()
+    expect(finalAssistantText).toContain('[Assistant response compacted for context budget]')
+    expect(finalAssistantText).toContain('Omitted middle chars:')
+    expect(finalAssistantText.length).toBeLessThan(assistantOutput.length)
+    expect(finalAssistantText).not.toContain('assistant-output\n'.repeat(1_000))
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_payload_guarded',
+          checkpoint: 'assistant_finalize',
+          reason: 'assistant_output_too_large'
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
 })
 
 describe('redactTextForModelContext', () => {
