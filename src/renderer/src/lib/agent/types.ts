@@ -201,6 +201,14 @@ export type AgentEvent =
       keptChars: number
       messageId: string
     }
+  | {
+      type: 'context_streaming_continuation'
+      messageId: string
+      stopReason: string
+      partialOutputChars: number
+      continuationIndex: number
+      continuationPrompt: string
+    }
   | { type: 'context_compression_start' }
   | {
       type: 'context_compressed'

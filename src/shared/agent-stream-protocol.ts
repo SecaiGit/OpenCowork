@@ -228,6 +228,14 @@ export type AgentStreamEvent =
       newCount: number
       messages?: MessageWire[]
     }
+  | {
+      type: 'context_streaming_continuation'
+      messageId: string
+      stopReason: string
+      partialOutputChars: number
+      continuationIndex: number
+      continuationPrompt: string
+    }
   // Sub-agent events
   | {
       type: 'sub_agent_start'

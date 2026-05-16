@@ -521,6 +521,78 @@ describe('runAgentLoop context gate', () => {
     )
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
+
+  it('continues a stopped streaming assistant response without repeating completed tool calls', async () => {
+    const events: AgentEvent[] = []
+    const finalMessages: UnifiedMessage[][] = []
+    const sentRequests: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield { type: 'text_delta', text: 'part one ' }
+        yield { type: 'message_end', stopReason: 'max_tokens' }
+      })
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield { type: 'text_delta', text: 'part two' }
+        yield { type: 'message_end', stopReason: 'stop' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [message('user', 'write a long answer')],
+      {
+        maxIterations: 3,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        captureFinalMessages: (messages) => finalMessages.push(messages),
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 2_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_streaming_continuation',
+          stopReason: 'max_tokens',
+          continuationIndex: 1,
+          partialOutputChars: 'part one '.length
+        })
+      ])
+    )
+    expect(sentRequests[1]?.map((item) => item.role)).toEqual(['user', 'assistant', 'user'])
+    expect(String(sentRequests[1]?.[2]?.content)).toContain('Continue the previous assistant response')
+    expect(finalMessages.at(-1)?.filter((item) => item.role === 'assistant')).toHaveLength(2)
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
 })
 
 describe('redactTextForModelContext', () => {

@@ -5118,6 +5118,13 @@ export function useChatActions(): {
                   })
                   break
 
+                case 'context_streaming_continuation':
+                  appendRuntimeContentBlock(sessionId!, assistantMsgId, {
+                    type: 'text',
+                    text: `\n\n[Context Streaming Continuation]\nReason: ${event.stopReason}\nPartial output chars: ${event.partialOutputChars}\nContinuation request: ${event.continuationIndex}`
+                  })
+                  break
+
                 case 'context_compressed':
                   {
                     const compressedMessages = event.messages

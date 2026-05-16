@@ -122,6 +122,15 @@ export type InteractiveAgentEvent =
       usage?: AgentTokenUsage
       timing?: AgentRequestTiming
       providerResponseId?: string
+      stopReason?: string
+    }
+  | {
+      type: 'context_streaming_continuation'
+      messageId: string
+      stopReason: string
+      partialOutputChars: number
+      continuationIndex: number
+      continuationPrompt: string
     }
   | { type: 'error'; error: Error }
   | {

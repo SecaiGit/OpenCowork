@@ -40,6 +40,11 @@ import {
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
 const DEFAULT_MAX_PARALLEL_TOOLS = 8
+const MAX_STREAMING_CONTINUATIONS = 2
+const STREAMING_CONTINUATION_PROMPT = [
+  'Continue the previous assistant response from exactly where it stopped.',
+  'Do not repeat completed content and do not execute tools unless the continued answer genuinely requires them.'
+].join(' ')
 
 function isAwaitingUserReviewToolResult(output: ToolResultContent): boolean {
   if (typeof output !== 'string') return false
@@ -121,6 +126,44 @@ function mergeGuardedContent(original: UnifiedMessage, guarded: ClaudeCompactMes
   }
 }
 
+function isStreamingContinuationStopReason(stopReason?: string): stopReason is string {
+  const normalized = stopReason?.trim().toLowerCase()
+  if (!normalized) return false
+  return /max[_ -]?tokens|output[_ -]?limit|length|token[_ -]?limit/.test(normalized)
+}
+
+function estimateAssistantOutputChars(message: UnifiedMessage): number {
+  if (typeof message.content === 'string') return message.content.length
+  return message.content.reduce((sum, block) => {
+    if (block.type === 'text') return sum + block.text.length
+    if (block.type === 'thinking') return sum + block.thinking.length
+    return sum
+  }, 0)
+}
+
+function createStreamingContinuationMessage(args: {
+  assistantMessageId: string
+  stopReason: string
+  partialOutputChars: number
+  continuationIndex: number
+}): UnifiedMessage {
+  return {
+    id: nanoid(),
+    role: 'user',
+    content: STREAMING_CONTINUATION_PROMPT,
+    createdAt: Date.now(),
+    source: 'queued',
+    meta: {
+      streamingContinuation: {
+        previousAssistantMessageId: args.assistantMessageId,
+        stopReason: args.stopReason,
+        partialOutputChars: args.partialOutputChars,
+        continuationIndex: args.continuationIndex
+      }
+    }
+  }
+}
+
 function guardUserInputsForContext(
   messages: UnifiedMessage[],
   config: NonNullable<AgentLoopConfig['contextCompression']>['config']
@@ -170,6 +213,7 @@ export async function* runAgentLoop(
   let conversationMessages = [...messages]
   let iteration = 0
   let fullCompressionApplied = false
+  let streamingContinuationCount = 0
   if (config.contextCompression) {
     resetCompressionFailures()
   }
@@ -309,7 +353,7 @@ export async function* runAgentLoop(
       let accountFailoverUsed = false
       let providerResponseId: string | undefined
       let assistantUsage: UnifiedMessage['usage']
-      // stopReason from message_end is not used at loop level
+      let assistantStopReason: string | undefined
 
       while (sendAttempt < MAX_PROVIDER_RETRIES) {
         assistantContentBlocks = []
@@ -320,6 +364,7 @@ export async function* runAgentLoop(
         let currentToolId = ''
         let currentToolName = ''
         let streamedContent = false
+        assistantStopReason = undefined
 
         try {
           const resolvedProviderConfig = config.resolveProvider
@@ -512,6 +557,7 @@ export async function* runAgentLoop(
               }
 
               case 'message_end':
+                assistantStopReason = event.stopReason
                 if (event.usage) {
                   assistantUsage = event.usage
                   lastObservedContextTokens = readContextUsage(event.usage)
@@ -664,8 +710,34 @@ export async function* runAgentLoop(
           messageId: assistantMsg.id
         }
       }
-      conversationMessages.push(mergeGuardedContent(assistantMsg, finalizedAssistant.message))
+      const finalAssistantMessage = mergeGuardedContent(assistantMsg, finalizedAssistant.message)
+      conversationMessages.push(finalAssistantMessage)
       conversationMessages = sanitizeMessagesForToolReplay(conversationMessages)
+
+      if (
+        toolCalls.length === 0 &&
+        isStreamingContinuationStopReason(assistantStopReason) &&
+        streamingContinuationCount < MAX_STREAMING_CONTINUATIONS
+      ) {
+        streamingContinuationCount += 1
+        const partialOutputChars = estimateAssistantOutputChars(finalAssistantMessage)
+        const continuationMessage = createStreamingContinuationMessage({
+          assistantMessageId: assistantMsg.id,
+          stopReason: assistantStopReason,
+          partialOutputChars,
+          continuationIndex: streamingContinuationCount
+        })
+        yield {
+          type: 'context_streaming_continuation',
+          messageId: assistantMsg.id,
+          stopReason: assistantStopReason,
+          partialOutputChars,
+          continuationIndex: streamingContinuationCount,
+          continuationPrompt: STREAMING_CONTINUATION_PROMPT
+        }
+        conversationMessages.push(continuationMessage)
+        continue
+      }
 
       // 2. No tool calls → done
       if (toolCalls.length === 0) {
