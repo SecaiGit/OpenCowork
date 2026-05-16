@@ -185,6 +185,14 @@ export interface CompactBoundaryRange {
   end: number
 }
 
+export interface CompactPartialRangeMeta {
+  mode: 'from_up_to'
+  anchorId: string
+  from: number
+  upTo: number
+  tailStart: number
+}
+
 export interface CompactBoundaryMeta {
   trigger: 'auto' | 'manual'
   preTokens: number
@@ -195,6 +203,7 @@ export interface CompactBoundaryMeta {
   retryCount?: number
   compressedRange?: CompactBoundaryRange
   preservedRange?: CompactBoundaryRange
+  partialRange?: CompactPartialRangeMeta
   safetyFlags?: string[]
   preservedSegment?: CompactBoundarySegment
 }
@@ -208,6 +217,7 @@ export interface MessageMeta {
   compactBoundary?: CompactBoundaryMeta
   compactSummary?: CompactSummaryMeta
   postCompactState?: true
+  [key: string]: unknown
 }
 
 export interface UnifiedMessage {

@@ -8,6 +8,7 @@ import {
   runClaudeCompact,
   sanitizeMessagesForClaudeCompact,
   selectClaudeCompactRanges,
+  selectClaudePartialCompactRanges,
   type ClaudeCompactContentBlock,
   type ClaudeCompactMessage,
   classifyClaudeContextGate,
@@ -412,6 +413,76 @@ describe('shared Claude compact core', () => {
         })
       )
       expect(content[1]).toBe(imageBlock)
+    })
+  })
+
+  describe('shared Claude partial compact ranges', () => {
+    it('selects early closed current-task tool substeps while preserving anchor and latest tail', () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'implement the feature and keep going'),
+        message('assistant', [toolUse('read-old')]),
+        message('user', [toolResult('read-old', 'old file snapshot')]),
+        message('assistant', 'old read finished'),
+        message('assistant', [toolUse('edit-latest')]),
+        message('user', [toolResult('edit-latest', 'latest edit result')]),
+        message('assistant', 'continue with tests')
+      ]
+
+      const selection = selectClaudePartialCompactRanges(messages, {
+        minCompressibleMessages: 2,
+        preservedTailMessages: 3
+      })
+
+      expect(selection.ok).toBe(true)
+      expect(selection.mode).toBe('partial')
+      expect(selection.anchorMessage?.id).toBe('m-1')
+      expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-2', 'm-3', 'm-4'])
+      expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+      expect(selection.compressedRange).toEqual({ start: 1, end: 4 })
+      expect(selection.preservedRange).toBeUndefined()
+      expect(selection.partialRange).toEqual({ from: 1, upTo: 4, anchor: 0, tailStart: 4 })
+    })
+
+    it('refuses to compact when there is no closed current-task substep', () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'continue safely'),
+        message('assistant', [toolUse('pending')]),
+        message('assistant', 'waiting for pending result')
+      ]
+
+      const selection = selectClaudePartialCompactRanges(messages, {
+        minCompressibleMessages: 2,
+        preservedTailMessages: 0
+      })
+
+      expect(selection.ok).toBe(false)
+      expect(selection.reason).toBe('insufficient_compressible_messages')
+      expect(selection.compressibleMessages).toEqual([])
+      expect(selection.preservedMessages).toBe(messages)
+    })
+
+    it('moves the boundary earlier instead of preserving an orphaned tool_result tail', () => {
+      nextMessageId = 0
+      const messages = [
+        message('user', 'continue safely'),
+        message('assistant', [toolUse('a')]),
+        message('user', [toolResult('a', 'a result')]),
+        message('assistant', [toolUse('b')]),
+        message('user', [toolResult('b', 'b result')]),
+        message('assistant', 'latest explanation')
+      ]
+
+      const selection = selectClaudePartialCompactRanges(messages, {
+        minCompressibleMessages: 2,
+        preservedTailMessages: 2
+      })
+
+      expect(selection.ok).toBe(true)
+      expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-2', 'm-3'])
+      expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-1', 'm-4', 'm-5', 'm-6'])
+      expect(selection.partialRange).toEqual({ from: 1, upTo: 3, anchor: 0, tailStart: 3 })
     })
   })
 

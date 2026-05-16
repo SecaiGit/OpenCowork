@@ -43,6 +43,29 @@ export interface SelectClaudeCompactRangesOptions {
   preservedRoundCount?: number
 }
 
+export interface ClaudePartialCompactRangeSelection extends ClaudeCompactRangeSelection {
+  ok: true
+  mode: 'partial'
+  anchorMessage: ClaudeCompactMessage
+  partialRange: { from: number; upTo: number; anchor: number; tailStart: number }
+}
+
+export interface ClaudePartialCompactRangeFailure extends ClaudeCompactRangeSelection {
+  ok: false
+  mode: 'partial'
+  anchorMessage?: undefined
+  partialRange?: undefined
+}
+
+export type ClaudePartialCompactRangeSelectionResult =
+  | ClaudePartialCompactRangeSelection
+  | ClaudePartialCompactRangeFailure
+
+export interface SelectClaudePartialCompactRangesOptions {
+  minCompressibleMessages?: number
+  preservedTailMessages?: number
+}
+
 function collectToolUseIds(message: ClaudeCompactMessage): string[] {
   if (!Array.isArray(message.content)) return []
 
@@ -267,6 +290,27 @@ function hasFatalProtocolIssue(issues: ToolUseResultProtocolIssue[]): boolean {
   return issues.some((issue) => issue.kind !== 'unanswered_tool_use')
 }
 
+function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
+  if (message.role !== 'user') return false
+  if (typeof message.content === 'string') return message.content.trim().length > 0
+  return message.content.some((block) => block.type !== 'tool_result')
+}
+
+function findCurrentTaskAnchorIndex(messages: ClaudeCompactMessage[]): number {
+  for (let index = 0; index < messages.length; index += 1) {
+    if (hasNonToolResultUserContent(messages[index]!)) return index
+  }
+  return -1
+}
+
+function hasValidClosedToolProtocol(messages: ClaudeCompactMessage[]): boolean {
+  return validateToolUseResultProtocol(messages).valid
+}
+
+function hasSafePreservedProtocol(messages: ClaudeCompactMessage[]): boolean {
+  return !hasFatalProtocolIssue(validateToolUseResultProtocol(messages).issues)
+}
+
 function messageHasToolUse(message: ClaudeCompactMessage): boolean {
   return Array.isArray(message.content) && message.content.some((block) => block.type === 'tool_use')
 }
@@ -317,6 +361,85 @@ export function dropOldestClaudeCompactRounds(
   const dropCount = Math.min(Math.max(1, Math.floor(count)), groups.length - 1)
   const remainingMessages = groups.slice(dropCount).flatMap((group) => group.messages)
   return remainingMessages.length >= 2 ? remainingMessages : null
+}
+
+export function selectClaudePartialCompactRanges(
+  messages: ClaudeCompactMessage[],
+  options: SelectClaudePartialCompactRangesOptions = {}
+): ClaudePartialCompactRangeSelectionResult {
+  const minCompressibleMessages = Math.max(2, Math.floor(options.minCompressibleMessages ?? 2))
+  const preservedTailMessages = Math.max(0, Math.floor(options.preservedTailMessages ?? 3))
+
+  if (messages.length < 2) {
+    return {
+      ok: false,
+      mode: 'partial',
+      reason: 'insufficient_messages',
+      compressibleMessages: [],
+      preservedMessages: messages
+    }
+  }
+
+  const fullValidation = validateToolUseResultProtocol(messages)
+  if (hasFatalProtocolIssue(fullValidation.issues)) {
+    return {
+      ok: false,
+      mode: 'partial',
+      reason: 'unsafe_boundary',
+      compressibleMessages: [],
+      preservedMessages: messages
+    }
+  }
+
+  const anchorIndex = findCurrentTaskAnchorIndex(messages)
+  if (anchorIndex < 0 || anchorIndex >= messages.length - minCompressibleMessages) {
+    return {
+      ok: false,
+      mode: 'partial',
+      reason: 'insufficient_compressible_messages',
+      compressibleMessages: [],
+      preservedMessages: messages
+    }
+  }
+
+  const latestAllowedTailStart = Math.max(
+    anchorIndex + minCompressibleMessages + 1,
+    messages.length - preservedTailMessages
+  )
+
+  for (let tailStart = Math.min(latestAllowedTailStart, messages.length); tailStart > anchorIndex + 1; tailStart -= 1) {
+    const compressibleMessages = messages.slice(anchorIndex + 1, tailStart)
+    if (compressibleMessages.length < minCompressibleMessages) continue
+    if (!hasValidClosedToolProtocol(compressibleMessages)) continue
+
+    const preservedMessages = [messages[anchorIndex]!, ...messages.slice(tailStart)].filter(
+      (message) => message.meta?.postCompactState !== true
+    )
+    if (!hasSafePreservedProtocol(preservedMessages)) continue
+
+    return {
+      ok: true,
+      mode: 'partial',
+      anchorMessage: messages[anchorIndex]!,
+      compressibleMessages,
+      preservedMessages,
+      compressedRange: { start: anchorIndex + 1, end: tailStart },
+      partialRange: {
+        from: anchorIndex + 1,
+        upTo: tailStart,
+        anchor: anchorIndex,
+        tailStart
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    mode: 'partial',
+    reason: 'insufficient_compressible_messages',
+    compressibleMessages: [],
+    preservedMessages: messages
+  }
 }
 
 export function selectClaudeCompactRanges(

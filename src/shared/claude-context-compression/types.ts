@@ -73,6 +73,14 @@ export type ClaudeCompactContentBlock =
   | ClaudeCompactToolResultBlock
   | ClaudeCompactAgentErrorBlock
 
+export interface ClaudeCompactPartialRangeMeta {
+  mode: 'from_up_to'
+  anchorId: string
+  from: number
+  upTo: number
+  tailStart: number
+}
+
 export interface ClaudeCompactBoundaryMeta {
   strategy?: string
   trigger: ClaudeCompactTrigger
@@ -83,6 +91,7 @@ export interface ClaudeCompactBoundaryMeta {
   retryCount?: number
   compressedRange?: { start: number; end: number }
   preservedRange?: { start: number; end: number }
+  partialRange?: ClaudeCompactPartialRangeMeta
   safetyFlags?: string[]
   preservedSegment?: {
     headId: string
@@ -143,6 +152,7 @@ export interface ClaudeCompactResult {
   newCount: number
   messagesSummarized?: number
   payloadsCompacted?: number
+  partialCompact?: boolean
   reason?: ClaudeCompactSkipReason
 }
 
