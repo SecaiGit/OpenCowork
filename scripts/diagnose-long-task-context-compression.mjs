@@ -63,6 +63,9 @@ const sharedRuntime = read('src/renderer/src/lib/agent/shared-runtime.ts')
 const stateFormat = read('src/renderer/src/lib/agent/context-state-format.ts')
 const stateAttachments = read('src/renderer/src/lib/agent/context-state-attachments.ts')
 const chatActions = read('src/renderer/src/hooks/use-chat-actions.ts')
+const sharedRounds = read('src/shared/claude-context-compression/rounds.ts')
+const sharedEngine = read('src/shared/claude-context-compression/engine.ts')
+const sharedTypes = read('src/shared/claude-context-compression/types.ts')
 
 check(
   /compactToolResultForContext\s*\(/.test(agentLoop),
@@ -177,6 +180,27 @@ check(
   'chat action does not full-load history solely for compression',
   'chat action still full-loads history when compression is enabled',
   ['use-chat-actions.ts must not set requestContextMaxMessages=null just because compression is enabled']
+)
+
+check(
+  hasAll(sharedRounds, ['selectClaudePartialCompactRanges', 'partialRange', 'anchorMessage']),
+  'partial compact range selector is present',
+  'partial compact range selector is missing',
+  ['rounds.ts must expose selectClaudePartialCompactRanges with anchor and partialRange metadata']
+)
+
+check(
+  hasAll(sharedEngine, ['selectClaudePartialCompactRanges', 'partialCompact', 'partialRange']),
+  'shared compact engine can run partial compact fallback',
+  'shared compact engine is missing partial compact fallback',
+  ['engine.ts must try partial compact when ordinary selection has insufficient_compressible_messages']
+)
+
+check(
+  hasAll(sharedTypes, ['ClaudeCompactPartialRangeMeta', 'partialRange?: ClaudeCompactPartialRangeMeta']),
+  'partial compact metadata is typed',
+  'partial compact metadata is not typed',
+  ['types.ts must include ClaudeCompactPartialRangeMeta and expose it on compactBoundary metadata']
 )
 
 for (const message of passes) {
