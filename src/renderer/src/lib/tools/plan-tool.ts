@@ -10,6 +10,8 @@ import { resolveToolPath } from './fs-tool'
 import type { ToolHandler, ToolContext } from './tool-types'
 
 const PLAN_DIRECTORY_NAME = '.plan'
+const PLAN_MODE_WRITABLE_DOCUMENT_DIRECTORIES = ['docs', 'plan', 'plans']
+const PLAN_MODE_WRITABLE_DOCUMENT_EXTENSIONS = ['.md', '.mdx']
 
 function getSessionId(ctx: ToolContext): string | null {
   return ctx.sessionId ?? useChatStore.getState().activeSessionId ?? null
@@ -29,8 +31,60 @@ function inferTitleFromContent(content: string): string {
 }
 
 function normalizeComparablePath(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '')
-  return /^[a-zA-Z]:/.test(normalized) ? normalized.toLowerCase() : normalized
+  const withSlashes = filePath.replace(/\\/g, '/').replace(/\/+/g, '/')
+  const hasLeadingSlash = withSlashes.startsWith('/')
+  const parts = withSlashes.split('/')
+  const drive = /^[a-zA-Z]:$/.test(parts[0] ?? '') ? parts.shift()?.toLowerCase() : undefined
+  const segments: string[] = []
+
+  for (const part of parts) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (segments.length > 0 && segments[segments.length - 1] !== '..') {
+        segments.pop()
+      } else if (!drive && !hasLeadingSlash) {
+        segments.push(part)
+      }
+      continue
+    }
+    segments.push(part)
+  }
+
+  const prefix = drive ? `${drive}/` : hasLeadingSlash ? '/' : ''
+  const normalized = `${prefix}${segments.join('/')}`.replace(/\/$/, '')
+  return drive ? normalized.toLowerCase() : normalized
+}
+
+function isSameComparablePath(a: string, b: string): boolean {
+  return normalizeComparablePath(a) === normalizeComparablePath(b)
+}
+
+function isPlanModeWritableDocumentPath(resolvedPath: string, workingFolder?: string): boolean {
+  const normalizedPath = normalizeComparablePath(resolvedPath)
+  const lowerPath = normalizedPath.toLowerCase()
+  if (!PLAN_MODE_WRITABLE_DOCUMENT_EXTENSIONS.some((ext) => lowerPath.endsWith(ext))) {
+    return false
+  }
+
+  const workingRoot = workingFolder?.trim()
+  if (!workingRoot) return false
+
+  const normalizedRoot = normalizeComparablePath(workingRoot)
+  const relativePath = normalizedPath.startsWith(`${normalizedRoot}/`)
+    ? normalizedPath.slice(normalizedRoot.length + 1)
+    : null
+  if (!relativePath) return false
+
+  return PLAN_MODE_WRITABLE_DOCUMENT_DIRECTORIES.some((directory) =>
+    relativePath.startsWith(`${directory}/`)
+  )
+}
+
+function formatPlanModeWritableLocations(currentPlanFilePath: string): string {
+  return [
+    currentPlanFilePath,
+    ...PLAN_MODE_WRITABLE_DOCUMENT_DIRECTORIES.map((directory) => `${directory}/**/*.md(x)`)
+  ].join(', ')
 }
 
 function isFsErrorResult(value: unknown): value is { error: string } {
@@ -103,7 +157,7 @@ export function getPlanFilePath(workingFolder: string, planId: string): string {
   return joinFsPath(workingFolder, PLAN_DIRECTORY_NAME, `${planId}.md`)
 }
 
-function createGuardedPlanFileHandler(toolName: 'Write' | 'Edit'): ToolHandler | null {
+function createGuardedPlanModeFileHandler(toolName: 'Write' | 'Edit'): ToolHandler | null {
   const baseHandler = toolRegistry.get(toolName)
   if (!baseHandler) return null
 
@@ -116,9 +170,11 @@ function createGuardedPlanFileHandler(toolName: 'Write' | 'Edit'): ToolHandler |
       }
 
       const resolvedPath = resolveToolPath(input.file_path, ctx.workingFolder)
-      if (normalizeComparablePath(resolvedPath) !== normalizeComparablePath(currentPlanFilePath)) {
+      const isCurrentPlanFile = isSameComparablePath(resolvedPath, currentPlanFilePath)
+      const isWritableDocument = isPlanModeWritableDocumentPath(resolvedPath, ctx.workingFolder)
+      if (!isCurrentPlanFile && !isWritableDocument) {
         return encodeToolError(
-          `In plan mode, ${toolName} is restricted to the current plan file: ${currentPlanFilePath}`
+          `In plan mode, ${toolName} is restricted to the current plan file or Markdown/MDX documents under docs/, plan/, or plans/: ${formatPlanModeWritableLocations(currentPlanFilePath)}`
         )
       }
 
@@ -130,8 +186,8 @@ function createGuardedPlanFileHandler(toolName: 'Write' | 'Edit'): ToolHandler |
 
 export function createPlanModeInlineToolHandlers(): Record<string, ToolHandler> {
   const handlers: Record<string, ToolHandler> = {}
-  const guardedWriteHandler = createGuardedPlanFileHandler('Write')
-  const guardedEditHandler = createGuardedPlanFileHandler('Edit')
+  const guardedWriteHandler = createGuardedPlanModeFileHandler('Write')
+  const guardedEditHandler = createGuardedPlanModeFileHandler('Edit')
 
   if (guardedWriteHandler) handlers.Write = guardedWriteHandler
   if (guardedEditHandler) handlers.Edit = guardedEditHandler
@@ -144,8 +200,8 @@ const enterPlanModeHandler: ToolHandler = {
     name: 'EnterPlanMode',
     description:
       'Enter Plan Mode to explore the codebase and create a detailed implementation plan before writing code. ' +
-      'In plan mode, use read/search tools for investigation and Write/Edit only for the current plan file returned by this tool. ' +
-      'Do not make other file changes or run implementation commands.',
+      'In plan mode, use read/search tools for investigation and Write/Edit only for the current plan file or Markdown/MDX documents under docs/, plan/, or plans/. ' +
+      'Do not change code, non-document files, or run implementation commands.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -198,7 +254,7 @@ const enterPlanModeHandler: ToolHandler = {
         plan_id: existingPlan.id,
         plan_file_path: existingPlan.filePath,
         message:
-          'Resumed existing plan draft. Update the current plan file with Write/Edit, then call ExitPlanMode.'
+          'Resumed existing plan draft. Update the current plan file or allowed Markdown/MDX planning documents with Write/Edit, then call ExitPlanMode.'
       })
     }
 
@@ -229,7 +285,7 @@ const enterPlanModeHandler: ToolHandler = {
       plan_id: plan.id,
       plan_file_path: planFilePath,
       message:
-        'Plan mode activated. Write the plan into the current plan file with Write/Edit, then call ExitPlanMode.'
+        'Plan mode activated. Write the plan into the current plan file, or update allowed Markdown/MDX planning documents, with Write/Edit. Then call ExitPlanMode.'
     })
   },
   requiresApproval: () => false

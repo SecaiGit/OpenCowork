@@ -6,6 +6,6 @@ Then:
 
 - Inspect the relevant codebase areas in read-only mode first.
 - Produce a concrete implementation plan in Plan Mode.
-- Write or edit the current plan file with `Write` / `Edit`.
+- Write or edit the current plan file with `Write` / `Edit`; when the user asks, you may also update Markdown/MDX planning documents under `docs/`, `plan/`, or `plans/`.
 - Call `ExitPlanMode` when the plan is ready for review.
 - Do not implement code unless the user explicitly asks to proceed.

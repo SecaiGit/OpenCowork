@@ -40,8 +40,13 @@ import { IPC } from '@renderer/lib/ipc/channels'
 import { resolveSidecarApprovalRequest } from '@renderer/lib/ipc/sidecar-approval-registry'
 import { clearPendingQuestions } from '@renderer/lib/tools/ask-user-tool'
 import type { ToolContext } from '@renderer/lib/tools/tool-types'
+import { registerInlineToolHandlers } from '@renderer/lib/ipc/inline-tool-handler-registry'
 
-import { ACP_MODE_ALLOWED_TOOLS, PLAN_MODE_ALLOWED_TOOLS } from '@renderer/lib/tools/plan-tool'
+import {
+  ACP_MODE_ALLOWED_TOOLS,
+  PLAN_MODE_ALLOWED_TOOLS,
+  createPlanModeInlineToolHandlers
+} from '@renderer/lib/tools/plan-tool'
 import { usePlanStore, type Plan } from '@renderer/stores/plan-store'
 import { useTaskStore } from '@renderer/stores/task-store'
 import {
@@ -3606,6 +3611,7 @@ export function useChatActions(): {
 
           // Plan mode: restrict to read-only + planning tools
           const isPlanMode = useUIStore.getState().isPlanModeEnabled(sessionId)
+          const planModeInlineToolHandlers = isPlanMode ? createPlanModeInlineToolHandlers() : undefined
           if (isPlanMode) {
             finalEffectiveToolDefs = finalEffectiveToolDefs.filter((t) =>
               PLAN_MODE_ALLOWED_TOOLS.has(t.name)
@@ -3916,6 +3922,7 @@ export function useChatActions(): {
           const liveToolNames = new Map<string, string>()
           const goalRunFailedToolNames = new Set<string>()
           const goalRunUnsettledToolCalls = new Map<string, string>()
+          let unregisterPlanModeInlineToolHandlers: (() => void) | null = null
 
           // Tool input throttling state — defined before try block so finally can safely dispose
           const liveToolInputThrottle = new Map<string, LiveToolInputThrottleEntry>()
@@ -4170,6 +4177,13 @@ export function useChatActions(): {
                 throw new Error('Main-process agent request build failed')
               }
 
+              if (planModeInlineToolHandlers) {
+                unregisterPlanModeInlineToolHandlers = registerInlineToolHandlers(
+                  assistantMsgId,
+                  planModeInlineToolHandlers
+                )
+              }
+
               setRequestTraceInfo(assistantMsgId, {
                 executionPath: 'sidecar'
               })
@@ -4205,7 +4219,10 @@ export function useChatActions(): {
                 pluginChatType: session?.pluginChatType,
                 pluginSenderId: session?.pluginSenderId,
                 pluginSenderName: session?.pluginSenderName,
-                sharedState: {}
+                sharedState: {},
+                ...(planModeInlineToolHandlers
+                  ? { inlineToolHandlers: planModeInlineToolHandlers }
+                  : {})
               }
 
               const loopConfig: AgentLoopConfig = {
@@ -5209,6 +5226,8 @@ export function useChatActions(): {
             streamDeltaBuffer?.flushNow()
             streamDeltaBuffer?.dispose()
             disposeToolInputQueues()
+            unregisterPlanModeInlineToolHandlers?.()
+            unregisterPlanModeInlineToolHandlers = null
             liveToolNames.clear()
             if (isSessionForeground(sessionId!)) {
               // Clear image generating state
@@ -5531,6 +5550,10 @@ export function useChatActions(): {
             }
 
             const pluginChatId = extractPluginChatId(session.externalChatId)
+            const isPlanMode = useUIStore.getState().isPlanModeEnabled(sessionId)
+            const planModeInlineToolHandlers = isPlanMode
+              ? createPlanModeInlineToolHandlers()
+              : undefined
             const toolCtx: ToolContext = {
               sessionId,
               workingFolder: resolveSessionWorkingFolder(session),
@@ -5544,14 +5567,16 @@ export function useChatActions(): {
               ...(session.pluginChatType ? { pluginChatType: session.pluginChatType } : {}),
               ...(session.pluginSenderId ? { pluginSenderId: session.pluginSenderId } : {}),
               ...(session.pluginSenderName ? { pluginSenderName: session.pluginSenderName } : {}),
-              sharedState: {}
+              sharedState: {},
+              ...(planModeInlineToolHandlers
+                ? { inlineToolHandlers: planModeInlineToolHandlers }
+                : {})
             }
 
-            const requiresApproval = toolRegistry.checkRequiresApproval(
-              toolUse.name,
-              toolUse.input,
-              toolCtx
-            )
+            const inlineToolHandler = toolCtx.inlineToolHandlers?.[toolUse.name]
+            const requiresApproval = inlineToolHandler
+              ? (inlineToolHandler.requiresApproval?.(toolUse.input, toolCtx) ?? false)
+              : toolRegistry.checkRequiresApproval(toolUse.name, toolUse.input, toolCtx)
 
             if (requiresApproval) {
               agentStore.addToolCall(
@@ -5598,7 +5623,9 @@ export function useChatActions(): {
               sessionId
             )
 
-            const output = await toolRegistry.execute(toolUse.name, toolUse.input, toolCtx)
+            const output = inlineToolHandler
+              ? await inlineToolHandler.execute(toolUse.input, toolCtx)
+              : await toolRegistry.execute(toolUse.name, toolUse.input, toolCtx)
             const isError = typeof output === 'string' && isStructuredToolErrorText(output)
             const errorMessage = extractToolErrorMessage(output)
 

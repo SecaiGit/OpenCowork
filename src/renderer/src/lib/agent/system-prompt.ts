@@ -317,7 +317,7 @@ export function buildSystemPrompt(options: {
       `- Ask the user when requirements are unclear or multiple valid approaches exist.`,
       `- If you entered Plan Mode from Clarify mode, plan creation is mandatory. Enter only after questioning is exhausted or the user explicitly asks to move on, and once here do not bounce back into open-ended clarification.`,
       `- Convert non-blocking uncertainty into explicit assumptions or risks inside the plan instead of delaying plan delivery.`,
-      `- Write the plan into the current plan file using Write/Edit only. Do not write any other files.`,
+      `- Write the plan into the current plan file using Write/Edit. You may also update Markdown/MDX planning documents under docs/, plan/, or plans/ when the user asks. Do not write other files.`,
       `- Exiting Plan Mode is mandatory. After you finish writing the plan file, you MUST call ExitPlanMode in the same turn. A plan is not complete until ExitPlanMode succeeds.`,
       `- If ExitPlanMode returns an error, treat the plan as unfinished: inspect the error, fix the blocking issue, and retry ExitPlanMode before ending your turn.`,
       `- Never end a Plan Mode turn with only a written plan file, a suggestion to exit later, or a claim that planning is done without a successful ExitPlanMode result.`,
