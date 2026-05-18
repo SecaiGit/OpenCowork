@@ -849,6 +849,27 @@ describe('validateToolUseResultProtocol', () => {
     ])
     expect(repaired.issues.map((issue) => issue.kind)).toContain('unanswered_tool_use')
   })
+
+  it('repairs user messages that contain only invalid tool blocks', () => {
+    const messages = [
+      message('user', [toolResult('orphan')]),
+      message('user', [toolUse('wrong-role')])
+    ]
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(JSON.stringify(repaired.messages)).toContain('Recovered invalid tool result orphan')
+    expect(JSON.stringify(repaired.messages)).toContain('Recovered invalid tool call wrong-role')
+    expect(
+      repaired.messages.some(
+        (item) =>
+          Array.isArray(item.content) &&
+          item.content.some((block) => block.type === 'tool_result' || block.type === 'tool_use')
+      )
+    ).toBe(false)
+  })
 })
 
 describe('groupMessagesByApiRound', () => {
@@ -986,6 +1007,28 @@ describe('compactToolResultForContext', () => {
 })
 
 describe('compressMessages', () => {
+  it('returns repaired messages as a message change even when manual compression is skipped', async () => {
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a')]),
+      message('user', 'manual compact after interruption')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      { type: 'openai-chat', apiKey: 'test-key', model: 'test-model' },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'manual'
+    )
+
+    expect(result.result.compressed).toBe(false)
+    expect(result.result.messagesChanged).toBe(true)
+    expect(validateToolUseResultProtocol(result.messages)).toEqual({ valid: true, issues: [] })
+  })
+
   it('redacts sensitive values emitted by the summarizer before storing the compact summary', async () => {
     vi.mocked(runSidecarTextRequest).mockResolvedValue(
       '<summary>Current task is safe. token=summary-secret-value</summary>'

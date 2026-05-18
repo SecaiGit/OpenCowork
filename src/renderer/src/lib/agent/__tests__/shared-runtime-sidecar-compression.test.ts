@@ -13,7 +13,7 @@ vi.mock('../agent-loop', () => ({
 import { runSharedAgentRuntime } from '../shared-runtime'
 
 const capturedSidecarRequests: unknown[] = []
-let sidecarStreamEvents: unknown[] = []
+let sidecarStreamEvents: Array<unknown | { delayMs: number; event: unknown }> = []
 
 vi.mock('@renderer/lib/ipc/agent-bridge', () => ({
   agentBridge: {
@@ -31,8 +31,15 @@ vi.mock('@renderer/lib/ipc/agent-stream-receiver', () => ({
   agentStream: {
     subscribeAll: vi.fn((handler: (runId: string, sessionId: string, event: unknown) => void) => {
       queueMicrotask(() => {
-        for (const event of sidecarStreamEvents) {
-          handler('sidecar-run-1', 'session-1', event)
+        for (const item of sidecarStreamEvents) {
+          if (item && typeof item === 'object' && 'event' in item && 'delayMs' in item) {
+            setTimeout(
+              () => handler('sidecar-run-1', 'session-1', item.event),
+              Number(item.delayMs)
+            )
+            continue
+          }
+          handler('sidecar-run-1', 'session-1', item)
         }
       })
       return vi.fn()
@@ -207,5 +214,59 @@ describe('runSharedAgentRuntime sidecar compression routing', () => {
     expect(result.reason).toBe('error')
     expect(result.error).toBe('context gate blocked model request')
     expect(result.finalMessages).toEqual(finalMessages)
+  })
+
+  it('waits for delayed sidecar loop_end messages after an error event', async () => {
+    vi.useFakeTimers()
+    try {
+      const finalMessages: UnifiedMessage[] = [
+        {
+          id: 'm-delayed-final',
+          role: 'user',
+          content: 'delayed final transcript from sidecar',
+          createdAt: 456
+        }
+      ]
+      sidecarStreamEvents = [
+        {
+          type: 'error',
+          message: 'context gate blocked model request',
+          errorType: 'hard_context_limit_exceeded'
+        },
+        { delayMs: 50, event: { type: 'loop_end', reason: 'error', messages: finalMessages } }
+      ]
+
+      const config: AgentLoopConfig = {
+        maxIterations: 1,
+        provider,
+        tools,
+        systemPrompt: 'system',
+        signal: new AbortController().signal,
+        messageQueue: new MessageQueue()
+      }
+
+      const resultPromise = runSharedAgentRuntime({
+        initialMessages: [message('small context', 10)],
+        loopConfig: config,
+        toolContext: {
+          sessionId: 'session-1',
+          workingFolder: 'C:/projects/OpenCowork',
+          signal: config.signal,
+          ipc: {
+            invoke: vi.fn(async () => null),
+            send: vi.fn(),
+            on: vi.fn(() => vi.fn())
+          }
+        }
+      })
+
+      await vi.advanceTimersByTimeAsync(50)
+      await expect(resultPromise).resolves.toMatchObject({
+        reason: 'error',
+        finalMessages
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

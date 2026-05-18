@@ -191,9 +191,7 @@ import {
   buildSidecarAgentRunRequest,
   normalizeSidecarApprovalRequest
 } from '@renderer/lib/ipc/sidecar-protocol'
-import { agentStream } from '@renderer/lib/ipc/agent-stream-receiver'
-import { toAgentEvent, toSubAgentEvent } from '@renderer/lib/agent/stream-event-adapter'
-import type { AgentStreamEvent } from '../../../shared/agent-stream-protocol'
+import { createSidecarEventStream } from '@renderer/lib/agent/sidecar-event-stream'
 
 /** Per-session abort controllers — module-level so concurrent sessions don't overwrite each other */
 const sessionAbortControllers = new Map<string, AbortController>()
@@ -2523,178 +2521,6 @@ async function cancelSidecarRun(sessionId: string): Promise<void> {
   }
 }
 
-const SIDECAR_FIRST_PROGRESS_TIMEOUT_MS = 45_000
-
-function isProgressAgentEvent(event: AgentEvent): boolean {
-  return event.type !== 'request_debug'
-}
-
-function createSidecarEventStream(options: {
-  sessionId: string
-  sidecarRequest: unknown
-  signal?: AbortSignal
-  logLabel: 'chat' | 'agent'
-}): AsyncIterable<AgentEvent> {
-  const { sessionId, sidecarRequest, signal, logLabel } = options
-
-  return {
-    async *[Symbol.asyncIterator]() {
-      const queue: AgentEvent[] = []
-      const pendingEvents: Array<{ runId: string; event: AgentStreamEvent }> = []
-      let finished = false
-      let pendingFailure: Error | null = null
-      let notify: (() => void) | null = null
-      let runId = ''
-      let sawProgressEvent = false
-      let firstProgressTimer: ReturnType<typeof setTimeout> | null = null
-
-      const wake = (): void => {
-        if (!notify) return
-        const resolver = notify
-        notify = null
-        resolver()
-      }
-
-      const clearFirstProgressTimer = (): void => {
-        if (!firstProgressTimer) return
-        clearTimeout(firstProgressTimer)
-        firstProgressTimer = null
-      }
-
-      const finish = (): void => {
-        finished = true
-        wake()
-      }
-
-      const fail = (error: Error): void => {
-        pendingFailure = error
-        finish()
-      }
-
-      const markProgress = (): void => {
-        if (sawProgressEvent) return
-        sawProgressEvent = true
-        clearFirstProgressTimer()
-      }
-
-      const startFirstProgressTimer = (): void => {
-        clearFirstProgressTimer()
-        firstProgressTimer = setTimeout(() => {
-          const error = new Error(
-            `Sidecar run started but produced no progress within ${Math.round(
-              SIDECAR_FIRST_PROGRESS_TIMEOUT_MS / 1000
-            )}s`
-          )
-          console.warn('[ChatActions] Sidecar run stalled before first progress event', {
-            sessionId,
-            runId,
-            logLabel
-          })
-          if (runId) {
-            void agentBridge.cancelAgent(runId).catch(() => {})
-          }
-          fail(error)
-        }, SIDECAR_FIRST_PROGRESS_TIMEOUT_MS)
-      }
-
-      const pushEvent = (normalized: AgentEvent): void => {
-        if (finished || pendingFailure) return
-        if (isProgressAgentEvent(normalized)) {
-          markProgress()
-        }
-        queue.push(normalized)
-        if (normalized.type === 'loop_end' || normalized.type === 'error') {
-          finished = true
-          if (runId) {
-            sessionSidecarRunIds.delete(sessionId)
-          }
-        }
-        wake()
-      }
-
-      const dispatchStreamEvent = (event: AgentStreamEvent): void => {
-        if (finished || pendingFailure) return
-        const subEvent = toSubAgentEvent(event)
-        if (subEvent) {
-          markProgress()
-          subAgentEvents.emit(sessionId ?? null, subEvent)
-          return
-        }
-
-        const agentEvent = toAgentEvent(event)
-        if (agentEvent) {
-          pushEvent(agentEvent)
-        }
-      }
-
-      const onAbort = (): void => {
-        clearFirstProgressTimer()
-        finish()
-      }
-
-      signal?.addEventListener('abort', onAbort, { once: true })
-
-      const unsub = agentStream.subscribeAll((eventRunId, _sessionId, event) => {
-        if (finished || pendingFailure) return
-
-        if (!runId) {
-          pendingEvents.push({ runId: eventRunId, event })
-          return
-        }
-
-        if (eventRunId && eventRunId !== runId) return
-        dispatchStreamEvent(event)
-      })
-
-      try {
-        const result = await agentBridge.runAgent(sidecarRequest)
-        runId = result.runId
-        sessionSidecarRunIds.set(sessionId, result.runId)
-        console.log(`[ChatActions] sidecar ${logLabel} stream started`, { sessionId, runId })
-
-        if (signal?.aborted) {
-          void agentBridge.cancelAgent(runId).catch(() => {})
-          finish()
-        } else {
-          startFirstProgressTimer()
-        }
-
-        const pendingSnapshot = pendingEvents.splice(0, pendingEvents.length)
-        for (const pending of pendingSnapshot) {
-          if (pending.runId && pending.runId !== runId) continue
-          dispatchStreamEvent(pending.event)
-          if (finished) break
-        }
-
-        while (!finished || queue.length > 0) {
-          if (queue.length === 0) {
-            await new Promise<void>((resolve) => {
-              notify = resolve
-              if (finished || queue.length > 0) {
-                wake()
-              }
-            })
-            continue
-          }
-          const next = queue.shift()
-          if (next) yield next
-        }
-
-        if (pendingFailure) {
-          throw pendingFailure
-        }
-      } finally {
-        clearFirstProgressTimer()
-        signal?.removeEventListener('abort', onAbort)
-        unsub()
-        if (runId) {
-          sessionSidecarRunIds.delete(sessionId)
-        }
-      }
-    }
-  }
-}
-
 function createSubAgentEventBuffer(sessionId: string): {
   handleEvent: (event: SubAgentEvent) => void
   dispose: () => void
@@ -2794,7 +2620,7 @@ function createSubAgentEventBuffer(sessionId: string): {
   }
 }
 
-export type ManualCompressionResult = 'compressed' | 'skipped' | 'blocked' | 'failed'
+export type ManualCompressionResult = 'compressed' | 'repaired' | 'skipped' | 'blocked' | 'failed'
 
 function getManualCompressionSkipDescription(reason?: CompressionResult['reason']): string {
   switch (reason) {
@@ -2984,6 +2810,13 @@ export function useChatActions(): {
           postCompactContext
         )
         if (!result.compressed) {
+          if (result.messagesChanged) {
+            chatStore.replaceSessionMessages(sessionId, compressed)
+            toast.success('上下文已修复', {
+              description: '已补齐未闭合的工具调用链，可以继续执行任务'
+            })
+            return 'repaired'
+          }
           toast.warning('无需压缩', {
             description: getManualCompressionSkipDescription(result.reason)
           })
@@ -4197,7 +4030,9 @@ export function useChatActions(): {
                 sessionId,
                 sidecarRequest,
                 signal: abortController.signal,
-                logLabel: 'agent'
+                logLabel: 'agent',
+                onRunStarted: (runId) => sessionSidecarRunIds.set(sessionId, runId),
+                onRunFinished: () => sessionSidecarRunIds.delete(sessionId)
               })
             } else {
               setRequestTraceInfo(assistantMsgId, {
@@ -5036,7 +4871,9 @@ export function useChatActions(): {
                   if (
                     event.messages &&
                     event.messages.length > 0 &&
-                    (event.reason === 'completed' || event.reason === 'max_iterations')
+                    (event.reason === 'completed' ||
+                      event.reason === 'max_iterations' ||
+                      event.reason === 'error')
                   ) {
                     chatStore.replaceSessionMessages(sessionId!, event.messages)
                   }
@@ -6165,7 +6002,9 @@ async function runSimpleChat(
         sessionId,
         sidecarRequest,
         signal,
-        logLabel: 'chat'
+        logLabel: 'chat',
+        onRunStarted: (runId) => sessionSidecarRunIds.set(sessionId, runId),
+        onRunFinished: () => sessionSidecarRunIds.delete(sessionId)
       })
     } else {
       const provider = createProvider(config)

@@ -119,7 +119,7 @@ export function serializeToolResultContent(content: ToolResultContent): string {
         case 'text':
           return block.text
         case 'image':
-          return '[image]'
+          return '[Image attachment]'
         default:
           return assertNever(block)
       }
@@ -472,14 +472,16 @@ export function repairToolUseResultProtocolForReplay(
       }
 
       if (otherBlocks.length > 0) {
+        const nextMessageChanged =
+          toolResultBlocks.length > 0 ||
+          otherBlocks.length !== message.content.length ||
+          otherBlocks.some((block, index) => block !== message.content[index])
         repaired.push(
-          toolResultBlocks.length > 0
+          nextMessageChanged
             ? { ...message, id: `${message.id}-tool-repair-tail-${++repairIndex}`, content: otherBlocks }
-            : otherBlocks.length === message.content.length
-              ? message
-              : { ...message, content: otherBlocks }
+            : message
         )
-        if (toolResultBlocks.length > 0 || otherBlocks.length !== message.content.length) {
+        if (nextMessageChanged) {
           changed = true
         }
       } else if (toolResultBlocks.length === 0 && message.content.length === 0) {

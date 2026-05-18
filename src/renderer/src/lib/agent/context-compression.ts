@@ -103,6 +103,7 @@ export interface CompressionResult {
   messagesSummarized?: number
   payloadsCompacted?: number
   partialCompact?: boolean
+  messagesChanged?: boolean
   reason?: CompressionSkipReason
 }
 
@@ -894,7 +895,11 @@ export async function compressMessages(
     postCompactContext
   )
   if (repair.changed) {
-    compressed.result.originalCount = messages.length
+    compressed.result = {
+      ...compressed.result,
+      originalCount: messages.length,
+      messagesChanged: true
+    }
   }
   return compressed
 }

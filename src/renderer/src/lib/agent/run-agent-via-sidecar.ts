@@ -6,7 +6,7 @@ import { toAgentEvent, toSubAgentEvent } from './stream-event-adapter'
 import { subAgentEvents } from '@renderer/lib/agent/sub-agents/events'
 import type { SidecarAgentRunRequest } from '@renderer/lib/ipc/sidecar-protocol'
 
-const ERROR_LOOP_END_GRACE_MS = 25
+const ERROR_LOOP_END_TIMEOUT_MS = 5_000
 
 export interface RunAgentViaSidecarOptions {
   signal?: AbortSignal
@@ -64,7 +64,7 @@ export function runAgentViaSidecar(
             errorFinishTimer = null
             finished = true
             wake()
-          }, ERROR_LOOP_END_GRACE_MS)
+          }, ERROR_LOOP_END_TIMEOUT_MS)
         }
         wake()
       }
