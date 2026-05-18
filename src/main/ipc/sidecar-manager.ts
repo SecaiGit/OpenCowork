@@ -19,6 +19,7 @@ import { JsAgentRuntimeManager } from './js-agent-runtime'
 import { compressMessagesForContext } from '../cron/cron-agent-background'
 
 const SIDECAR_RENDERER_REQUEST_TIMEOUT_MS = 10 * 60_000
+const SIDECAR_ERROR_ROUTE_RETENTION_MS = 10_000
 
 type PendingRendererApprovalResponse = { approved: boolean; reason?: string }
 
@@ -161,6 +162,30 @@ export function registerSidecarHandlers(): void {
   const pendingProviderStreamRequests = new Map<string, PendingRendererToolRequest>()
   const runWindowIds = new Map<string, number>()
   const sessionWindowIds = new Map<string, number>()
+  const runRouteCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  const clearRunRouteCleanupTimer = (runId: string): void => {
+    const timer = runRouteCleanupTimers.get(runId)
+    if (!timer) return
+    clearTimeout(timer)
+    runRouteCleanupTimers.delete(runId)
+  }
+
+  const forgetRunRoute = (runId: string): void => {
+    clearRunRouteCleanupTimer(runId)
+    runWindowIds.delete(runId)
+  }
+
+  const scheduleRunRouteCleanup = (runId: string): void => {
+    clearRunRouteCleanupTimer(runId)
+    runRouteCleanupTimers.set(
+      runId,
+      setTimeout(() => {
+        runRouteCleanupTimers.delete(runId)
+        runWindowIds.delete(runId)
+      }, SIDECAR_ERROR_ROUTE_RETENTION_MS)
+    )
+  }
 
   // New protocol: typed AgentStreamEnvelope on 'agent:stream'
   manager.setEventHandler((envelope) => {
@@ -170,8 +195,12 @@ export function registerSidecarHandlers(): void {
     if (targetWindow) {
       safeSendToWindow(targetWindow, 'agent:stream', envelope)
     }
-    if (envelope.events.some((event) => event.type === 'loop_end' || event.type === 'error')) {
-      runWindowIds.delete(envelope.runId)
+    const hasLoopEnd = envelope.events.some((event) => event.type === 'loop_end')
+    const hasError = envelope.events.some((event) => event.type === 'error')
+    if (hasLoopEnd) {
+      forgetRunRoute(envelope.runId)
+    } else if (hasError) {
+      scheduleRunRouteCleanup(envelope.runId)
     }
   })
 
@@ -397,7 +426,7 @@ export function registerSidecarHandlers(): void {
       runId?: string
     }
     if (result.cancelled && result.runId) {
-      runWindowIds.delete(result.runId)
+      forgetRunRoute(result.runId)
     }
     return result
   })

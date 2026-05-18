@@ -2074,6 +2074,8 @@ export function InputArea({
         return t('input.compressingContext', { defaultValue: 'Compressing context...' })
       case 'compressed':
         return t('input.contextCompressed', { defaultValue: 'Context compressed' })
+      case 'repaired':
+        return t('input.contextRepaired', { defaultValue: 'Context repaired' })
       case 'skipped':
         return t('input.contextCompressionSkipped', { defaultValue: 'No compression needed' })
       case 'blocked':
@@ -2974,7 +2976,9 @@ export function InputArea({
                   <span
                     className={cn(
                       'composer-status-pill inline-flex max-w-[150px] items-center gap-1 rounded-full px-2 py-1 text-[10px]',
-                      contextCompressionStatus === 'compressed' && 'text-emerald-500',
+                      (contextCompressionStatus === 'compressed' ||
+                        contextCompressionStatus === 'repaired') &&
+                        'text-emerald-500',
                       contextCompressionStatus === 'failed' && 'text-red-500',
                       (contextCompressionStatus === 'blocked' ||
                         contextCompressionStatus === 'skipped') &&

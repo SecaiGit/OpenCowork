@@ -14,7 +14,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "diagnose:context-regressions": "node ./scripts/diagnose-context-regressions.mjs",
     "diagnose:long-task-compression": "node ./scripts/diagnose-long-task-context-compression.mjs",
-    "test:agent-context": "vitest run src/shared/__tests__/claude-context-compression-core.test.ts src/main/cron/__tests__/context-compression-runtime.test.ts src/main/ipc/__tests__/js-agent-runtime-compression.test.ts src/renderer/src/lib/agent/__tests__/long-task-context.test.ts src/renderer/src/lib/agent/__tests__/claude-context-compression.test.ts src/renderer/src/lib/agent/__tests__/shared-runtime-sidecar-compression.test.ts",
+    "test:agent-context": "vitest run src/shared/__tests__/claude-context-compression-core.test.ts src/main/cron/__tests__/context-compression-runtime.test.ts src/main/ipc/__tests__/js-agent-runtime-compression.test.ts src/main/ipc/__tests__/sidecar-manager-routing.test.ts src/renderer/src/lib/agent/__tests__/long-task-context.test.ts src/renderer/src/lib/agent/__tests__/claude-context-compression.test.ts src/renderer/src/lib/agent/__tests__/shared-runtime-sidecar-compression.test.ts src/renderer/src/lib/agent/__tests__/sidecar-event-stream.test.ts",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
