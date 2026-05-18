@@ -26,6 +26,7 @@ import { extractClaudeCompactSummary } from './claude-compact-prompt'
 import {
   groupMessagesByApiRound,
   redactTextForModelContext,
+  repairToolUseResultProtocolForReplay,
   validateToolUseResultProtocol
 } from './context-budget'
 
@@ -876,9 +877,12 @@ export async function compressMessages(
   postCompactContext?: string
 ): Promise<{ messages: UnifiedMessage[]; result: CompressionResult }> {
   const strategyConfig = isCompleteCompressionConfig(config) ? config : null
+  const repair =
+    trigger === 'manual' ? repairToolUseResultProtocolForReplay(messages) : { messages, changed: false }
+  const inputMessages = repair.changed ? repair.messages : messages
 
-  return getCompressionStrategy(config).compressMessages(
-    messages,
+  const compressed = await getCompressionStrategy(config).compressMessages(
+    inputMessages,
     providerConfig,
     signal,
     preserveCount,
@@ -889,6 +893,10 @@ export async function compressMessages(
     strategyConfig,
     postCompactContext
   )
+  if (repair.changed) {
+    compressed.result.originalCount = messages.length
+  }
+  return compressed
 }
 
 function findSafeCompactBoundary(messages: UnifiedMessage[], initialBoundary: number): number {

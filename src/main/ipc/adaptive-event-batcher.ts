@@ -696,6 +696,17 @@ function mapToStreamEvent(raw: Record<string, unknown>): AgentStreamEvent | null
         ...(messages && messages.length > 0 ? { messages } : {})
       }
     }
+    case 'context_compression_deferred':
+      return {
+        type: 'context_compression_deferred',
+        checkpoint: 'before_model_request',
+        reason: str(raw.reason, 'unknown'),
+        inputTokens: num(raw.inputTokens),
+        contextLength: num(raw.contextLength),
+        reservedOutputTokens: num(raw.reservedOutputTokens),
+        blockingNextRequest: bool(raw.blockingNextRequest),
+        messagesChanged: bool(raw.messagesChanged)
+      }
 
     // Sub-agent events
     case 'sub_agent_start': {

@@ -19,13 +19,15 @@ export function estimateRequestContextTokens(args: {
   messages: UnifiedMessage[]
   provider: ProviderConfig
   tools: ToolDefinition[]
+  systemPrompt?: string
 }): number {
   if (args.messages.length === 0) return 0
 
   try {
     const provider = createProvider(args.provider)
+    const systemPrompt = args.systemPrompt ?? args.provider.systemPrompt ?? ''
     const payload = {
-      systemPrompt: args.provider.systemPrompt ?? '',
+      systemPrompt,
       messages: provider.formatMessages(args.messages),
       ...(args.tools.length > 0 ? { tools: provider.formatTools(args.tools) } : {})
     }
@@ -34,7 +36,7 @@ export function estimateRequestContextTokens(args: {
     try {
       return estimateTokens(
         JSON.stringify({
-          systemPrompt: args.provider.systemPrompt ?? '',
+          systemPrompt: args.systemPrompt ?? args.provider.systemPrompt ?? '',
           messages: args.messages,
           tools: args.tools
         })

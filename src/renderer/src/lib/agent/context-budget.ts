@@ -59,6 +59,15 @@ export interface ToolUseResultProtocolValidation {
   issues: ToolUseResultProtocolIssue[]
 }
 
+export interface ToolUseResultProtocolRepair {
+  messages: UnifiedMessage[]
+  changed: boolean
+  issues: ToolUseResultProtocolIssue[]
+}
+
+const TOOL_PROTOCOL_RECOVERY_RESULT =
+  '[Tool execution interrupted before a result was recorded during context recovery.]'
+
 export function redactTextForModelContext(text: string): string {
   if (!text) return text
 
@@ -331,6 +340,197 @@ export function validateToolUseResultProtocol(
 
   return {
     valid: issues.length === 0,
+    issues
+  }
+}
+
+function createRecoveredToolResultMessage(
+  pendingToolUseIds: Iterable<string>,
+  anchor: UnifiedMessage | undefined,
+  repairIndex: number
+): UnifiedMessage {
+  return {
+    id: `${anchor?.id ?? 'message'}-tool-repair-${repairIndex}`,
+    role: 'user',
+    content: [...pendingToolUseIds].map(
+      (toolUseId): ContentBlock => ({
+        type: 'tool_result',
+        toolUseId,
+        content: TOOL_PROTOCOL_RECOVERY_RESULT,
+        isError: true
+      })
+    ),
+    createdAt: anchor?.createdAt ?? Date.now(),
+    meta: { toolProtocolRecovery: true }
+  }
+}
+
+function textifyInvalidToolBlock(block: ContentBlock, reason: string): ContentBlock {
+  if (block.type === 'tool_use') {
+    return {
+      type: 'text',
+      text: `[Recovered invalid tool call ${block.id} (${reason})] ${block.name}: ${redactTextForModelContext(
+        JSON.stringify(block.input)
+      )}`
+    }
+  }
+
+  if (block.type === 'tool_result') {
+    return {
+      type: 'text',
+      text: `[Recovered invalid tool result ${block.toolUseId} (${reason})] ${redactTextForModelContext(
+        serializeToolResultContent(block.content)
+      )}`
+    }
+  }
+
+  return block
+}
+
+export function repairToolUseResultProtocolForReplay(
+  messages: UnifiedMessage[]
+): ToolUseResultProtocolRepair {
+  const issues = validateToolUseResultProtocol(messages).issues
+  if (issues.length === 0) return { messages, changed: false, issues }
+
+  const repaired: UnifiedMessage[] = []
+  const seenToolUseIds = new Set<string>()
+  const pendingToolUseIds = new Set<string>()
+  const answeredToolUseIds = new Set<string>()
+  let changed = false
+  let repairIndex = 0
+
+  const appendRecoveredResults = (anchor?: UnifiedMessage): void => {
+    if (pendingToolUseIds.size === 0) return
+
+    repairIndex += 1
+    repaired.push(createRecoveredToolResultMessage(pendingToolUseIds, anchor, repairIndex))
+    for (const toolUseId of pendingToolUseIds) {
+      answeredToolUseIds.add(toolUseId)
+    }
+    pendingToolUseIds.clear()
+    changed = true
+  }
+
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) {
+      if (
+        pendingToolUseIds.size > 0 &&
+        (message.role !== 'user' || message.content.trim().length > 0)
+      ) {
+        appendRecoveredResults(message)
+      }
+      repaired.push(message)
+      continue
+    }
+
+    if (message.role === 'user') {
+      const toolResultBlocks: ContentBlock[] = []
+      const otherBlocks: ContentBlock[] = []
+      const seenResultIdsInMessage = new Set<string>()
+
+      for (const block of message.content) {
+        if (block.type === 'tool_use') {
+          otherBlocks.push(textifyInvalidToolBlock(block, 'tool_use_invalid_role'))
+          changed = true
+          continue
+        }
+
+        if (block.type !== 'tool_result') {
+          otherBlocks.push(block)
+          continue
+        }
+
+        const toolUseId = block.toolUseId
+        if (
+          !pendingToolUseIds.has(toolUseId) ||
+          seenResultIdsInMessage.has(toolUseId) ||
+          answeredToolUseIds.has(toolUseId)
+        ) {
+          otherBlocks.push(textifyInvalidToolBlock(block, 'unknown_or_duplicate_tool_result'))
+          changed = true
+          continue
+        }
+
+        seenResultIdsInMessage.add(toolUseId)
+        pendingToolUseIds.delete(toolUseId)
+        answeredToolUseIds.add(toolUseId)
+        toolResultBlocks.push(block)
+      }
+
+      if (toolResultBlocks.length > 0) {
+        repaired.push(
+          toolResultBlocks.length === message.content.length
+            ? message
+            : { ...message, content: toolResultBlocks }
+        )
+        if (toolResultBlocks.length !== message.content.length) changed = true
+      }
+
+      if (pendingToolUseIds.size > 0 && otherBlocks.length > 0) {
+        appendRecoveredResults(message)
+      }
+
+      if (otherBlocks.length > 0) {
+        repaired.push(
+          toolResultBlocks.length > 0
+            ? { ...message, id: `${message.id}-tool-repair-tail-${++repairIndex}`, content: otherBlocks }
+            : otherBlocks.length === message.content.length
+              ? message
+              : { ...message, content: otherBlocks }
+        )
+        if (toolResultBlocks.length > 0 || otherBlocks.length !== message.content.length) {
+          changed = true
+        }
+      } else if (toolResultBlocks.length === 0 && message.content.length === 0) {
+        repaired.push(message)
+      }
+
+      continue
+    }
+
+    if (pendingToolUseIds.size > 0) {
+      appendRecoveredResults(message)
+    }
+
+    const nextBlocks: ContentBlock[] = []
+    for (const block of message.content) {
+      if (block.type === 'tool_result') {
+        nextBlocks.push(textifyInvalidToolBlock(block, 'tool_result_invalid_role'))
+        changed = true
+        continue
+      }
+
+      if (block.type !== 'tool_use') {
+        nextBlocks.push(block)
+        continue
+      }
+
+      if (message.role !== 'assistant') {
+        nextBlocks.push(textifyInvalidToolBlock(block, 'tool_use_invalid_role'))
+        changed = true
+        continue
+      }
+
+      if (seenToolUseIds.has(block.id)) {
+        nextBlocks.push(textifyInvalidToolBlock(block, 'duplicate_tool_use'))
+        changed = true
+        continue
+      }
+
+      seenToolUseIds.add(block.id)
+      pendingToolUseIds.add(block.id)
+      nextBlocks.push(block)
+    }
+
+    repaired.push(nextBlocks.length === message.content.length ? message : { ...message, content: nextBlocks })
+  }
+
+  appendRecoveredResults(messages[messages.length - 1])
+
+  return {
+    messages: changed ? repaired : messages,
+    changed,
     issues
   }
 }

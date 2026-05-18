@@ -6,6 +6,8 @@ import { toAgentEvent, toSubAgentEvent } from './stream-event-adapter'
 import { subAgentEvents } from '@renderer/lib/agent/sub-agents/events'
 import type { SidecarAgentRunRequest } from '@renderer/lib/ipc/sidecar-protocol'
 
+const ERROR_LOOP_END_GRACE_MS = 25
+
 export interface RunAgentViaSidecarOptions {
   signal?: AbortSignal
   onRunIdAssigned?: (runId: string) => void
@@ -30,6 +32,7 @@ export function runAgentViaSidecar(
       let notify: (() => void) | null = null
       let runId = ''
       let abortCleanup: (() => void) | null = null
+      let errorFinishTimer: ReturnType<typeof setTimeout> | null = null
 
       const wake = (): void => {
         if (notify) {
@@ -39,10 +42,29 @@ export function runAgentViaSidecar(
         }
       }
 
+      const clearErrorFinishTimer = (): void => {
+        if (!errorFinishTimer) return
+        clearTimeout(errorFinishTimer)
+        errorFinishTimer = null
+      }
+
+      const finish = (): void => {
+        finished = true
+        clearErrorFinishTimer()
+        wake()
+      }
+
       const pushEvent = (normalized: AgentEvent): void => {
         queue.push(normalized)
-        if (normalized.type === 'loop_end' || normalized.type === 'error') {
-          finished = true
+        if (normalized.type === 'loop_end') {
+          finish()
+        } else if (normalized.type === 'error') {
+          clearErrorFinishTimer()
+          errorFinishTimer = setTimeout(() => {
+            errorFinishTimer = null
+            finished = true
+            wake()
+          }, ERROR_LOOP_END_GRACE_MS)
         }
         wake()
       }
@@ -106,6 +128,7 @@ export function runAgentViaSidecar(
           if (next) yield next
         }
       } finally {
+        clearErrorFinishTimer()
         abortCleanup?.()
         unsub()
       }

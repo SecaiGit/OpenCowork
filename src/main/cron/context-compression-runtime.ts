@@ -63,6 +63,21 @@ function estimateMainRuntimeMessagesTokens(messages: MainRuntimeMessage[]): numb
   return Math.ceil(JSON.stringify(messages).length / 4)
 }
 
+type MainRuntimeRequestTokenEstimator = (
+  messages: MainRuntimeMessage[]
+) => number | Promise<number>
+
+async function estimateMainRuntimeRequestTokens(
+  messages: MainRuntimeMessage[],
+  estimateTokens?: MainRuntimeRequestTokenEstimator
+): Promise<number> {
+  try {
+    return (await estimateTokens?.(messages)) ?? 0
+  } catch {
+    return 0
+  }
+}
+
 function compactTextContent(
   text: string,
   config: MainRuntimeCompressionConfig
@@ -119,6 +134,7 @@ export async function maybeCompactMainRuntimeContext(args: {
   messages: MainRuntimeMessage[]
   config: MainRuntimeCompressionConfig
   trigger: ClaudeCompactTrigger
+  estimateTokens?: MainRuntimeRequestTokenEstimator
   postCompactContext?: string
   focusPrompt?: string
   signal?: AbortSignal
@@ -129,7 +145,14 @@ export async function maybeCompactMainRuntimeContext(args: {
   const preCompressed = preCompressMainRuntimeMessages(args.messages, args.config)
   const candidateMessages = preCompressed.messages
   const recentUsage = findRecentMainRuntimeContextUsage(candidateMessages)
-  const estimatedTokens = estimateMainRuntimeMessagesTokens(candidateMessages)
+  const estimatedRequestTokens = await estimateMainRuntimeRequestTokens(
+    candidateMessages,
+    args.estimateTokens
+  )
+  const estimatedTokens = Math.max(
+    estimateMainRuntimeMessagesTokens(candidateMessages),
+    estimatedRequestTokens
+  )
   const conservativeTokens = Math.max(recentUsage, estimatedTokens)
   const initialGate = classifyClaudeContextGate({ inputTokens: conservativeTokens, config: args.config })
 
@@ -152,9 +175,11 @@ export async function maybeCompactMainRuntimeContext(args: {
   })
 
   const finalMessages = compacted.result.compressed ? compacted.messages : candidateMessages
+  const finalRequestTokens = await estimateMainRuntimeRequestTokens(finalMessages, args.estimateTokens)
   const finalTokens = Math.max(
     findRecentMainRuntimeContextUsage(finalMessages),
-    estimateMainRuntimeMessagesTokens(finalMessages)
+    estimateMainRuntimeMessagesTokens(finalMessages),
+    finalRequestTokens
   )
   const finalGate = classifyClaudeContextGate({ inputTokens: finalTokens, config: args.config })
 

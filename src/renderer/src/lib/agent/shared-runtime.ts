@@ -315,9 +315,6 @@ export async function runSharedAgentRuntime(
         break
       }
 
-      if (event.type === 'error') {
-        break
-      }
     }
   } catch (error) {
     stopReason = 'error'

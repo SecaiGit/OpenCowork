@@ -36,6 +36,7 @@ import {
 import { compactShellOutputPayload, compactShellText } from '../../shared/shell-output-compactor'
 import {
   maybeCompactMainRuntimeContext,
+  type MainRuntimeCompressionEvent,
   type MainRuntimeCompressionConfig
 } from './context-compression-runtime'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
@@ -91,6 +92,11 @@ const CONTEXT_COMPRESSION_SYSTEM_PROMPT =
   'Preserve exact user intent, constraints, decisions, files touched, errors, test results, ' +
   'open tasks, and any facts needed to continue safely. Omit filler and obsolete details. ' +
   'Return only a concise Markdown summary, with no preface.'
+
+type MainRuntimeCompressionBlockedEvent = Extract<
+  MainRuntimeCompressionEvent,
+  { type: 'context_compression_blocked' }
+>
 
 function createPromptCacheKey(seed?: string): string {
   const normalizedSeed = seed?.trim()
@@ -2636,17 +2642,11 @@ async function sendFetchRequest(
   return response
 }
 
-async function* sendOpenAIChat(
+function buildOpenAIChatRequestBody(
   messages: UnifiedMessage[],
   tools: ToolDefinition[],
-  config: ProviderConfig,
-  signal?: AbortSignal
-): AsyncIterable<StreamEvent> {
-  const requestStartedAt = Date.now()
-  let firstTokenAt: number | null = null
-  let outputTokens = 0
-  const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '')
-  const url = `${baseUrl}/chat/completions`
+  config: ProviderConfig
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: config.model,
     messages: formatOpenAIChatMessages(messages, config.systemPrompt, config),
@@ -2684,6 +2684,21 @@ async function* sendOpenAIChat(
   if (typeof body.prompt_cache_key !== 'string' || !body.prompt_cache_key.trim()) {
     body.prompt_cache_key = getPromptCacheKey(config)
   }
+  return body
+}
+
+async function* sendOpenAIChat(
+  messages: UnifiedMessage[],
+  tools: ToolDefinition[],
+  config: ProviderConfig,
+  signal?: AbortSignal
+): AsyncIterable<StreamEvent> {
+  const requestStartedAt = Date.now()
+  let firstTokenAt: number | null = null
+  let outputTokens = 0
+  const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '')
+  const url = `${baseUrl}/chat/completions`
+  const body = buildOpenAIChatRequestBody(messages, tools, config)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${config.apiKey}`
@@ -2916,55 +2931,48 @@ async function* sendOpenAIChat(
   }
 }
 
-async function* sendAnthropic(
+function resolveAnthropicEffort(config: ProviderConfig): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+  const levels = config.thinkingConfig?.reasoningEffortLevels
+  if (!levels || levels.length === 0) return undefined
+
+  const selected =
+    config.reasoningEffort && levels.includes(config.reasoningEffort)
+      ? config.reasoningEffort
+      : (config.thinkingConfig?.defaultReasoningEffort ?? levels[0])
+
+  switch (selected) {
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+    case 'max':
+      return selected
+    default:
+      return undefined
+  }
+}
+
+function resolveAnthropicMaxTokens(config: ProviderConfig): number {
+  const configuredMaxTokens = Math.max(1, Math.floor(config.maxTokens ?? 32000))
+  if (!config.thinkingEnabled) return configuredMaxTokens
+
+  const thinkingBudget = readAnthropicThinkingBudgetFromBodyParams(
+    config.thinkingConfig?.bodyParams
+  )
+  return thinkingBudget != null
+    ? Math.max(configuredMaxTokens, thinkingBudget + 1)
+    : configuredMaxTokens
+}
+
+function buildAnthropicRequestBody(
   messages: UnifiedMessage[],
   tools: ToolDefinition[],
-  config: ProviderConfig,
-  signal?: AbortSignal
-): AsyncIterable<StreamEvent> {
-  const requestStartedAt = Date.now()
-  let firstTokenAt: number | null = null
-  let outputTokens = 0
+  config: ProviderConfig
+): Record<string, unknown> {
   const promptCacheEnabled = config.enablePromptCache !== false
   const systemPromptCacheEnabled = config.enableSystemPromptCache !== false
   const thinkingBodyParams = buildAnthropicThinkingBodyParams(config)
   const disabledThinkingBodyParams = buildAnthropicDisabledThinkingBodyParams(config)
-  const resolveAnthropicEffort = (): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined => {
-    const levels = config.thinkingConfig?.reasoningEffortLevels
-    if (!levels || levels.length === 0) return undefined
-
-    const selected =
-      config.reasoningEffort && levels.includes(config.reasoningEffort)
-        ? config.reasoningEffort
-        : (config.thinkingConfig?.defaultReasoningEffort ?? levels[0])
-
-    switch (selected) {
-      case 'low':
-      case 'medium':
-      case 'high':
-      case 'xhigh':
-      case 'max':
-        return selected
-      default:
-        return undefined
-    }
-  }
-
-  const readAnthropicThinkingBudget = (): number | undefined => {
-    if (!config.thinkingEnabled) return undefined
-    return readAnthropicThinkingBudgetFromBodyParams(config.thinkingConfig?.bodyParams)
-  }
-
-  const resolveAnthropicMaxTokens = (): number => {
-    const configuredMaxTokens = Math.max(1, Math.floor(config.maxTokens ?? 32000))
-    const thinkingBudget = readAnthropicThinkingBudget()
-    return thinkingBudget != null
-      ? Math.max(configuredMaxTokens, thinkingBudget + 1)
-      : configuredMaxTokens
-  }
-
-  const baseUrl = (config.baseUrl || 'https://api.anthropic.com').trim().replace(/\/+$/, '')
-  const url = `${baseUrl}/v1/messages`
   const cacheBudget = createAnthropicCacheControlBudget(
     promptCacheEnabled || systemPromptCacheEnabled
   )
@@ -2979,7 +2987,7 @@ async function* sendAnthropic(
     model: config.model,
     ...(system ? { system } : {}),
     messages: formatAnthropicMessages(messages, promptCacheEnabled, cacheBudget),
-    max_tokens: resolveAnthropicMaxTokens(),
+    max_tokens: resolveAnthropicMaxTokens(config),
     stream: true
   }
   if (tools.length > 0) {
@@ -3000,7 +3008,7 @@ async function* sendAnthropic(
   }
   applyBodyOverrides(body, config)
 
-  const effort = resolveAnthropicEffort()
+  const effort = resolveAnthropicEffort(config)
   if (effort) {
     body.output_config = {
       ...(typeof body.output_config === 'object' && body.output_config !== null
@@ -3016,8 +3024,8 @@ async function* sendAnthropic(
     typeof body.max_tokens === 'number'
       ? Math.max(1, Math.floor(body.max_tokens))
       : typeof body.max_tokens === 'string'
-        ? Math.max(1, Math.floor(Number(body.max_tokens) || resolveAnthropicMaxTokens()))
-        : resolveAnthropicMaxTokens()
+        ? Math.max(1, Math.floor(Number(body.max_tokens) || resolveAnthropicMaxTokens(config)))
+        : resolveAnthropicMaxTokens(config)
   body.max_tokens = maxTokens
 
   if (typeof body.thinking === 'object' && body.thinking !== null) {
@@ -3035,6 +3043,22 @@ async function* sendAnthropic(
 
     body.thinking = thinking
   }
+
+  return body
+}
+
+async function* sendAnthropic(
+  messages: UnifiedMessage[],
+  tools: ToolDefinition[],
+  config: ProviderConfig,
+  signal?: AbortSignal
+): AsyncIterable<StreamEvent> {
+  const requestStartedAt = Date.now()
+  let firstTokenAt: number | null = null
+  let outputTokens = 0
+  const baseUrl = (config.baseUrl || 'https://api.anthropic.com').trim().replace(/\/+$/, '')
+  const url = `${baseUrl}/v1/messages`
+  const body = buildAnthropicRequestBody(messages, tools, config)
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -3281,17 +3305,11 @@ async function* sendAnthropic(
   }
 }
 
-async function* sendOpenAIResponses(
+async function buildOpenAIResponsesRequestBody(
   messages: UnifiedMessage[],
   tools: ToolDefinition[],
-  config: ProviderConfig,
-  signal?: AbortSignal
-): AsyncIterable<StreamEvent> {
-  const requestStartedAt = Date.now()
-  let firstTokenAt: number | null = null
-  let outputTokens = 0
-  const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '')
-  const url = `${baseUrl}/responses`
+  config: ProviderConfig
+): Promise<Record<string, unknown>> {
   const body: Record<string, unknown> = {
     model: config.model,
     input: formatOpenAIResponsesMessages(messages, config.systemPrompt, !!config.thinkingEnabled),
@@ -3359,6 +3377,21 @@ async function* sendOpenAIResponses(
   }
   delete body.previous_response_id
   delete body.previousResponseId
+  return body
+}
+
+async function* sendOpenAIResponses(
+  messages: UnifiedMessage[],
+  tools: ToolDefinition[],
+  config: ProviderConfig,
+  signal?: AbortSignal
+): AsyncIterable<StreamEvent> {
+  const requestStartedAt = Date.now()
+  let firstTokenAt: number | null = null
+  let outputTokens = 0
+  const baseUrl = (config.baseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '')
+  const url = `${baseUrl}/responses`
+  const body = await buildOpenAIResponsesRequestBody(messages, tools, config)
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${config.apiKey}`
@@ -3856,6 +3889,52 @@ class ProviderRequestError extends Error {
 
 function readContextUsage(usage?: TokenUsage): number {
   return usage?.contextTokens ?? 0
+}
+
+function createContextGateError(args: {
+  reason?: string
+  inputTokens?: number
+  contextLength?: number
+  reservedOutputTokens?: number
+}): Error {
+  return new Error(
+    `Context gate blocked model request: ${args.reason ?? 'unknown'}; input=${args.inputTokens ?? 'unknown'}; context=${args.contextLength ?? 'unknown'}; reservedOutput=${args.reservedOutputTokens ?? 'unknown'}`
+  )
+}
+
+function estimateSerializedRequestTokens(value: unknown): number {
+  try {
+    return Math.ceil(JSON.stringify(value).length / 4)
+  } catch {
+    return 0
+  }
+}
+
+async function estimateProviderRequestContextTokens(
+  messages: UnifiedMessage[],
+  tools: ToolDefinition[],
+  config: ProviderConfig
+): Promise<number> {
+  try {
+    const type = normalizeProviderType(config.type)
+    if (type === 'anthropic') {
+      return estimateSerializedRequestTokens(buildAnthropicRequestBody(messages, tools, config))
+    }
+
+    if (type === 'openai-responses') {
+      return estimateSerializedRequestTokens(
+        await buildOpenAIResponsesRequestBody(messages, tools, config)
+      )
+    }
+
+    return estimateSerializedRequestTokens(buildOpenAIChatRequestBody(messages, tools, config))
+  } catch {
+    return estimateSerializedRequestTokens({
+      systemPrompt: config.systemPrompt ?? '',
+      messages,
+      tools
+    })
+  }
 }
 
 function findRecentContextUsage(messages: UnifiedMessage[]): number {
@@ -4434,6 +4513,12 @@ async function* runAgentLoop(
         messages: conversationMessages,
         config: config.contextCompression.config,
         trigger: 'auto',
+        estimateTokens: (candidateMessages) =>
+          estimateProviderRequestContextTokens(
+            candidateMessages as unknown as UnifiedMessage[],
+            config.tools,
+            config.provider
+          ),
         postCompactContext: config.contextCompression.buildPostCompactContext?.(),
         signal: config.signal,
         summarize: async ({ systemPrompt, userPrompt, signal }) =>
@@ -4446,12 +4531,30 @@ async function* runAgentLoop(
         createId: nanoid,
         now: Date.now
       })
-      if (contextState.compressed) {
-        for (const event of contextState.events) {
+      for (const event of contextState.events) {
+        if (event.type !== 'context_compression_blocked') {
           yield event as unknown as InteractiveAgentEvent
         }
       }
       conversationMessages = contextState.messages as UnifiedMessage[]
+      if (contextState.blocked) {
+        const blockedEvent = contextState.events.find(
+          (event): event is MainRuntimeCompressionBlockedEvent =>
+            event.type === 'context_compression_blocked'
+        )
+        yield {
+          type: 'error',
+          error: createContextGateError({
+            reason: contextState.reason,
+            inputTokens: blockedEvent?.inputTokens,
+            contextLength: blockedEvent?.contextLength,
+            reservedOutputTokens: blockedEvent?.reservedOutputTokens
+          }),
+          ...(contextState.reason ? { errorType: contextState.reason } : {})
+        }
+        yield buildLoopEndEvent('error')
+        return
+      }
     }
 
     if (config.signal.aborted) {
@@ -4790,7 +4893,39 @@ async function* runAgentLoop(
       return
     }
     const toolResults: ContentBlock[] = []
+    const appendInterruptedToolResults = (reason: string): void => {
+      const completedIds = new Set(
+        toolResults
+          .filter((block): block is ToolResultBlock => block.type === 'tool_result')
+          .map((block) => block.toolUseId)
+      )
+      const missing = toolCalls.filter((toolCall) => !completedIds.has(toolCall.id))
+      if (missing.length === 0) return
+
+      const interruptedResults = missing.map(
+        (toolCall): ToolResultBlock => ({
+          type: 'tool_result',
+          toolUseId: toolCall.id,
+          content: encodeToolError(reason),
+          isError: true
+        })
+      )
+      toolResults.push(...interruptedResults)
+      conversationMessages.push({
+        id: nanoid(),
+        role: 'user',
+        content: [...toolResults],
+        createdAt: Date.now()
+      })
+    }
+
     for (const toolCall of toolCalls) {
+      if (config.signal.aborted) {
+        appendInterruptedToolResults('Tool execution interrupted before a result was recorded.')
+        yield buildLoopEndEvent('aborted')
+        return
+      }
+
       if (toolCall.requiresApproval && config.onApprovalNeeded) {
         yield {
           type: 'tool_call_approval_needed',
@@ -4799,6 +4934,9 @@ async function* runAgentLoop(
         const approved = await config.onApprovalNeeded(toolCall)
         if (!approved) {
           if (config.signal.aborted) {
+            appendInterruptedToolResults(
+              'Tool execution interrupted before approval result was recorded.'
+            )
             yield buildLoopEndEvent('aborted')
             return
           }
@@ -4835,6 +4973,11 @@ async function* runAgentLoop(
           currentToolUseId: toolCall.id
         })
       } catch (toolErr) {
+        if (config.signal.aborted) {
+          appendInterruptedToolResults('Tool execution interrupted before a result was recorded.')
+          yield buildLoopEndEvent('aborted')
+          return
+        }
         toolError = toolErr instanceof Error ? toolErr.message : String(toolErr)
         output = encodeToolError(toolError)
       }
@@ -4842,6 +4985,11 @@ async function* runAgentLoop(
         output = compactCronShellToolResultContent(output)
       }
       const completedAt = Date.now()
+      if (config.signal.aborted) {
+        appendInterruptedToolResults('Tool execution interrupted before a result was recorded.')
+        yield buildLoopEndEvent('aborted')
+        return
+      }
       const resultError = toolError ?? extractStructuredToolError(output)
       yield {
         type: 'tool_call_result',

@@ -229,6 +229,16 @@ export type AgentStreamEvent =
       messages?: MessageWire[]
     }
   | {
+      type: 'context_compression_deferred'
+      checkpoint: 'before_model_request'
+      reason: string
+      inputTokens: number
+      contextLength: number
+      reservedOutputTokens: number
+      blockingNextRequest: boolean
+      messagesChanged: boolean
+    }
+  | {
       type: 'context_streaming_continuation'
       messageId: string
       stopReason: string

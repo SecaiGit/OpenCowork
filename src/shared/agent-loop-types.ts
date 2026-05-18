@@ -114,6 +114,16 @@ export type InteractiveAgentEvent =
       messages?: AgentLoopMessage[]
     }
   | {
+      type: 'context_compression_deferred'
+      checkpoint: 'before_model_request'
+      reason: string
+      inputTokens: number
+      contextLength: number
+      reservedOutputTokens: number
+      blockingNextRequest: boolean
+      messagesChanged: boolean
+    }
+  | {
       type: 'iteration_end'
       toolResults: { toolUseId: string; content: AgentToolResultContent; isError?: boolean }[]
     }
@@ -132,7 +142,7 @@ export type InteractiveAgentEvent =
       continuationIndex: number
       continuationPrompt: string
     }
-  | { type: 'error'; error: Error }
+  | { type: 'error'; error: Error; errorType?: string }
   | {
       type: 'loop_end'
       reason: 'completed' | 'max_iterations' | 'aborted' | 'error'

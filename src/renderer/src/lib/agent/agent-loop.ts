@@ -36,6 +36,7 @@ import {
   guardClaudeSingleInputPayload,
   type ClaudeCompactMessage
 } from '../../../../shared/claude-context-compression'
+import { estimateRequestContextTokens } from './context-compression-routing'
 
 const MAX_PROVIDER_RETRIES = 3
 const BASE_RETRY_DELAY_MS = 1_500
@@ -97,6 +98,21 @@ function findRecentContextUsage(messages: UnifiedMessage[]): number {
 function createContextGateError(gate: ReturnType<typeof classifyClaudeContextGate>): Error {
   return new Error(
     `Context gate blocked model request: ${gate.reason}; input=${gate.inputTokens}; context=${gate.contextLength}; reservedOutput=${gate.reservedOutputTokens}`
+  )
+}
+
+function estimateProviderRequestTokens(messages: UnifiedMessage[], config: AgentLoopConfig): number {
+  return Math.max(
+    estimateMessagesTokens(messages),
+    estimateRequestContextTokens({
+      messages,
+      provider: {
+        ...config.provider,
+        systemPrompt: config.provider.systemPrompt ?? config.systemPrompt
+      },
+      tools: config.tools,
+      systemPrompt: config.systemPrompt
+    })
   )
 }
 
@@ -218,7 +234,9 @@ export async function* runAgentLoop(
     resetCompressionFailures()
   }
   let lastObservedContextTokens = config.contextCompression ? findRecentContextUsage(messages) : 0
-  let estimatedReplayTokens = config.contextCompression ? estimateMessagesTokens(conversationMessages) : 0
+  let estimatedReplayTokens = config.contextCompression
+    ? estimateProviderRequestTokens(conversationMessages, config)
+    : 0
   const hasIterationLimit = Number.isFinite(config.maxIterations) && config.maxIterations > 0
   const buildLoopEndEvent = (
     reason: 'completed' | 'max_iterations' | 'aborted' | 'error'
@@ -264,7 +282,10 @@ export async function* runAgentLoop(
         }
 
         const budgetSnapshot = buildContextBudgetSnapshot(conversationMessages, cc.config)
-        estimatedReplayTokens = budgetSnapshot.estimatedTokens
+        estimatedReplayTokens = Math.max(
+          budgetSnapshot.estimatedTokens,
+          estimateProviderRequestTokens(conversationMessages, config)
+        )
         const conservativeContextTokens = Math.max(lastObservedContextTokens, estimatedReplayTokens)
 
         if (shouldCompress(conservativeContextTokens, cc.config)) {
@@ -286,7 +307,7 @@ export async function* runAgentLoop(
             const messagesChanged = compression.messages !== conversationMessages
             // Keep loop-local history mutable even if external stores freeze shared arrays.
             conversationMessages = [...compression.messages]
-            estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+            estimatedReplayTokens = estimateProviderRequestTokens(conversationMessages, config)
             const compressed = compression.result?.compressed ?? true
             const skipReason = compression.result?.reason ?? 'unknown'
             if (compressed) {
@@ -323,13 +344,13 @@ export async function* runAgentLoop(
         } else if (shouldPreCompress(conservativeContextTokens, cc.config)) {
           // Lightweight pre-compression: clear stale tool results + thinking blocks (no API call)
           conversationMessages = [...preCompressMessages(conversationMessages, cc.config)]
-          estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+          estimatedReplayTokens = estimateProviderRequestTokens(conversationMessages, config)
         }
 
         const finalTokens = Math.max(
           lastObservedContextTokens,
           findRecentContextUsage(conversationMessages),
-          estimateMessagesTokens(conversationMessages)
+          estimateProviderRequestTokens(conversationMessages, config)
         )
         const finalGate = classifyClaudeContextGate({ inputTokens: finalTokens, config: cc.config })
         if (finalGate.blocking) {
@@ -805,6 +826,32 @@ export async function* runAgentLoop(
         return { resultEvent, displayResultBlock, contextResultBlock }
       }
 
+      const appendInterruptedToolResults = (reason: string): void => {
+        const missing = toolCalls
+          .map((tc, index) => ({ tc, index }))
+          .filter(({ index }) => toolContextResults[index] === undefined)
+        if (missing.length === 0) return
+
+        const completedAt = Date.now()
+        for (const { tc, index } of missing) {
+          buildToolCallResult({
+            tc,
+            index,
+            output: encodeToolError(reason),
+            toolError: reason,
+            startedAt: startedAtByToolId.get(tc.id) ?? completedAt,
+            completedAt
+          })
+        }
+
+        conversationMessages.push({
+          id: nanoid(),
+          role: 'user',
+          content: toolContextResults.filter((block): block is ContentBlock => Boolean(block)),
+          createdAt: completedAt
+        })
+      }
+
       for (const [index, tc] of toolCalls.entries()) {
         if (tc.requiresApproval && onApprovalNeeded) {
           yield {
@@ -817,6 +864,9 @@ export async function* runAgentLoop(
           const approved = await onApprovalNeeded(tc)
           if (!approved) {
             if (config.signal.aborted) {
+              appendInterruptedToolResults(
+                'Tool execution interrupted before approval result was recorded.'
+              )
               yield buildLoopEndEvent('aborted')
               return
             }
@@ -923,6 +973,9 @@ export async function* runAgentLoop(
             if (!execution) break
             completedCount += 1
             if (config.signal.aborted) {
+              appendInterruptedToolResults(
+                'Tool execution interrupted before all tool results were recorded.'
+              )
               yield buildLoopEndEvent('aborted')
               return
             }
@@ -947,6 +1000,9 @@ export async function* runAgentLoop(
             })
           } catch (toolErr) {
             if (config.signal.aborted) {
+              appendInterruptedToolResults(
+                'Tool execution interrupted before a result was recorded.'
+              )
               yield buildLoopEndEvent('aborted')
               return
             }
@@ -957,6 +1013,9 @@ export async function* runAgentLoop(
 
           const completedAt = Date.now()
           if (config.signal.aborted) {
+            appendInterruptedToolResults(
+              'Tool execution interrupted before a result was recorded.'
+            )
             yield buildLoopEndEvent('aborted')
             return
           }
@@ -985,7 +1044,7 @@ export async function* runAgentLoop(
       }
       conversationMessages.push(toolResultMsg)
       if (config.contextCompression) {
-        estimatedReplayTokens = estimateMessagesTokens(conversationMessages)
+        estimatedReplayTokens = estimateProviderRequestTokens(conversationMessages, config)
       }
       startedAtByToolId.clear()
       const toolNameById = new Map(toolCalls.map((tc) => [tc.id, tc.name]))

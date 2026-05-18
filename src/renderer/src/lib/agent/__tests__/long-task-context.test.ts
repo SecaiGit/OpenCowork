@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ContentBlock, ProviderConfig, ToolResultContent, UnifiedMessage } from '../../api/types'
+import type {
+  ContentBlock,
+  ProviderConfig,
+  ToolDefinition,
+  ToolResultContent,
+  UnifiedMessage
+} from '../../api/types'
 import { createProvider } from '../../api/provider'
 import { runAgentLoop } from '../agent-loop'
 import type { AgentEvent } from '../types'
@@ -44,6 +50,7 @@ vi.mock('../../api/provider', () => ({
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import {
   groupMessagesByApiRound,
+  repairToolUseResultProtocolForReplay,
   redactTextForModelContext,
   validateToolUseResultProtocol
 } from '../context-budget'
@@ -364,6 +371,91 @@ describe('runAgentLoop context gate', () => {
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
   })
 
+  it('blocks when formatted tool definitions push the next request over the hard context limit', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'text_delta', text: 'should not be called' }
+      yield { type: 'message_end' }
+    })
+    const largeTools: ToolDefinition[] = [
+      {
+        name: 'LargeSchemaTool',
+        description: 'large tool description\n'.repeat(2_000),
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'large field description\n'.repeat(500) }
+          }
+        }
+      }
+    ]
+    const formatMessages = vi.fn((input: UnifiedMessage[]) => input)
+    const formatTools = vi.fn((input: ToolDefinition[]) =>
+      input.map((tool) => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema
+        }
+      }))
+    )
+
+    vi.mocked(createProvider).mockReturnValue({
+      sendMessage: providerSend,
+      formatMessages,
+      formatTools
+    } as never)
+
+    for await (const event of runAgentLoop(
+      [message('user', 'small request')],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: largeTools,
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 1_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 200
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).not.toHaveBeenCalled()
+    expect(formatMessages).toHaveBeenCalled()
+    expect(formatTools).toHaveBeenCalledWith(largeTools)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          errorType: 'hard_context_limit_exceeded'
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+  })
+
   it('emits a deferred checkpoint event instead of a false compressed event when auto compact cannot shrink a safe request', async () => {
     const events: AgentEvent[] = []
     const abortController = new AbortController()
@@ -593,6 +685,84 @@ describe('runAgentLoop context gate', () => {
     expect(finalMessages.at(-1)?.filter((item) => item.role === 'assistant')).toHaveLength(2)
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
+
+  it('captures an interrupted tool result when aborted after assistant tool_use is appended', async () => {
+    const events: AgentEvent[] = []
+    const finalMessages: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield { type: 'tool_call_start', toolCallId: 'tool-1', toolName: 'SlowTool' }
+      yield { type: 'tool_call_delta', toolCallId: 'tool-1', argumentsDelta: '{}' }
+      yield { type: 'tool_call_end', toolCallId: 'tool-1', toolName: 'SlowTool', toolCallInput: {} }
+      yield { type: 'message_end', stopReason: 'tool_use' }
+    })
+    const slowTool: ToolDefinition = {
+      name: 'SlowTool',
+      description: 'Abort while executing',
+      inputSchema: { type: 'object', properties: {} }
+    }
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [message('user', 'call slow tool')],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [slowTool],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        enableParallelToolExecution: false,
+        captureFinalMessages: (messages) => finalMessages.push(messages)
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        },
+        inlineToolHandlers: {
+          SlowTool: {
+            definition: slowTool,
+            execute: async () => {
+              abortController.abort()
+              return 'should not be recorded'
+            }
+          }
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    const capturedMessages = finalMessages.at(-1) ?? []
+    const validation = validateToolUseResultProtocol(capturedMessages)
+    const resultMessage = capturedMessages.find(
+      (item) =>
+        item.role === 'user' &&
+        Array.isArray(item.content) &&
+        item.content.some((block) => block.type === 'tool_result' && block.toolUseId === 'tool-1')
+    )
+    const resultBlock =
+      resultMessage && Array.isArray(resultMessage.content)
+        ? resultMessage.content.find(
+            (block) => block.type === 'tool_result' && block.toolUseId === 'tool-1'
+          )
+        : undefined
+
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'aborted' })
+    expect(validation).toEqual({ valid: true, issues: [] })
+    expect(resultBlock).toMatchObject({ type: 'tool_result', toolUseId: 'tool-1', isError: true })
+    expect(
+      resultBlock?.type === 'tool_result'
+        ? serializeToolResultContent(resultBlock.content).toLowerCase()
+        : ''
+    ).toContain('interrupted')
+  })
 })
 
 describe('redactTextForModelContext', () => {
@@ -653,6 +823,31 @@ describe('validateToolUseResultProtocol', () => {
       'tool_use_invalid_role',
       'tool_result_invalid_role'
     ])
+  })
+
+  it('repairs interleaved user text by inserting synthetic results for pending tool uses', () => {
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a')]),
+      message('user', 'please continue manually')
+    ]
+
+    expect(validateToolUseResultProtocol(messages).valid).toBe(false)
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(repaired.messages.map((item) => item.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'user'
+    ])
+    expect(repaired.messages[2]?.content).toEqual([
+      expect.objectContaining({ type: 'tool_result', toolUseId: 'a', isError: true })
+    ])
+    expect(repaired.issues.map((issue) => issue.kind)).toContain('unanswered_tool_use')
   })
 })
 

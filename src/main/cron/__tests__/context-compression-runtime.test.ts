@@ -208,6 +208,48 @@ describe('main runtime context compression preflight', () => {
     expect(result.reason).toBe('reserved_output_budget_exceeded')
   })
 
+  it('uses caller request token estimates when gating main runtime preflight', async () => {
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages: [message('user', 'small request')],
+      config: tightConfig,
+      trigger: 'auto',
+      estimateTokens: () => 2_000,
+      summarize: vi.fn()
+    })
+
+    expect(result.blocked).toBe(true)
+    expect(result.reason).toBe('hard_context_limit_exceeded')
+  })
+
+  it('awaits caller request token estimates before gating main runtime preflight', async () => {
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages: [message('user', 'small request')],
+      config: tightConfig,
+      trigger: 'auto',
+      estimateTokens: async () => 2_000,
+      summarize: vi.fn()
+    })
+
+    expect(result.blocked).toBe(true)
+    expect(result.reason).toBe('hard_context_limit_exceeded')
+  })
+
   it('reports a deferred checkpoint when auto compact cannot shrink a non-blocking current tool round', async () => {
     nextMessageId = 0
     const summarize = vi.fn()

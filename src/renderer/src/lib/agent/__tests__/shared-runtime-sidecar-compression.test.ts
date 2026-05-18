@@ -13,6 +13,7 @@ vi.mock('../agent-loop', () => ({
 import { runSharedAgentRuntime } from '../shared-runtime'
 
 const capturedSidecarRequests: unknown[] = []
+let sidecarStreamEvents: unknown[] = []
 
 vi.mock('@renderer/lib/ipc/agent-bridge', () => ({
   agentBridge: {
@@ -29,7 +30,11 @@ vi.mock('@renderer/lib/ipc/agent-bridge', () => ({
 vi.mock('@renderer/lib/ipc/agent-stream-receiver', () => ({
   agentStream: {
     subscribeAll: vi.fn((handler: (runId: string, sessionId: string, event: unknown) => void) => {
-      queueMicrotask(() => handler('sidecar-run-1', 'session-1', { type: 'loop_end', reason: 'completed' }))
+      queueMicrotask(() => {
+        for (const event of sidecarStreamEvents) {
+          handler('sidecar-run-1', 'session-1', event)
+        }
+      })
       return vi.fn()
     })
   }
@@ -64,6 +69,7 @@ const tools: ToolDefinition[] = []
 describe('runSharedAgentRuntime sidecar compression routing', () => {
   beforeEach(() => {
     capturedSidecarRequests.length = 0
+    sidecarStreamEvents = [{ type: 'loop_end', reason: 'completed' }]
     vi.clearAllMocks()
   })
 
@@ -154,5 +160,52 @@ describe('runSharedAgentRuntime sidecar compression routing', () => {
         }
       ]
     })
+  })
+
+  it('continues consuming sidecar stream long enough to capture loop_end messages after error', async () => {
+    const finalMessages: UnifiedMessage[] = [
+      {
+        id: 'm-final',
+        role: 'user',
+        content: 'final transcript from sidecar',
+        createdAt: 123
+      }
+    ]
+    sidecarStreamEvents = [
+      {
+        type: 'error',
+        message: 'context gate blocked model request',
+        errorType: 'hard_context_limit_exceeded'
+      },
+      { type: 'loop_end', reason: 'error', messages: finalMessages }
+    ]
+
+    const config: AgentLoopConfig = {
+      maxIterations: 1,
+      provider,
+      tools,
+      systemPrompt: 'system',
+      signal: new AbortController().signal,
+      messageQueue: new MessageQueue()
+    }
+
+    const result = await runSharedAgentRuntime({
+      initialMessages: [message('small context', 10)],
+      loopConfig: config,
+      toolContext: {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: config.signal,
+        ipc: {
+          invoke: vi.fn(async () => null),
+          send: vi.fn(),
+          on: vi.fn(() => vi.fn())
+        }
+      }
+    })
+
+    expect(result.reason).toBe('error')
+    expect(result.error).toBe('context gate blocked model request')
+    expect(result.finalMessages).toEqual(finalMessages)
   })
 })

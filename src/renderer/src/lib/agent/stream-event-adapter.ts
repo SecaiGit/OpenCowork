@@ -49,6 +49,7 @@ export function toAgentEvent(e: AgentStreamEvent): AgentEvent | null {
     case 'iteration_end':
     case 'request_debug':
     case 'context_compressed':
+    case 'context_compression_deferred':
       return e as unknown as AgentEvent
 
     case 'loop_end':
