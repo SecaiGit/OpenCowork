@@ -221,7 +221,9 @@ function collectToolUseIds(message: UnifiedMessage): string[] {
   if (!Array.isArray(message.content)) return []
 
   return message.content
-    .filter((block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use')
+    .filter(
+      (block): block is Extract<ContentBlock, { type: 'tool_use' }> => block.type === 'tool_use'
+    )
     .map((block) => block.id)
 }
 
@@ -230,7 +232,8 @@ function collectToolResultIds(message: UnifiedMessage): string[] {
 
   return message.content
     .filter(
-      (block): block is Extract<ContentBlock, { type: 'tool_result' }> => block.type === 'tool_result'
+      (block): block is Extract<ContentBlock, { type: 'tool_result' }> =>
+        block.type === 'tool_result'
     )
     .map((block) => block.toolUseId)
 }
@@ -387,6 +390,17 @@ function textifyInvalidToolBlock(block: ContentBlock, reason: string): ContentBl
   return block
 }
 
+function replaceMessageContentForRepair(
+  message: UnifiedMessage,
+  content: ContentBlock[]
+): UnifiedMessage {
+  return {
+    ...message,
+    content,
+    _revision: (message._revision ?? 0) + 1
+  }
+}
+
 function hasMixedToolResultUserContent(message: UnifiedMessage): boolean {
   return (
     message.role === 'user' &&
@@ -409,8 +423,20 @@ export function repairToolUseResultProtocolForReplay(
   const seenToolUseIds = new Set<string>()
   const pendingToolUseIds = new Set<string>()
   const answeredToolUseIds = new Set<string>()
+  let deferredRenderableMessages: UnifiedMessage[] = []
   let changed = false
   let repairIndex = 0
+
+  const flushDeferredRenderableMessages = (): void => {
+    if (deferredRenderableMessages.length === 0) return
+    repaired.push(...deferredRenderableMessages)
+    deferredRenderableMessages = []
+  }
+
+  const deferRenderableMessage = (message: UnifiedMessage): void => {
+    deferredRenderableMessages.push(message)
+    changed = true
+  }
 
   const appendRecoveredResults = (anchor?: UnifiedMessage): void => {
     if (pendingToolUseIds.size === 0) return
@@ -426,30 +452,37 @@ export function repairToolUseResultProtocolForReplay(
 
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
-      if (
-        pendingToolUseIds.size > 0 &&
-        (message.role !== 'user' || message.content.trim().length > 0)
-      ) {
+      if (pendingToolUseIds.size > 0 && message.role === 'user' && message.content.trim()) {
+        deferRenderableMessage(message)
+        continue
+      }
+      if (pendingToolUseIds.size > 0) {
         appendRecoveredResults(message)
+        flushDeferredRenderableMessages()
       }
       repaired.push(message)
       continue
     }
 
     if (message.role === 'user') {
-      const toolResultBlocks: ContentBlock[] = []
-      const otherBlocks: ContentBlock[] = []
+      const toolResultBlocks: Array<Extract<ContentBlock, { type: 'tool_result' }>> = []
+      const renderableBlocks: ContentBlock[] = []
       const seenResultIdsInMessage = new Set<string>()
+
+      const pushRenderableBlock = (block: ContentBlock): void => {
+        renderableBlocks.push(block)
+      }
 
       for (const block of message.content) {
         if (block.type === 'tool_use') {
-          otherBlocks.push(textifyInvalidToolBlock(block, 'tool_use_invalid_role'))
+          const textified = textifyInvalidToolBlock(block, 'tool_use_invalid_role')
+          pushRenderableBlock(textified)
           changed = true
           continue
         }
 
         if (block.type !== 'tool_result') {
-          otherBlocks.push(block)
+          pushRenderableBlock(block)
           continue
         }
 
@@ -459,7 +492,8 @@ export function repairToolUseResultProtocolForReplay(
           seenResultIdsInMessage.has(toolUseId) ||
           answeredToolUseIds.has(toolUseId)
         ) {
-          otherBlocks.push(textifyInvalidToolBlock(block, 'unknown_or_duplicate_tool_result'))
+          const textified = textifyInvalidToolBlock(block, 'unknown_or_duplicate_tool_result')
+          pushRenderableBlock(textified)
           changed = true
           continue
         }
@@ -474,30 +508,38 @@ export function repairToolUseResultProtocolForReplay(
         repaired.push(
           toolResultBlocks.length === message.content.length
             ? message
-            : { ...message, content: toolResultBlocks }
+            : replaceMessageContentForRepair(message, toolResultBlocks)
         )
         if (toolResultBlocks.length !== message.content.length) changed = true
       }
 
-      if (pendingToolUseIds.size > 0 && otherBlocks.length > 0) {
-        appendRecoveredResults(message)
-      }
-
-      if (otherBlocks.length > 0) {
+      if (renderableBlocks.length > 0) {
         const nextMessageChanged =
           toolResultBlocks.length > 0 ||
-          otherBlocks.length !== message.content.length ||
-          otherBlocks.some((block, index) => block !== message.content[index])
-        repaired.push(
-          nextMessageChanged
-            ? { ...message, id: `${message.id}-tool-repair-tail-${++repairIndex}`, content: otherBlocks }
-            : message
-        )
+          renderableBlocks.length !== message.content.length ||
+          renderableBlocks.some((block, index) => block !== message.content[index])
+        const renderableMessage = nextMessageChanged
+          ? {
+              ...replaceMessageContentForRepair(message, renderableBlocks),
+              id: `${message.id}-tool-repair-tail-${++repairIndex}`
+            }
+          : message
+        if (pendingToolUseIds.size > 0) {
+          deferRenderableMessage(renderableMessage)
+        } else {
+          flushDeferredRenderableMessages()
+          repaired.push(renderableMessage)
+        }
         if (nextMessageChanged) {
           changed = true
         }
       } else if (toolResultBlocks.length === 0 && message.content.length === 0) {
+        if (pendingToolUseIds.size === 0) {
+          flushDeferredRenderableMessages()
+        }
         repaired.push(message)
+      } else if (pendingToolUseIds.size === 0) {
+        flushDeferredRenderableMessages()
       }
 
       continue
@@ -505,6 +547,7 @@ export function repairToolUseResultProtocolForReplay(
 
     if (pendingToolUseIds.size > 0) {
       appendRecoveredResults(message)
+      flushDeferredRenderableMessages()
     }
 
     const nextBlocks: ContentBlock[] = []
@@ -537,10 +580,16 @@ export function repairToolUseResultProtocolForReplay(
       nextBlocks.push(block)
     }
 
-    repaired.push(nextBlocks.length === message.content.length ? message : { ...message, content: nextBlocks })
+    const nextMessageChanged =
+      nextBlocks.length !== message.content.length ||
+      nextBlocks.some((block, index) => block !== message.content[index])
+    repaired.push(
+      nextMessageChanged ? replaceMessageContentForRepair(message, nextBlocks) : message
+    )
   }
 
   appendRecoveredResults(messages[messages.length - 1])
+  flushDeferredRenderableMessages()
 
   return {
     messages: changed ? repaired : messages,
@@ -637,7 +686,10 @@ export function groupMessagesByApiRound(messages: UnifiedMessage[]): ApiRoundGro
       }
 
       canCloseAnsweredToolUseBatch =
-        !currentToolRoundInvalid && currentHasAssistant && currentHasToolUse && pendingToolUseIds.size === 0
+        !currentToolRoundInvalid &&
+        currentHasAssistant &&
+        currentHasToolUse &&
+        pendingToolUseIds.size === 0
     }
 
     const nextAssistantContinuesPlainAssistantSegment =

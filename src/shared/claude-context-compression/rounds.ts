@@ -8,7 +8,10 @@ export interface ApiRoundGroup {
 
 export type ToolUseResultProtocolIssueKind =
   | 'orphaned_tool_result'
+  | 'duplicate_tool_use'
   | 'duplicate_tool_result'
+  | 'tool_use_invalid_role'
+  | 'tool_result_invalid_role'
   | 'interleaved_user_text_before_tool_result'
   | 'assistant_tool_use_after_user_text'
   | 'unanswered_tool_use'
@@ -70,7 +73,10 @@ function collectToolUseIds(message: ClaudeCompactMessage): string[] {
   if (!Array.isArray(message.content)) return []
 
   return message.content
-    .filter((block): block is Extract<ClaudeCompactContentBlock, { type: 'tool_use' }> => block.type === 'tool_use')
+    .filter(
+      (block): block is Extract<ClaudeCompactContentBlock, { type: 'tool_use' }> =>
+        block.type === 'tool_use'
+    )
     .map((block) => block.id)
 }
 
@@ -79,7 +85,8 @@ function collectToolResultIds(message: ClaudeCompactMessage): string[] {
 
   return message.content
     .filter(
-      (block): block is Extract<ClaudeCompactContentBlock, { type: 'tool_result' }> => block.type === 'tool_result'
+      (block): block is Extract<ClaudeCompactContentBlock, { type: 'tool_result' }> =>
+        block.type === 'tool_result'
     )
     .map((block) => block.toolUseId)
 }
@@ -89,12 +96,34 @@ export function validateToolUseResultProtocol(
 ): ToolUseResultProtocolValidation {
   const issues: ToolUseResultProtocolIssue[] = []
   const pendingToolUseIds = new Set<string>()
+  const seenToolUseIds = new Set<string>()
   const answeredToolUseIds = new Set<string>()
 
   messages.forEach((message, messageIndex) => {
-    if (message.role === 'assistant') {
-      const toolUseIds = collectToolUseIds(message)
+    const toolUseIds = collectToolUseIds(message)
+    const toolResultIds = collectToolResultIds(message)
 
+    if (message.role !== 'assistant') {
+      for (const id of toolUseIds) {
+        issues.push({
+          kind: 'tool_use_invalid_role',
+          messageIndex,
+          toolUseId: id
+        })
+      }
+    }
+
+    if (message.role !== 'user') {
+      for (const id of toolResultIds) {
+        issues.push({
+          kind: 'tool_result_invalid_role',
+          messageIndex,
+          toolUseId: id
+        })
+      }
+    }
+
+    if (message.role === 'assistant') {
       if (pendingToolUseIds.size > 0 && toolUseIds.length > 0) {
         for (const id of toolUseIds) {
           issues.push({
@@ -106,6 +135,15 @@ export function validateToolUseResultProtocol(
       }
 
       for (const id of toolUseIds) {
+        if (seenToolUseIds.has(id)) {
+          issues.push({
+            kind: 'duplicate_tool_use',
+            messageIndex,
+            toolUseId: id
+          })
+          continue
+        }
+        seenToolUseIds.add(id)
         pendingToolUseIds.add(id)
       }
 
@@ -125,6 +163,7 @@ export function validateToolUseResultProtocol(
     }
 
     let sawNonToolResultContent = false
+    const seenToolResultIdsInMessage = new Set<string>()
 
     for (const block of message.content) {
       if (block.type !== 'tool_result') {
@@ -133,10 +172,21 @@ export function validateToolUseResultProtocol(
       }
 
       const toolUseId = block.toolUseId
+      if (seenToolResultIdsInMessage.has(toolUseId)) {
+        issues.push({
+          kind: 'duplicate_tool_result',
+          messageIndex,
+          toolUseId
+        })
+        continue
+      }
+      seenToolResultIdsInMessage.add(toolUseId)
 
       if (!pendingToolUseIds.has(toolUseId)) {
         issues.push({
-          kind: answeredToolUseIds.has(toolUseId) ? 'duplicate_tool_result' : 'orphaned_tool_result',
+          kind: answeredToolUseIds.has(toolUseId)
+            ? 'duplicate_tool_result'
+            : 'orphaned_tool_result',
           messageIndex,
           toolUseId
         })
@@ -257,7 +307,10 @@ export function groupMessagesByApiRound(messages: ClaudeCompactMessage[]): ApiRo
       }
 
       canCloseAnsweredToolUseBatch =
-        !currentToolRoundInvalid && currentHasAssistant && currentHasToolUse && pendingToolUseIds.size === 0
+        !currentToolRoundInvalid &&
+        currentHasAssistant &&
+        currentHasToolUse &&
+        pendingToolUseIds.size === 0
     }
 
     const nextAssistantContinuesPlainAssistantSegment =
@@ -290,8 +343,19 @@ function hasFatalProtocolIssue(issues: ToolUseResultProtocolIssue[]): boolean {
   return issues.some((issue) => issue.kind !== 'unanswered_tool_use')
 }
 
+function isSyntheticUserContextMessage(message: ClaudeCompactMessage): boolean {
+  return (
+    message.meta?.contextEmergencyShrink === true ||
+    message.meta?.postCompactState === true ||
+    !!message.meta?.compactSummary ||
+    !!message.meta?.sessionMemoryCompact ||
+    typeof message.meta?.streamingContinuation === 'object'
+  )
+}
+
 function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
   if (message.role !== 'user') return false
+  if (isSyntheticUserContextMessage(message)) return false
   if (typeof message.content === 'string') return message.content.trim().length > 0
   return message.content.some((block) => block.type !== 'tool_result')
 }
@@ -312,14 +376,17 @@ function hasSafePreservedProtocol(messages: ClaudeCompactMessage[]): boolean {
 }
 
 function messageHasToolUse(message: ClaudeCompactMessage): boolean {
-  return Array.isArray(message.content) && message.content.some((block) => block.type === 'tool_use')
+  return (
+    Array.isArray(message.content) && message.content.some((block) => block.type === 'tool_use')
+  )
 }
 
 function isAssistantOnlyTextGroup(group: ApiRoundGroup): boolean {
   return group.messages.every(
     (message) =>
       message.role === 'assistant' &&
-      (typeof message.content === 'string' || !message.content.some((block) => block.type === 'tool_use'))
+      (typeof message.content === 'string' ||
+        !message.content.some((block) => block.type === 'tool_use'))
   )
 }
 
@@ -407,7 +474,11 @@ export function selectClaudePartialCompactRanges(
     messages.length - preservedTailMessages
   )
 
-  for (let tailStart = Math.min(latestAllowedTailStart, messages.length); tailStart > anchorIndex + 1; tailStart -= 1) {
+  for (
+    let tailStart = Math.min(latestAllowedTailStart, messages.length);
+    tailStart > anchorIndex + 1;
+    tailStart -= 1
+  ) {
     const compressibleMessages = messages.slice(anchorIndex + 1, tailStart)
     if (compressibleMessages.length < minCompressibleMessages) continue
     if (!hasValidClosedToolProtocol(compressibleMessages)) continue

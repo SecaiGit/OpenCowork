@@ -39,6 +39,11 @@ import {
   type MainRuntimeCompressionEvent,
   type MainRuntimeCompressionConfig
 } from './context-compression-runtime'
+import {
+  classifyClaudeContextGate,
+  emergencyShrinkClaudeContextMessages,
+  type ClaudeCompactMessage
+} from '../../shared/claude-context-compression'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
 import { applyDefaultApiUserAgent } from '../lib/api-user-agent'
 
@@ -87,6 +92,7 @@ const CONTEXT_COMPRESSION_SUMMARY_TIMEOUT_MS = 120_000
 const CONTEXT_COMPRESSION_RESPONSES_SCOPE = 'context-compression'
 const CLEARED_CONTEXT_TOOL_RESULT_PLACEHOLDER = '[tool result cleared during context compression]'
 const CLEARED_CONTEXT_THINKING_PLACEHOLDER = '[thinking cleared during context compression]'
+const EXTERNALIZED_USER_INPUT_MARKER = '[User input externalized for context budget]'
 const CONTEXT_COMPRESSION_SYSTEM_PROMPT =
   'You compress long AI coding-agent conversations into durable working memory. ' +
   'Preserve exact user intent, constraints, decisions, files touched, errors, test results, ' +
@@ -2931,7 +2937,9 @@ async function* sendOpenAIChat(
   }
 }
 
-function resolveAnthropicEffort(config: ProviderConfig): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
+function resolveAnthropicEffort(
+  config: ProviderConfig
+): 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined {
   const levels = config.thinkingConfig?.reasoningEffortLevels
   if (!levels || levels.length === 0) return undefined
 
@@ -3891,6 +3899,55 @@ function readContextUsage(usage?: TokenUsage): number {
   return usage?.contextTokens ?? 0
 }
 
+function contentContainsExternalizedUserInputMarker(content: UnifiedMessage['content']): boolean {
+  if (typeof content === 'string') {
+    return content.includes(EXTERNALIZED_USER_INPUT_MARKER)
+  }
+
+  return content.some(
+    (block) => block.type === 'text' && block.text.includes(EXTERNALIZED_USER_INPUT_MARKER)
+  )
+}
+
+function rememberExternalizedUserInputs(
+  beforeMessages: UnifiedMessage[],
+  afterMessages: UnifiedMessage[],
+  originalsById: Map<string, UnifiedMessage>
+): void {
+  const beforeById = new Map(beforeMessages.map((message) => [message.id, message]))
+
+  for (const afterMessage of afterMessages) {
+    if (afterMessage.role !== 'user') continue
+    if (!contentContainsExternalizedUserInputMarker(afterMessage.content)) continue
+    if (originalsById.has(afterMessage.id)) continue
+
+    const beforeMessage = beforeById.get(afterMessage.id)
+    if (!beforeMessage) continue
+    if (contentContainsExternalizedUserInputMarker(beforeMessage.content)) continue
+    originalsById.set(beforeMessage.id, beforeMessage)
+  }
+}
+
+function restoreExternalizedUserInputContent(
+  messages: UnifiedMessage[],
+  originalsById: Map<string, UnifiedMessage>
+): UnifiedMessage[] {
+  if (originalsById.size === 0) return messages
+
+  let changed = false
+  const restoredMessages = messages.map((message) => {
+    const original = originalsById.get(message.id)
+    if (!original) return message
+    changed = true
+    return {
+      ...message,
+      content: original.content
+    }
+  })
+
+  return changed ? restoredMessages : messages
+}
+
 function createContextGateError(args: {
   reason?: string
   inputTokens?: number
@@ -4443,6 +4500,7 @@ async function* runAgentLoop(
   let fullCompressionApplied = false
   let consecutiveCompressionFailures = 0
   let lastInputTokens = config.contextCompression ? findRecentContextUsage(messages) : 0
+  const externalizedUserInputOriginalsById = new Map<string, UnifiedMessage>()
   const hasIterationLimit = Number.isFinite(config.maxIterations) && config.maxIterations > 0
   const buildLoopEndEvent = (
     reason: 'completed' | 'max_iterations' | 'aborted' | 'error'
@@ -4450,7 +4508,14 @@ async function* runAgentLoop(
     type: 'loop_end',
     reason,
     ...(config.captureFinalMessages || fullCompressionApplied
-      ? { messages: [...conversationMessages] }
+      ? {
+          messages: [
+            ...restoreExternalizedUserInputContent(
+              conversationMessages,
+              externalizedUserInputOriginalsById
+            )
+          ]
+        }
       : {})
   })
   while (!hasIterationLimit || iteration < config.maxIterations) {
@@ -4536,7 +4601,13 @@ async function* runAgentLoop(
           yield event as unknown as InteractiveAgentEvent
         }
       }
-      conversationMessages = contextState.messages as UnifiedMessage[]
+      const compactedContextMessages = contextState.messages as UnifiedMessage[]
+      rememberExternalizedUserInputs(
+        conversationMessages,
+        compactedContextMessages,
+        externalizedUserInputOriginalsById
+      )
+      conversationMessages = compactedContextMessages
       if (contextState.blocked) {
         const blockedEvent = contextState.events.find(
           (event): event is MainRuntimeCompressionBlockedEvent =>
@@ -4569,15 +4640,117 @@ async function* runAgentLoop(
     let providerResponseId: string | undefined
     let assistantUsage: TokenUsage | undefined
     let sendAttempt = 0
-    while (sendAttempt < MAX_PROVIDER_RETRIES) {
+    let contextOverflowRecoveryUsed = false
+    let contextOverflowRecoveryRetryPending = false
+    while (sendAttempt < MAX_PROVIDER_RETRIES || contextOverflowRecoveryRetryPending) {
+      contextOverflowRecoveryRetryPending = false
       assistantContentBlocks = []
       toolCalls = []
       const toolArgsById = new Map<string, string>()
       const toolNamesById = new Map<string, string>()
       const toolExtraContentById = new Map<string, Record<string, unknown>>()
+      const toolStartedAtById = new Map<string, number>()
       let currentToolId = ''
       let currentToolName = ''
       let streamedContent = false
+
+      const settleInterruptedStreamedToolCalls = (reason: string): InteractiveAgentEvent[] => {
+        const settledEvents: InteractiveAgentEvent[] = []
+        const completedAt = Date.now()
+
+        for (const [danglingToolId, argsText] of toolArgsById) {
+          if (toolCalls.some((toolCall) => toolCall.id === danglingToolId)) continue
+
+          const danglingName = toolNamesById.get(danglingToolId) || currentToolName
+          const danglingInput =
+            parseToolInputSnapshot(argsText, danglingName) ?? safeParseJSON(argsText)
+          const toolUseBlock: ToolUseBlock = {
+            type: 'tool_use',
+            id: danglingToolId,
+            name: danglingName,
+            input: danglingInput,
+            ...(toolExtraContentById.get(danglingToolId)
+              ? { extraContent: toolExtraContentById.get(danglingToolId) }
+              : {})
+          }
+          assistantContentBlocks.push(toolUseBlock)
+          toolCalls.push({
+            id: danglingToolId,
+            name: danglingName,
+            input: danglingInput,
+            status: 'running',
+            requiresApproval: false
+          })
+          settledEvents.push({
+            type: 'tool_use_generated',
+            toolUseBlock: {
+              id: danglingToolId,
+              name: danglingName,
+              input: danglingInput,
+              ...(toolUseBlock.extraContent ? { extraContent: toolUseBlock.extraContent } : {})
+            }
+          })
+        }
+        toolArgsById.clear()
+        toolNamesById.clear()
+        toolExtraContentById.clear()
+
+        if (toolCalls.length === 0) return settledEvents
+
+        if (assistantContentBlocks.length > 0) {
+          conversationMessages.push({
+            id: nanoid(),
+            role: 'assistant',
+            content: assistantContentBlocks,
+            createdAt: completedAt,
+            ...(assistantUsage ? { usage: assistantUsage } : {}),
+            ...(providerResponseId ? { providerResponseId } : {})
+          })
+        }
+
+        const toolResults = toolCalls.map(
+          (toolCall): ToolResultBlock => ({
+            type: 'tool_result',
+            toolUseId: toolCall.id,
+            content: encodeToolError(reason),
+            isError: true
+          })
+        )
+        conversationMessages.push({
+          id: nanoid(),
+          role: 'user',
+          content: toolResults,
+          createdAt: completedAt
+        })
+
+        for (const toolCall of toolCalls) {
+          settledEvents.push({
+            type: 'tool_call_result',
+            toolCall: {
+              ...toolCall,
+              status: 'error',
+              output: encodeToolError(reason),
+              error: reason,
+              startedAt: toolStartedAtById.get(toolCall.id) ?? completedAt,
+              completedAt
+            }
+          })
+        }
+
+        const toolNameById = new Map(toolCalls.map((toolCall) => [toolCall.id, toolCall.name]))
+        settledEvents.push({
+          type: 'iteration_end',
+          toolResults: toolResults.map((block) => ({
+            toolUseId: block.toolUseId,
+            toolName: toolNameById.get(block.toolUseId),
+            content: block.content,
+            isError: block.isError
+          }))
+        })
+
+        return settledEvents
+      }
+
       try {
         for await (const event of sendProviderMessage(
           conversationMessages,
@@ -4630,6 +4803,7 @@ async function* runAgentLoop(
               if (currentToolId) {
                 toolArgsById.set(currentToolId, '')
                 toolNamesById.set(currentToolId, currentToolName)
+                toolStartedAtById.set(currentToolId, Date.now())
                 if (event.toolCallExtraContent) {
                   toolExtraContentById.set(currentToolId, event.toolCallExtraContent)
                 }
@@ -4851,13 +5025,114 @@ async function* runAgentLoop(
         }
         break
       } catch (err) {
+        const settleInterruptedStream = function* (
+          reason: string
+        ): Generator<InteractiveAgentEvent, void, void> {
+          if (!streamedContent) return
+          for (const repairEvent of settleInterruptedStreamedToolCalls(reason)) {
+            yield repairEvent
+          }
+        }
+
         if (config.signal.aborted) {
+          yield* settleInterruptedStream('Tool execution interrupted before a result was recorded.')
           yield buildLoopEndEvent('aborted')
+          return
+        }
+        const providerError = toProviderError(err)
+        const providerContextOverflow = isProviderContextOverflowError(err)
+        if (contextOverflowRecoveryUsed) {
+          yield* settleInterruptedStream(providerError.message)
+          yield {
+            type: 'error',
+            error: providerError,
+            ...(providerContextOverflow ? { errorType: 'hard_context_limit_exceeded' } : {})
+          }
+          yield buildLoopEndEvent('error')
+          return
+        }
+        if (config.contextCompression && !streamedContent && providerContextOverflow) {
+          const compression = config.contextCompression.config
+          const emergencyShrink = await emergencyShrinkClaudeContextMessages({
+            messages: conversationMessages as unknown as ClaudeCompactMessage[],
+            config: compression,
+            forceDrop: true,
+            estimateTokens: (candidateMessages) =>
+              estimateProviderRequestContextTokens(
+                candidateMessages as unknown as UnifiedMessage[],
+                config.tools,
+                config.provider
+              )
+          })
+
+          if (emergencyShrink.changed) {
+            contextOverflowRecoveryUsed = true
+            rememberExternalizedUserInputs(
+              conversationMessages,
+              emergencyShrink.messages as unknown as UnifiedMessage[],
+              externalizedUserInputOriginalsById
+            )
+            conversationMessages = [...(emergencyShrink.messages as unknown as UnifiedMessage[])]
+            lastInputTokens = 0
+            const recoveryTokens = Math.max(
+              findRecentContextUsage(conversationMessages),
+              await estimateProviderRequestContextTokens(
+                conversationMessages,
+                config.tools,
+                config.provider
+              )
+            )
+            const recoveryGate = classifyClaudeContextGate({
+              inputTokens: recoveryTokens,
+              config: compression
+            })
+            fullCompressionApplied = true
+            yield {
+              type: 'context_compression_deferred',
+              checkpoint: 'before_model_request',
+              reason:
+                recoveryGate.reason === 'reserved_output_budget_exceeded'
+                  ? recoveryGate.reason
+                  : 'hard_context_limit_exceeded',
+              inputTokens: recoveryGate.inputTokens,
+              contextLength: recoveryGate.contextLength,
+              reservedOutputTokens: recoveryGate.reservedOutputTokens,
+              blockingNextRequest: recoveryGate.blocking,
+              messagesChanged: true
+            }
+            if (recoveryGate.blocking) {
+              yield {
+                type: 'error',
+                error: createContextGateError({
+                  reason: recoveryGate.reason,
+                  inputTokens: recoveryGate.inputTokens,
+                  contextLength: recoveryGate.contextLength,
+                  reservedOutputTokens: recoveryGate.reservedOutputTokens
+                }),
+                errorType: recoveryGate.reason
+              }
+              yield buildLoopEndEvent('error')
+              return
+            }
+            sendAttempt += 1
+            contextOverflowRecoveryRetryPending = true
+            continue
+          }
+        }
+        if (providerContextOverflow) {
+          yield* settleInterruptedStream(providerError.message)
+          yield {
+            type: 'error',
+            error: providerError,
+            errorType: 'hard_context_limit_exceeded'
+          }
+          yield buildLoopEndEvent('error')
           return
         }
         const delay = getRetryDelay(err, sendAttempt, streamedContent)
         if (delay === null || sendAttempt === MAX_PROVIDER_RETRIES - 1) {
-          yield { type: 'error', error: err instanceof Error ? err : new Error(String(err)) }
+          yield* settleInterruptedStream(providerError.message)
+          yield { type: 'error', error: providerError }
           yield buildLoopEndEvent('error')
           return
         }
@@ -4868,7 +5143,7 @@ async function* runAgentLoop(
           maxAttempts: MAX_PROVIDER_RETRIES - 1,
           delayMs: delay,
           ...(statusCode !== null ? { statusCode } : {}),
-          reason: err instanceof Error ? err.message : String(err)
+          reason: getProviderErrorMessage(err)
         }
         sendAttempt += 1
         try {
@@ -4878,6 +5153,19 @@ async function* runAgentLoop(
           return
         }
       }
+    }
+    if (
+      contextOverflowRecoveryUsed &&
+      assistantContentBlocks.length === 0 &&
+      toolCalls.length === 0
+    ) {
+      yield {
+        type: 'error',
+        error: new Error('Provider returned an empty response after context overflow recovery'),
+        errorType: 'hard_context_limit_exceeded'
+      }
+      yield buildLoopEndEvent('error')
+      return
     }
     const assistantMsg: UnifiedMessage = {
       id: nanoid(),
@@ -5211,7 +5499,28 @@ function extractErrorType(err: unknown): string | null {
   ) {
     return (err as { errorType: string }).errorType
   }
+  if (
+    err &&
+    typeof err === 'object' &&
+    'type' in err &&
+    typeof (err as { type?: unknown }).type === 'string'
+  ) {
+    return (err as { type: string }).type
+  }
   return null
+}
+
+function getProviderErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (
+    err &&
+    typeof err === 'object' &&
+    'message' in err &&
+    typeof (err as { message?: unknown }).message === 'string'
+  ) {
+    return (err as { message: string }).message
+  }
+  return String(err)
 }
 
 function extractStatusCode(err: unknown): number | null {
@@ -5226,6 +5535,14 @@ function extractStatusCode(err: unknown): number | null {
   ) {
     return (err as { statusCode: number }).statusCode
   }
+  if (
+    err &&
+    typeof err === 'object' &&
+    'status' in err &&
+    typeof (err as { status?: unknown }).status === 'number'
+  ) {
+    return (err as { status: number }).status
+  }
   const errorType = extractErrorType(err)
   if (errorType) {
     const typeMatch = /^http_(\d{3})$/i.exec(errorType)
@@ -5234,7 +5551,7 @@ function extractStatusCode(err: unknown): number | null {
       return Number.isFinite(code) ? code : null
     }
   }
-  const message = err instanceof Error ? err.message : String(err)
+  const message = getProviderErrorMessage(err)
   const match = /HTTP\s+(\d{3})/i.exec(message)
   return match ? Number(match[1]) : null
 }
@@ -5242,14 +5559,14 @@ function extractStatusCode(err: unknown): number | null {
 function isCircuitOpenError(err: unknown): boolean {
   const errorType = extractErrorType(err)
   if (errorType === 'transport_circuit_open') return true
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase()
+  const message = getProviderErrorMessage(err).toLowerCase()
   return message.includes('circuit is open')
 }
 
 function isTransportFailure(err: unknown): boolean {
   const errorType = extractErrorType(err)
   if (errorType === 'transport_error' || errorType === 'transport_circuit_open') return true
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase()
+  const message = getProviderErrorMessage(err).toLowerCase()
   return (
     message.includes('response ended prematurely') ||
     message.includes('responseended') ||
@@ -5264,8 +5581,48 @@ function isTransportFailure(err: unknown): boolean {
   )
 }
 
+function isProviderContextOverflowError(err: unknown): boolean {
+  const status = extractStatusCode(err)
+  if (status === 413) return true
+  if (status === 429) return false
+
+  const errorType = extractErrorType(err)?.toLowerCase() ?? ''
+  if (isRateLimitLikeText(errorType)) return false
+  if (
+    /context.*(length|window|limit)|prompt.*too.*long|too.*many.*tokens|maximum.*context|request.*too.*large|body.*too.*large|payload.*too.*large|entity.*too.*large/.test(
+      errorType
+    )
+  ) {
+    return true
+  }
+
+  const message = getProviderErrorMessage(err).toLowerCase()
+  if (isRateLimitLikeText(message)) return false
+  return (
+    /context.*(length|window|limit)/.test(message) ||
+    /prompt.*too.*long/.test(message) ||
+    /too.*many.*tokens/.test(message) ||
+    /maximum.*context/.test(message) ||
+    /request.*too.*large/.test(message) ||
+    /body.*too.*large/.test(message) ||
+    /payload.*too.*large/.test(message) ||
+    /entity.*too.*large/.test(message) ||
+    (/\b413\b/.test(message) && /(request|body|payload|entity|content|large)/.test(message))
+  )
+}
+
+function isRateLimitLikeText(value: string): boolean {
+  return /rate[_\s-]*limit/.test(value) || /too many requests/.test(value) || /quota/.test(value)
+}
+
+function toProviderError(err: unknown): Error {
+  if (err instanceof Error) return err
+  return new Error(getProviderErrorMessage(err))
+}
+
 function getRetryDelay(err: unknown, attempt: number, streamedContent: boolean): number | null {
   if (isCircuitOpenError(err)) return null
+  if (streamedContent) return null
   const status = extractStatusCode(err)
   if (status === 429) return BASE_RETRY_DELAY_MS * Math.pow(2, attempt + 1)
   if (status && status >= 400 && status < 500) return null
@@ -5274,7 +5631,7 @@ function getRetryDelay(err: unknown, attempt: number, streamedContent: boolean):
     return BASE_RETRY_DELAY_MS * Math.pow(2, attempt)
   }
   if (!streamedContent) return BASE_RETRY_DELAY_MS * Math.pow(2, attempt)
-  return BASE_RETRY_DELAY_MS
+  return null
 }
 
 function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {

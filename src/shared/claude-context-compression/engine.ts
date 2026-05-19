@@ -15,7 +15,11 @@ import type {
   RunClaudeCompactArgs,
   RunClaudeCompactResult
 } from './types'
-import { buildClaudeCompactSystemPrompt, buildClaudeCompactUserPrompt, extractClaudeCompactSummary } from './prompt'
+import {
+  buildClaudeCompactSystemPrompt,
+  buildClaudeCompactUserPrompt,
+  extractClaudeCompactSummary
+} from './prompt'
 import { dehydrateClaudeCompactPayloads, redactClaudeCompactText } from './payload'
 import { assertClaudeCompactSummarySafe, sanitizeMessagesForClaudeCompact } from './sanitizer'
 import {
@@ -31,7 +35,8 @@ export const MAX_CLAUDE_COMPACT_RETRIES = 3
 function serializeCompactMessages(messages: ClaudeCompactMessage[]): string {
   return messages
     .map((message) => {
-      const content = typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+      const content =
+        typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
       return `[${message.role.toUpperCase()}]: ${content}`
     })
     .join('\n\n')
@@ -69,7 +74,9 @@ function normalizeHooks(hooks?: ClaudeCompactHook | ClaudeCompactHook[]): Claude
 
 function sanitizeHookText(text: string, maxChars: number): string {
   const sanitized = assertClaudeCompactSummarySafe(text)
-  return sanitized.length > maxChars ? `${sanitized.slice(0, maxChars)}\n[hook output truncated]` : sanitized
+  return sanitized.length > maxChars
+    ? `${sanitized.slice(0, maxChars)}\n[hook output truncated]`
+    : sanitized
 }
 
 function sanitizeHookFailureReason(error: unknown): string {
@@ -249,9 +256,10 @@ function sanitizeSessionMemoryText(value: string, maxChars: number): string {
   return redacted.length > maxChars ? redacted.slice(0, maxChars) : redacted
 }
 
-function normalizeSessionMemoryEntries(
-  sessionMemory: ClaudeCompactSessionMemoryConfig
-): { entries: ClaudeCompactSessionMemoryEntry[]; truncated: boolean } {
+function normalizeSessionMemoryEntries(sessionMemory: ClaudeCompactSessionMemoryConfig): {
+  entries: ClaudeCompactSessionMemoryEntry[]
+  truncated: boolean
+} {
   const maxEntries = Math.max(0, Math.floor(sessionMemory.maxEntries ?? MAX_SESSION_MEMORY_ENTRIES))
   const entries = (sessionMemory.entries ?? [])
     .map((entry) => ({
@@ -294,7 +302,10 @@ function createSessionMemoryCompactMessage(args: {
     }
   }
 
-  const maxChars = Math.max(400, Math.floor(args.sessionMemory.maxChars ?? MAX_SESSION_MEMORY_CONTEXT_CHARS))
+  const maxChars = Math.max(
+    400,
+    Math.floor(args.sessionMemory.maxChars ?? MAX_SESSION_MEMORY_CONTEXT_CHARS)
+  )
   const lines = [
     '## Session memory compact layer',
     'Stable session memory is kept separate from the conversation summary.',
@@ -361,12 +372,19 @@ function createBoundaryMessage(args: {
   const compactGenerationId = args.compactGenerationId
   const strategy = 'claude-code-compact-v1'
   const sourceMessageIds = args.sourceMessages.map((message) => message.id)
-  const relinkTargetIds = [
+  const preservedMessageIds = args.preservedMessages.map((message) => message.id)
+  const compactLayerIds = [
     args.sourceSummaryId,
     ...(args.sessionMemoryMessage ? [args.sessionMemoryMessage.id] : []),
-    ...(args.postCompactStateMessage ? [args.postCompactStateMessage.id] : []),
-    ...args.preservedMessages.map((message) => message.id)
+    ...(args.postCompactStateMessage ? [args.postCompactStateMessage.id] : [])
   ]
+  const relinkTargetIds = args.partialRange
+    ? [
+        ...(preservedMessageIds[0] ? [preservedMessageIds[0]] : []),
+        ...compactLayerIds,
+        ...preservedMessageIds.slice(1)
+      ]
+    : [...compactLayerIds, ...preservedMessageIds]
   const preservedSegment = args.preservedMessages.length
     ? {
         headId: args.preservedMessages[0]!.id,
@@ -471,10 +489,23 @@ function createPostCompactStateMessage(args: {
   }
 }
 
-type EffectiveClaudeCompactSelection = ClaudeCompactRangeSelection | ClaudePartialCompactRangeSelection
+type EffectiveClaudeCompactSelection =
+  | ClaudeCompactRangeSelection
+  | ClaudePartialCompactRangeSelection
+
+function isSyntheticUserContextMessage(message: ClaudeCompactMessage): boolean {
+  return (
+    message.meta?.contextEmergencyShrink === true ||
+    message.meta?.postCompactState === true ||
+    !!message.meta?.compactSummary ||
+    !!message.meta?.sessionMemoryCompact ||
+    typeof message.meta?.streamingContinuation === 'object'
+  )
+}
 
 function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
   if (message.role !== 'user') return false
+  if (isSyntheticUserContextMessage(message)) return false
   if (typeof message.content === 'string') return message.content.trim().length > 0
   return message.content.some((block) => block.type !== 'tool_result')
 }
@@ -515,7 +546,9 @@ function isPartialCompactSelection(
   return selection.ok && 'partialRange' in selection
 }
 
-export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunClaudeCompactResult> {
+export async function runClaudeCompact(
+  args: RunClaudeCompactArgs
+): Promise<RunClaudeCompactResult> {
   const now = args.now ?? Date.now
   const createId = args.createId ?? (() => `compact-${Math.random().toString(36).slice(2)}`)
   const selection = resolveEffectiveCompactSelection(args.messages)
@@ -617,6 +650,19 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
       })
       const partialSelection =
         rangeMetadataValid && isPartialCompactSelection(selection) ? selection : null
+      const compactLayerMessages = [
+        summaryMessage,
+        ...(sessionMemoryCompact.message ? [sessionMemoryCompact.message] : []),
+        ...(postCompactStateMessage ? [postCompactStateMessage] : [])
+      ]
+      const replayMessages =
+        partialSelection && selection.preservedMessages.length > 0
+          ? [
+              selection.preservedMessages[0]!,
+              ...compactLayerMessages,
+              ...selection.preservedMessages.slice(1)
+            ]
+          : [...compactLayerMessages, ...selection.preservedMessages]
       const compressedMessages = [
         createBoundaryMessage({
           compactGenerationId,
@@ -641,10 +687,7 @@ export async function runClaudeCompact(args: RunClaudeCompactArgs): Promise<RunC
           hookSafetyFlags,
           promptCache: args.promptCache
         }),
-        summaryMessage,
-        ...(sessionMemoryCompact.message ? [sessionMemoryCompact.message] : []),
-        ...(postCompactStateMessage ? [postCompactStateMessage] : []),
-        ...selection.preservedMessages
+        ...replayMessages
       ]
 
       const boundary = compressedMessages[0]

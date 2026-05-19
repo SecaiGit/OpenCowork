@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ContentBlock, ProviderConfig, ToolResultContent, UnifiedMessage } from '../../api/types'
+import type {
+  ContentBlock,
+  ProviderConfig,
+  ToolResultContent,
+  UnifiedMessage
+} from '../../api/types'
 
 vi.mock('@renderer/locales', () => ({
   default: {
@@ -9,7 +14,8 @@ vi.mock('@renderer/locales', () => ({
       if (key === 'contextCompression.clearedThinking') return '[cleared thinking]'
       if (key === 'contextCompression.imageAttachment') return '[Image attachment]'
       if (key === 'contextCompression.emptyResultError') return 'empty summary'
-      if (key === 'contextCompression.postCompactStateTitle') return 'Current working state after compaction'
+      if (key === 'contextCompression.postCompactStateTitle')
+        return 'Current working state after compaction'
       if (key === 'contextCompression.compressRequest') return String(options?.content ?? '')
       return key
     }
@@ -51,7 +57,8 @@ import {
   formatCompressionDiagnosticText,
   getCompressionStrategy,
   mergeCompressedMessagesIntoConversation,
-  shouldCompress
+  shouldCompress,
+  shouldPreCompress
 } from '../context-compression'
 import { parseManualCompactCommand } from '../manual-compact-command'
 import { buildPostCompactStateContext } from '../context-state-attachments'
@@ -107,9 +114,11 @@ describe('claude-code-compact-v1 registration', () => {
 
 describe('prompt cache baseline keys', () => {
   it('rotates the session prompt cache key when a compact baseline reset is requested', () => {
-    const resetPromptCacheKey = (providerRegistry as unknown as {
-      resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
-    }).resetGlobalPromptCacheKey
+    const resetPromptCacheKey = (
+      providerRegistry as unknown as {
+        resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
+      }
+    ).resetGlobalPromptCacheKey
 
     expect(typeof resetPromptCacheKey).toBe('function')
 
@@ -124,14 +133,18 @@ describe('prompt cache baseline keys', () => {
   })
 
   it('hashes normalized session ids before using them in prompt cache keys', () => {
-    const resetPromptCacheKey = (providerRegistry as unknown as {
-      resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
-    }).resetGlobalPromptCacheKey
+    const resetPromptCacheKey = (
+      providerRegistry as unknown as {
+        resetGlobalPromptCacheKey?: (config?: Pick<ProviderConfig, 'sessionId'>) => string
+      }
+    ).resetGlobalPromptCacheKey
 
     const rawSessionId = 'session / with token=value and spaces'
     const equivalentSessionId = 'session-with-token-value-and-spaces'
     const before = providerRegistry.getGlobalPromptCacheKey({ sessionId: rawSessionId })
-    const equivalentBefore = providerRegistry.getGlobalPromptCacheKey({ sessionId: equivalentSessionId })
+    const equivalentBefore = providerRegistry.getGlobalPromptCacheKey({
+      sessionId: equivalentSessionId
+    })
     const reset = resetPromptCacheKey?.({ sessionId: rawSessionId })
     const after = providerRegistry.getGlobalPromptCacheKey({ sessionId: equivalentSessionId })
 
@@ -229,10 +242,18 @@ describe('selectClaudeCompactRanges', () => {
       message('assistant', 'second result')
     ]
 
-    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+    const selection = selectClaudeCompactRanges(messages, {
+      minMessages: 4,
+      preservedRoundCount: 1
+    })
 
     expect(selection.ok).toBe(true)
-    expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-1', 'm-2', 'm-3', 'm-4'])
+    expect(selection.compressibleMessages.map((item) => item.id)).toEqual([
+      'm-1',
+      'm-2',
+      'm-3',
+      'm-4'
+    ])
     expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(selection.compressedRange).toEqual({ start: 0, end: 4 })
     expect(selection.preservedRange).toEqual({ start: 4, end: 8 })
@@ -247,7 +268,10 @@ describe('selectClaudeCompactRanges', () => {
       message('assistant', 'tail')
     ]
 
-    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+    const selection = selectClaudeCompactRanges(messages, {
+      minMessages: 4,
+      preservedRoundCount: 1
+    })
 
     expect(selection.ok).toBe(false)
     expect(selection.reason).toBe('unsafe_boundary')
@@ -263,14 +287,17 @@ describe('selectClaudeCompactRanges', () => {
       message('assistant', [toolUse('pending')])
     ]
 
-    const selection = selectClaudeCompactRanges(messages, { minMessages: 4, preservedRoundCount: 1 })
+    const selection = selectClaudeCompactRanges(messages, {
+      minMessages: 4,
+      preservedRoundCount: 1
+    })
 
     expect(selection.ok).toBe(true)
     expect(selection.compressibleMessages.map((item) => item.id)).toEqual(['m-1', 'm-2'])
     expect(selection.preservedMessages.map((item) => item.id)).toEqual(['m-3', 'm-4'])
-    expect(validateToolUseResultProtocol(selection.preservedMessages).issues.map((issue) => issue.kind)).toEqual([
-      'unanswered_tool_use'
-    ])
+    expect(
+      validateToolUseResultProtocol(selection.preservedMessages).issues.map((issue) => issue.kind)
+    ).toEqual(['unanswered_tool_use'])
   })
 })
 
@@ -393,7 +420,9 @@ describe('assertClaudeCompactSummarySafe', () => {
   })
 
   it('returns a redacted summary for ordinary token-like values', () => {
-    expect(assertClaudeCompactSummarySafe('Keep current task. token=summary-secret')).toContain('[REDACTED')
+    expect(assertClaudeCompactSummarySafe('Keep current task. token=summary-secret')).toContain(
+      '[REDACTED'
+    )
   })
 })
 
@@ -506,9 +535,9 @@ describe('legacy compact summary extraction safety', () => {
     const storedSummary = String(result.messages[1]?.content ?? '')
 
     expect(result.result.compressed).toBe(true)
-    expect(String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)).toContain(
-      'Security boundary'
-    )
+    expect(
+      String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)
+    ).toContain('Security boundary')
     expect(summarizerPayload).toContain('[REDACTED')
     expect(summarizerPayload).not.toContain('sk-user-secret')
     expect(summarizerPayload).not.toContain('result-secret-token')
@@ -519,7 +548,9 @@ describe('legacy compact summary extraction safety', () => {
   })
 
   it('replaces stale post-compact state when compacting again', async () => {
-    vi.mocked(runSidecarTextRequest).mockResolvedValue('<summary>Older work was summarized.</summary>')
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Older work was summarized.</summary>'
+    )
     const staleState: UnifiedMessage = {
       ...message('user', 'stale post compact state'),
       meta: { postCompactState: true }
@@ -594,7 +625,9 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.messages[2]?.meta?.postCompactState).toBe(true)
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(String(result.messages[1]?.content)).toContain('Continue the TDD implementation')
-    expect(JSON.stringify(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0])).not.toContain('sk-tool-secret')
+    expect(JSON.stringify(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0])).not.toContain(
+      'sk-tool-secret'
+    )
     expect(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0]).toMatchObject({
       maxIterations: 1,
       responsesSessionScope: false,
@@ -603,13 +636,15 @@ describe('claude-code-compact-v1 engine', () => {
         thinkingEnabled: false
       }
     })
-    expect(String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)).toContain(
-      'context compressor'
-    )
+    expect(
+      String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].provider.systemPrompt)
+    ).toContain('context compressor')
   })
 
   it('externalizes oversized preserved user input during manual compaction', async () => {
-    vi.mocked(runSidecarTextRequest).mockResolvedValue('<summary>Older work was summarized.</summary>')
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Older work was summarized.</summary>'
+    )
     const oversizedInput = `# Exported conversation\n${'Tool Call record\n'.repeat(20_000)}`
     const messages = [
       message('user', 'first task'),
@@ -644,6 +679,46 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.result.messagesChanged).toBe(true)
     expect(serialized).toContain('[User input externalized for context budget]')
     expect(serialized).not.toContain('Tool Call record\nTool Call record\nTool Call record')
+  })
+
+  it('does not write back externalized user input when manual compaction fails', async () => {
+    vi.mocked(runSidecarTextRequest).mockRejectedValue(new Error('summarizer unavailable'))
+    const oversizedInput = `# Exported conversation\n${'Tool Call record\n'.repeat(20_000)}`
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a')]),
+      message('assistant', 'first result'),
+      message('user', oversizedInput),
+      message('assistant', 'acknowledged')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'manual',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    expect(result.result.compressed).toBe(false)
+    expect(result.result.reason).toBe('summarizer_failed')
+    expect(result.result.messagesChanged).not.toBe(true)
+    expect(result.messages).toBe(messages)
+    expect(result.messages[4]?.content).toBe(oversizedInput)
+    expect(JSON.stringify(result.messages)).not.toContain(
+      '[User input externalized for context budget]'
+    )
   })
 
   it('rejects unsafe summary output and leaves the original messages unchanged', async () => {
@@ -749,7 +824,9 @@ describe('claude-code-compact-v1 engine', () => {
       }
     )
 
-    const prompt = String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? '')
+    const prompt = String(
+      vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? ''
+    )
 
     expect(result.result.compressed).toBe(true)
     expect(result.result.partialCompact).toBe(true)
@@ -761,7 +838,9 @@ describe('claude-code-compact-v1 engine', () => {
       tailStart: 4
     })
     expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
-    expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+    expect(result.messages[1]?.id).toBe('m-1')
+    expect(result.messages[2]?.meta?.compactSummary).toBeTruthy()
+    expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7'])
     expect(prompt).toContain('old file snapshot')
     expect(prompt).not.toContain('latest edit result')
   })
@@ -803,7 +882,7 @@ describe('claude-code-compact-v1 engine', () => {
     expect(merged?.map((item) => item.id)).toEqual([
       result.messages[0]!.id,
       result.messages[1]!.id,
-      'm-1',
+      result.messages[2]!.id,
       'm-5',
       'm-6',
       'm-7'
@@ -864,25 +943,25 @@ describe('claude-code-compact-v1 engine', () => {
     })
   })
 
-  it('uses Claude threshold logic for shouldCompress', () => {
-    expect(
-      shouldCompress(166_999, {
-        enabled: true,
-        contextLength: 200_000,
-        threshold: 0.3,
-        strategyId: 'claude-code-compact-v1',
-        reservedOutputBudget: 20_000
-      })
-    ).toBe(false)
-    expect(
-      shouldCompress(167_000, {
-        enabled: true,
-        contextLength: 200_000,
-        threshold: 0.3,
-        strategyId: 'claude-code-compact-v1',
-        reservedOutputBudget: 20_000
-      })
-    ).toBe(true)
+  it('uses configured Claude threshold logic for shouldCompress and shouldPreCompress', () => {
+    const config = {
+      enabled: true,
+      contextLength: 200_000,
+      threshold: 0.8,
+      preCompressThreshold: 0.65,
+      strategyId: 'claude-code-compact-v1' as const,
+      reservedOutputBudget: 20_000
+    }
+
+    expect(shouldPreCompress(116_999, config)).toBe(false)
+    expect(shouldPreCompress(117_000, config)).toBe(true)
+    expect(shouldPreCompress(143_999, config)).toBe(true)
+    expect(shouldPreCompress(144_000, config)).toBe(false)
+    expect(shouldCompress(143_999, config)).toBe(false)
+    expect(shouldCompress(144_000, config)).toBe(true)
+
+    expect(shouldCompress(53_999, { ...config, threshold: 0.3 })).toBe(false)
+    expect(shouldCompress(54_000, { ...config, threshold: 0.3 })).toBe(true)
   })
 
   it('returns the Claude strategy from the registry', () => {
@@ -927,8 +1006,12 @@ describe('claude-code-compact-v1 Prompt Too Long retry', () => {
       }
     )
 
-    const firstPrompt = String(vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? '')
-    const secondPrompt = String(vi.mocked(runSidecarTextRequest).mock.calls[1]?.[0].messages[0]?.content ?? '')
+    const firstPrompt = String(
+      vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? ''
+    )
+    const secondPrompt = String(
+      vi.mocked(runSidecarTextRequest).mock.calls[1]?.[0].messages[0]?.content ?? ''
+    )
 
     expect(result.result.compressed).toBe(true)
     expect(vi.mocked(runSidecarTextRequest)).toHaveBeenCalledTimes(2)
@@ -962,7 +1045,9 @@ describe('formatPostCompactStateContext Claude compact continuity', () => {
       workingFolder: 'C:/projects/OpenCowork',
       currentPlan: { title: 'Claude compact plan', status: 'in_progress' },
       activeTasks: [{ id: 'task_1', subject: 'Write red test', status: 'in_progress' }],
-      recentlyReadFiles: [{ filePath: 'src/renderer/src/lib/agent/context-compression.ts', timestamp: 0 }],
+      recentlyReadFiles: [
+        { filePath: 'src/renderer/src/lib/agent/context-compression.ts', timestamp: 0 }
+      ],
       safetyConstraints: [
         'Use TDD for every behavior change',
         'Do not store secrets in compact summaries',
@@ -984,7 +1069,10 @@ describe('formatPostCompactStateContext Claude compact continuity', () => {
   it('re-injects compact-safe runtime state for skills, async agents, MCP, memory, and prompt cache', () => {
     const text = formatPostCompactStateContext({
       title: 'Current state',
-      loadedSkills: [{ name: 'test-driven-development' }, { name: 'verification-before-completion' }],
+      loadedSkills: [
+        { name: 'test-driven-development' },
+        { name: 'verification-before-completion' }
+      ],
       asyncAgents: [
         {
           name: 'reviewer',
@@ -1009,8 +1097,12 @@ describe('formatPostCompactStateContext Claude compact continuity', () => {
     expect(text).toContain('Async agents: reviewer [running] - review compact metadata')
     expect(text).toContain('MCP servers: filesystem [connected, tools: 4]')
     expect(text).toContain('Memory cache: version 7, updated 1970-01-01T00:00:00.000Z')
-    expect(text).toContain('Memory sources: [USER_HOME]/.open-cowork/MEMORY.md; C:/projects/OpenCowork/.agents/MEMORY.md')
-    expect(text).toContain('Prompt cache baseline: reset_after_compact - compact boundary changed replay baseline')
+    expect(text).toContain(
+      'Memory sources: [USER_HOME]/.open-cowork/MEMORY.md; C:/projects/OpenCowork/.agents/MEMORY.md'
+    )
+    expect(text).toContain(
+      'Prompt cache baseline: reset_after_compact - compact boundary changed replay baseline'
+    )
     expect(text).not.toContain('C:/Users/He')
     expect(text).not.toContain('runtime-secret')
     expect(text).not.toContain('sk-reason-secret')

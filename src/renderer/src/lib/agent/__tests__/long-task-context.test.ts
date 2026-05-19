@@ -47,7 +47,12 @@ vi.mock('../../api/provider', () => ({
   resetGlobalPromptCacheKey: vi.fn(() => 'mock-prompt-cache-after')
 }))
 
+vi.mock('../../auth/provider-auth', () => ({
+  trySwitchProviderAccount: vi.fn()
+}))
+
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
+import { trySwitchProviderAccount } from '../../auth/provider-auth'
 import {
   groupMessagesByApiRound,
   repairToolUseResultProtocolForReplay,
@@ -241,14 +246,87 @@ describe('runAgentLoop context gate', () => {
     })
     expect(sentMessages[0]?.usage).toBe(usage)
     expect(sentMessages[0]?.meta).toBe(meta)
-    expect(JSON.stringify(sentMessages[0])).toContain('[User input externalized for context budget]')
+    expect(JSON.stringify(sentMessages[0])).toContain(
+      '[User input externalized for context budget]'
+    )
   })
 
-  it('blocks the next provider request when context still exceeds the hard limit after compaction', async () => {
+  it('does not capture externalized user input when compression fails after guarding', async () => {
+    const abortController = new AbortController()
+    const rawContent = 'large-user-input\n'.repeat(10_000)
+    const capturedFinalMessages: UnifiedMessage[][] = []
+    let sentMessages: UnifiedMessage[] = []
+    const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+      sentMessages = messages
+      yield { type: 'text_delta', text: 'continued after failed compression' }
+      yield { type: 'message_end' }
+    })
+    const compressFn = vi.fn(async () => {
+      throw new Error('summarizer failed')
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const _event of runAgentLoop(
+      [
+        {
+          id: 'm-user-large',
+          role: 'user',
+          content: rawContent,
+          createdAt: 1,
+          usage: { inputTokens: 0, outputTokens: 0, contextTokens: 18_000 }
+        }
+      ],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        captureFinalMessages: (messages) => capturedFinalMessages.push(messages),
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 30_000,
+            threshold: 0.6,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 2_000
+          },
+          compressFn
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      // consume generator
+    }
+
+    expect(compressFn).toHaveBeenCalledTimes(1)
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(sentMessages)).toContain('[User input externalized for context budget]')
+    expect(capturedFinalMessages).toHaveLength(1)
+    expect(capturedFinalMessages[0]?.[0]?.content).toBe(rawContent)
+    expect(JSON.stringify(capturedFinalMessages[0])).not.toContain(
+      '[User input externalized for context budget]'
+    )
+  })
+
+  it('deterministically shrinks context and continues when stale usage exceeds the hard limit', async () => {
     const events: AgentEvent[] = []
     const abortController = new AbortController()
-    const providerSend = vi.fn(async function* () {
-      yield { type: 'text_delta', text: 'should not be called' }
+    let sentMessages: UnifiedMessage[] = []
+    const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+      sentMessages = messages
+      yield { type: 'text_delta', text: 'continued after shrink' }
       yield { type: 'message_end' }
     })
 
@@ -298,19 +376,31 @@ describe('runAgentLoop context gate', () => {
       events.push(event)
     }
 
-    expect(providerSend).not.toHaveBeenCalled()
-    expect(events.some((event) => event.type === 'error' && /context gate blocked/i.test(event.error.message))).toBe(
-      true
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(sentMessages[0]?.usage).toBeUndefined()
+    expect(JSON.stringify(sentMessages)).toContain('[User input externalized for context budget]')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_compression_deferred',
+          reason: 'hard_context_limit_exceeded',
+          blockingNextRequest: false,
+          messagesChanged: true
+        })
+      ])
     )
     expect(events.filter((event) => event.type === 'loop_end')).toHaveLength(1)
-    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
 
-  it('blocks the next provider request when reserved output budget exceeds the remaining context window', async () => {
+  it('strips stale usage and continues when reserved output budget would otherwise overflow', async () => {
     const events: AgentEvent[] = []
     const abortController = new AbortController()
-    const providerSend = vi.fn(async function* () {
-      yield { type: 'text_delta', text: 'should not be called' }
+    let sentMessages: UnifiedMessage[] = []
+    const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+      sentMessages = messages
+      yield { type: 'text_delta', text: 'continued after usage reset' }
       yield { type: 'message_end' }
     })
 
@@ -360,16 +450,27 @@ describe('runAgentLoop context gate', () => {
       events.push(event)
     }
 
-    const errorEvent = events.find((event) => event.type === 'error')
-
-    expect(providerSend).not.toHaveBeenCalled()
-    expect(errorEvent).toMatchObject({
-      type: 'error',
-      errorType: 'reserved_output_budget_exceeded'
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(sentMessages[0]).toMatchObject({
+      id: 'm-reserved',
+      role: 'user',
+      content: 'small',
+      createdAt: 1
     })
-    expect(errorEvent?.error.message).toContain('Context gate blocked model request')
+    expect(sentMessages[0]?.usage).toBeUndefined()
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_compression_deferred',
+          reason: 'reserved_output_budget_exceeded',
+          blockingNextRequest: false,
+          messagesChanged: true
+        })
+      ])
+    )
     expect(events.filter((event) => event.type === 'loop_end')).toHaveLength(1)
-    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
 
   it('blocks when formatted tool definitions push the next request over the hard context limit', async () => {
@@ -540,6 +641,1083 @@ describe('runAgentLoop context gate', () => {
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
 
+  it('shrinks history and retries once when the provider reports context overflow before streaming', async () => {
+    const events: AgentEvent[] = []
+    const sentRequests: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield {
+          type: 'error',
+          error: { message: 'maximum context length exceeded', type: 'http_400' }
+        }
+      })
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield { type: 'text_delta', text: 'continued after provider overflow recovery' }
+        yield { type: 'message_end' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    const messages: UnifiedMessage[] = [
+      message('user', 'inspect logs'),
+      message('assistant', [toolUse('large')]),
+      message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+      message('assistant', 'large log read complete')
+    ]
+
+    for await (const event of runAgentLoop(
+      messages,
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(sentRequests[0])).toContain('warning line')
+    const retriedRequest = JSON.stringify(sentRequests[1])
+    expect(retriedRequest).toContain('inspect logs')
+    expect(retriedRequest).toContain('Earlier local context omitted for context budget')
+    expect(retriedRequest).not.toContain('warning line')
+    expect(JSON.stringify(sentRequests[1]).length).toBeLessThan(
+      JSON.stringify(sentRequests[0]).length
+    )
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_compression_deferred',
+          checkpoint: 'before_model_request',
+          reason: 'hard_context_limit_exceeded',
+          messagesChanged: true
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
+
+  it.each([
+    { name: 'statusless prompt-too-long error', providerError: new Error('prompt too long') },
+    {
+      name: 'HTTP 413 error',
+      providerError: { message: 'request body too large', type: 'http_413' }
+    }
+  ])(
+    'shrinks and retries when the provider reports $name before streaming',
+    async ({ providerError }) => {
+      const events: AgentEvent[] = []
+      const sentRequests: UnifiedMessage[][] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
+          yield {
+            type: 'error',
+            error: providerError
+          }
+        })
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
+          yield { type: 'text_delta', text: 'continued after provider overflow recovery' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      for await (const event of runAgentLoop(
+        [
+          message('user', 'inspect logs'),
+          message('assistant', [toolUse('large')]),
+          message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+          message('assistant', 'large log read complete')
+        ],
+        {
+          maxIterations: 1,
+          provider: providerConfig,
+          tools: [],
+          systemPrompt: 'system',
+          signal: abortController.signal,
+          contextCompression: {
+            config: {
+              enabled: true,
+              contextLength: 200_000,
+              threshold: 0.8,
+              strategyId: 'claude-code-compact-v1',
+              reservedOutputBudget: 20_000
+            },
+            compressFn: async (input) => input
+          }
+        },
+        {
+          sessionId: 'session-1',
+          workingFolder: 'C:/projects/OpenCowork',
+          signal: abortController.signal,
+          ipc: {
+            invoke: vi.fn(),
+            send: vi.fn(),
+            on: vi.fn(() => () => {})
+          }
+        },
+        undefined
+      )) {
+        events.push(event)
+      }
+
+      expect(providerSend).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(sentRequests[0])).toContain('warning line')
+      const retriedRequest = JSON.stringify(sentRequests[1])
+      expect(retriedRequest).toContain('inspect logs')
+      expect(retriedRequest).toContain('Earlier local context omitted for context budget')
+      expect(retriedRequest).not.toContain('warning line')
+      expect(events.some((event) => event.type === 'error')).toBe(false)
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+    }
+  )
+
+  it('drops a closed tool exchange during provider overflow recovery when compaction alone cannot help', async () => {
+    const events: AgentEvent[] = []
+    const sentRequests: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield {
+          type: 'error',
+          error: new Error('prompt too long')
+        }
+      })
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield { type: 'text_delta', text: 'continued after dropping closed tool exchange' }
+        yield { type: 'message_end' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [
+        message('user', 'current task anchor: finish deploy fix'),
+        message('assistant', [toolUse('latest-read')]),
+        message('user', [toolResult('latest-read', 'small regenerable result')])
+      ],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    const retriedRequest = JSON.stringify(sentRequests[1])
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(sentRequests[0])).toContain('latest-read')
+    expect(retriedRequest).toContain('current task anchor: finish deploy fix')
+    expect(retriedRequest).toContain('Earlier local context omitted for context budget')
+    expect(retriedRequest).not.toContain('latest-read')
+    expect(retriedRequest).not.toContain('small regenerable result')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
+
+  it('does not fall back to ordinary retry when provider overflow persists after recovery', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'maximum context length exceeded', type: 'http_400' }
+          }
+        })
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: new Error('prompt is too long for this model')
+          }
+        })
+        .mockImplementation(async function* () {
+          yield { type: 'text_delta', text: 'should not retry again' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [
+            message('user', 'inspect logs'),
+            message('assistant', [toolUse('large')]),
+            message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+            message('assistant', 'large log read complete')
+          ],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(2)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'error',
+            errorType: 'hard_context_limit_exceeded'
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not fall back to ordinary retry when a transient error follows overflow recovery', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'maximum context length exceeded', type: 'http_400' }
+          }
+        })
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'temporary provider error after shrink', type: 'http_500' }
+          }
+        })
+        .mockImplementation(async function* () {
+          yield { type: 'text_delta', text: 'should not retry after shrink' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [
+            message('user', 'inspect logs'),
+            message('assistant', [toolUse('large')]),
+            message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+            message('assistant', 'large log read complete')
+          ],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(2)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'error',
+            error: expect.objectContaining({
+              message: 'temporary provider error after shrink'
+            })
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('detects a plain thrown provider object as context overflow before retrying', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const sentRequests: UnifiedMessage[][] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
+          yield await Promise.reject({ message: 'request body too large', status: 413 })
+        })
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
+          yield { type: 'text_delta', text: 'continued after plain object overflow' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [
+            message('user', 'inspect logs'),
+            message('assistant', [toolUse('large')]),
+            message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+            message('assistant', 'large log read complete')
+          ],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(sentRequests[0])).toContain('warning line')
+      const retriedRequest = JSON.stringify(sentRequests[1])
+      expect(retriedRequest).toContain('inspect logs')
+      expect(retriedRequest).toContain('Earlier local context omitted for context budget')
+      expect(retriedRequest).not.toContain('warning line')
+      expect(events.some((event) => event.type === 'error')).toBe(false)
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry a context overflow that arrives after streaming has started', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* () {
+          yield { type: 'text_delta', text: 'partial output' }
+          yield {
+            type: 'error',
+            error: new Error('context length exceeded after streaming')
+          }
+        })
+        .mockImplementation(async function* () {
+          yield { type: 'text_delta', text: 'should not retry partial stream' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [message('user', 'write answer')],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(1)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'text_delta',
+            text: 'partial output'
+          }),
+          expect.objectContaining({
+            type: 'error',
+            errorType: 'hard_context_limit_exceeded'
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles a streamed tool call with an error result when context overflow arrives after streaming', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const finalMessages: UnifiedMessage[][] = []
+      const abortController = new AbortController()
+      const providerSend = vi.fn(async function* () {
+        yield {
+          type: 'tool_call_start',
+          toolCallId: 'stream-tool',
+          toolName: 'Read'
+        }
+        yield {
+          type: 'tool_call_delta',
+          toolCallId: 'stream-tool',
+          argumentsDelta: '{"file_path":"src/app.ts"}'
+        }
+        yield {
+          type: 'error',
+          error: new Error('context length exceeded after streaming tool call')
+        }
+      })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [message('user', 'read file')],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            },
+            captureFinalMessages: (messages) => finalMessages.push(messages)
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(1)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'tool_call_result',
+            toolCall: expect.objectContaining({
+              id: 'stream-tool',
+              status: 'error',
+              error: expect.stringContaining('context length exceeded')
+            })
+          }),
+          expect.objectContaining({
+            type: 'iteration_end',
+            toolResults: expect.arrayContaining([
+              expect.objectContaining({ toolUseId: 'stream-tool', isError: true })
+            ])
+          }),
+          expect.objectContaining({
+            type: 'error',
+            errorType: 'hard_context_limit_exceeded'
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+      expect(validateToolUseResultProtocol(finalMessages.at(-1) ?? [])).toEqual({
+        valid: true,
+        issues: []
+      })
+      expect(JSON.stringify(finalMessages.at(-1))).toContain('stream-tool')
+      expect(JSON.stringify(finalMessages.at(-1))).toContain(
+        'context length exceeded after streaming tool call'
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry or fail over after a retryable error arrives after streaming', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const finalMessages: UnifiedMessage[][] = []
+      const abortController = new AbortController()
+      const providerSend = vi.fn(async function* () {
+        yield {
+          type: 'tool_call_start',
+          toolCallId: 'retryable-stream-tool',
+          toolName: 'Read'
+        }
+        yield {
+          type: 'tool_call_delta',
+          toolCallId: 'retryable-stream-tool',
+          argumentsDelta: '{"file_path":"src/retry.ts"}'
+        }
+        yield {
+          type: 'error',
+          error: { message: 'server overloaded after streaming', type: 'http_500' }
+        }
+      })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+      vi.mocked(trySwitchProviderAccount).mockReturnValue({
+        previousAccountId: 'account-a',
+        nextAccountId: 'account-b'
+      })
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [message('user', 'read file')],
+          {
+            maxIterations: 1,
+            provider: { ...providerConfig, providerId: 'provider-1' },
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            },
+            captureFinalMessages: (messages) => finalMessages.push(messages)
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(1)
+      expect(trySwitchProviderAccount).not.toHaveBeenCalled()
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'tool_call_result',
+            toolCall: expect.objectContaining({
+              id: 'retryable-stream-tool',
+              status: 'error',
+              error: expect.stringContaining('server overloaded')
+            })
+          }),
+          expect.objectContaining({
+            type: 'iteration_end',
+            toolResults: expect.arrayContaining([
+              expect.objectContaining({ toolUseId: 'retryable-stream-tool', isError: true })
+            ])
+          }),
+          expect.objectContaining({
+            type: 'error',
+            error: expect.objectContaining({ message: 'server overloaded after streaming' })
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+      expect(validateToolUseResultProtocol(finalMessages.at(-1) ?? [])).toEqual({
+        valid: true,
+        issues: []
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses the overflow recovery retry even when ordinary retry budget was already exhausted', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const abortController = new AbortController()
+      const providerSend = vi
+        .fn()
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'temporary provider error', type: 'http_500' }
+          }
+        })
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'another temporary provider error', type: 'http_500' }
+          }
+        })
+        .mockImplementationOnce(async function* () {
+          yield {
+            type: 'error',
+            error: { message: 'maximum context length exceeded', type: 'http_400' }
+          }
+        })
+        .mockImplementationOnce(async function* () {
+          yield { type: 'text_delta', text: 'continued after late overflow recovery' }
+          yield { type: 'message_end' }
+        })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          [
+            message('user', 'inspect logs'),
+            message('assistant', [toolUse('large')]),
+            message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+            message('assistant', 'large log read complete')
+          ],
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(4)
+      expect(events.some((event) => event.type === 'error')).toBe(false)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'context_compression_deferred',
+            messagesChanged: true
+          }),
+          expect.objectContaining({
+            type: 'text_delta',
+            text: 'continued after late overflow recovery'
+          })
+        ])
+      )
+      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('handles provider overflow before account failover when both predicates match', async () => {
+    const events: AgentEvent[] = []
+    const sentRequests: UnifiedMessage[][] = []
+    const abortController = new AbortController()
+    vi.mocked(trySwitchProviderAccount).mockReturnValue({
+      previousAccountId: 'account-a',
+      nextAccountId: 'account-b'
+    })
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield {
+          type: 'error',
+          error: { message: 'upstream context length exceeded', type: 'http_500' }
+        }
+      })
+      .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield { type: 'text_delta', text: 'continued without account switch' }
+        yield { type: 'message_end' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [
+        message('user', 'inspect logs'),
+        message('assistant', [toolUse('large')]),
+        message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+        message('assistant', 'large log read complete')
+      ],
+      {
+        maxIterations: 1,
+        provider: { ...providerConfig, providerId: 'provider-a' },
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(trySwitchProviderAccount).not.toHaveBeenCalled()
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    const retriedRequest = JSON.stringify(sentRequests[1])
+    expect(retriedRequest).toContain('inspect logs')
+    expect(retriedRequest).toContain('Earlier local context omitted for context budget')
+    expect(retriedRequest).not.toContain('warning line')
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
+
+  it('does not treat token rate limit errors as provider context overflow', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    vi.mocked(trySwitchProviderAccount).mockReturnValue({
+      previousAccountId: 'account-a',
+      nextAccountId: 'account-b'
+    })
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: 'error',
+          error: new Error('token rate limit exceeded for this account')
+        }
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'text_delta', text: 'continued after account switch' }
+        yield { type: 'message_end' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [
+        message('user', 'inspect logs'),
+        message('assistant', [toolUse('latest-read')]),
+        message('user', [toolResult('latest-read', 'small result')])
+      ],
+      {
+        maxIterations: 1,
+        provider: { ...providerConfig, providerId: 'provider-a' },
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(trySwitchProviderAccount).toHaveBeenCalledTimes(1)
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    expect(events).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'context_compression_deferred',
+          reason: 'hard_context_limit_exceeded'
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
+
+  it('does not complete with an empty assistant after provider overflow recovery', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi
+      .fn()
+      .mockImplementationOnce(async function* () {
+        yield {
+          type: 'error',
+          error: { message: 'maximum context length exceeded', type: 'http_400' }
+        }
+      })
+      .mockImplementationOnce(async function* () {
+        yield { type: 'message_end' }
+      })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [
+        message('user', 'inspect logs'),
+        message('assistant', [toolUse('large')]),
+        message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
+        message('assistant', 'large log read complete')
+      ],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).toHaveBeenCalledTimes(2)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          errorType: 'hard_context_limit_exceeded'
+        })
+      ])
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
+  })
+
   it('guards oversized assistant text at finalize before appending it to final messages', async () => {
     const events: AgentEvent[] = []
     const finalMessages: UnifiedMessage[][] = []
@@ -682,7 +1860,9 @@ describe('runAgentLoop context gate', () => {
       ])
     )
     expect(sentRequests[1]?.map((item) => item.role)).toEqual(['user', 'assistant', 'user'])
-    expect(String(sentRequests[1]?.[2]?.content)).toContain('Continue the previous assistant response')
+    expect(String(sentRequests[1]?.[2]?.content)).toContain(
+      'Continue the previous assistant response'
+    )
     expect(finalMessages.at(-1)?.filter((item) => item.role === 'assistant')).toHaveLength(2)
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
@@ -812,10 +1992,7 @@ describe('validateToolUseResultProtocol', () => {
   })
 
   it('reports tool blocks attached to invalid message roles', () => {
-    const messages = [
-      message('user', [toolUse('a')]),
-      message('assistant', [toolResult('a')])
-    ]
+    const messages = [message('user', [toolUse('a')]), message('assistant', [toolResult('a')])]
 
     const validation = validateToolUseResultProtocol(messages)
 
@@ -851,32 +2028,169 @@ describe('validateToolUseResultProtocol', () => {
     expect(repaired.issues.map((issue) => issue.kind)).toContain('unanswered_tool_use')
   })
 
-  it('splits mixed tool result user messages so tool output keeps tool-card rendering', () => {
+  it('keeps pre-result mixed text renderable so user input is not hidden', () => {
     const messages = [
       message('user', 'inspect files'),
       message('assistant', [toolUse('a')]),
-      message('user', [{ type: 'text', text: 'runtime note' }, toolResult('a', 'file contents')]),
+      message('user', [{ type: 'text', text: 'now do X' }, toolResult('a', 'file contents')]),
       message('assistant', 'done')
     ]
+    const assistantId = messages[1]!.id
+    const toolResultMessageId = messages[2]!.id
 
     expect(validateToolUseResultProtocol(messages)).toEqual({ valid: true, issues: [] })
 
     const repaired = repairToolUseResultProtocolForReplay(messages)
     const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+    const tailMessageId = `${toolResultMessageId}-tool-repair-tail-1`
 
     expect(repaired.changed).toBe(true)
     expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
-    expect(repaired.messages.map((item) => item.id)).toEqual([
-      'm-1',
-      'm-2',
-      'm-3',
-      'm-3-tool-repair-tail-1',
-      'm-4'
-    ])
-    expect(analysis.renderableMessageIds).not.toContain('m-3')
-    expect(analysis.toolResultsLookup.get('m-2')?.get('a')).toMatchObject({
-      content: 'file contents'
-    })
+    expect(analysis.renderableMessageIds).not.toContain(toolResultMessageId)
+    expect(analysis.renderableMessageIds).toContain(tailMessageId)
+    const content = serializeToolResultContent(
+      analysis.toolResultsLookup.get(assistantId)?.get('a')?.content ?? ''
+    )
+    expect(content).toBe('file contents')
+    expect(JSON.stringify(repaired.messages.find((item) => item.id === tailMessageId))).toContain(
+      'now do X'
+    )
+  })
+
+  it('keeps post-result mixed text renderable so real user follow-ups are not hidden', () => {
+    nextMessageId = 100
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'file contents'), { type: 'text', text: 'now refactor X' }]),
+      message('assistant', 'done')
+    ]
+    const assistantId = messages[1]!.id
+    const toolResultMessageId = messages[2]!.id
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+    const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+    const tailMessageId = `${toolResultMessageId}-tool-repair-tail-1`
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(analysis.renderableMessageIds).not.toContain(toolResultMessageId)
+    expect(analysis.renderableMessageIds).toContain(tailMessageId)
+    expect(
+      serializeToolResultContent(
+        analysis.toolResultsLookup.get(assistantId)?.get('a')?.content ?? ''
+      )
+    ).toBe('file contents')
+    expect(JSON.stringify(repaired.messages.find((item) => item.id === tailMessageId))).toContain(
+      'now refactor X'
+    )
+  })
+
+  it('keeps interleaved mixed text renderable in a multi-tool batch', () => {
+    nextMessageId = 150
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a'), toolUse('b')]),
+      message('user', [
+        toolResult('a', 'file a'),
+        { type: 'text', text: 'now compare both files' },
+        toolResult('b', 'file b')
+      ]),
+      message('assistant', 'done')
+    ]
+    const assistantId = messages[1]!.id
+    const toolResultMessageId = messages[2]!.id
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+    const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+    const tailMessageId = `${toolResultMessageId}-tool-repair-tail-1`
+    const resultA = serializeToolResultContent(
+      analysis.toolResultsLookup.get(assistantId)?.get('a')?.content ?? ''
+    )
+    const resultB = serializeToolResultContent(
+      analysis.toolResultsLookup.get(assistantId)?.get('b')?.content ?? ''
+    )
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(analysis.renderableMessageIds).not.toContain(toolResultMessageId)
+    expect(analysis.renderableMessageIds).toContain(tailMessageId)
+    expect(resultA).toBe('file a')
+    expect(resultB).toBe('file b')
+    expect(resultA).not.toContain('now compare both files')
+    expect(resultB).not.toContain('now compare both files')
+    expect(JSON.stringify(repaired.messages.find((item) => item.id === tailMessageId))).toContain(
+      'now compare both files'
+    )
+  })
+
+  it('uses a later real tool result before synthesizing missing mixed batch results', () => {
+    nextMessageId = 180
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a'), toolUse('b')]),
+      message('user', [toolResult('a', 'file a'), { type: 'text', text: 'compare after both' }]),
+      message('user', [toolResult('b', 'file b')]),
+      message('assistant', 'done')
+    ]
+    const assistantId = messages[1]!.id
+    const mixedMessageId = messages[2]!.id
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+    const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+    const tailMessageId = `${mixedMessageId}-tool-repair-tail-1`
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(
+      serializeToolResultContent(
+        analysis.toolResultsLookup.get(assistantId)?.get('a')?.content ?? ''
+      )
+    ).toBe('file a')
+    expect(
+      serializeToolResultContent(
+        analysis.toolResultsLookup.get(assistantId)?.get('b')?.content ?? ''
+      )
+    ).toBe('file b')
+    expect(analysis.renderableMessageIds).toContain(tailMessageId)
+    expect(JSON.stringify(repaired.messages.find((item) => item.id === tailMessageId))).toContain(
+      'compare after both'
+    )
+    expect(JSON.stringify(repaired.messages)).not.toContain(
+      'Tool execution interrupted before a result was recorded'
+    )
+  })
+
+  it('keeps mixed user text renderable when the message only answers part of a pending tool batch', () => {
+    nextMessageId = 200
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a'), toolUse('b')]),
+      message('user', [toolResult('a', 'file a'), { type: 'text', text: 'please continue' }]),
+      message('assistant', 'done')
+    ]
+    const assistantId = messages[1]!.id
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+    const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+    const userTextMessage = repaired.messages.find(
+      (item) =>
+        item.role === 'user' &&
+        Array.isArray(item.content) &&
+        item.content.some((block) => block.type === 'text' && block.text === 'please continue')
+    )
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(analysis.renderableMessageIds).toContain(userTextMessage?.id)
+    expect(
+      serializeToolResultContent(
+        analysis.toolResultsLookup.get(assistantId)?.get('a')?.content ?? ''
+      )
+    ).not.toContain('please continue')
+    expect(JSON.stringify(repaired.messages)).toContain(
+      'Tool execution interrupted before a result was recorded'
+    )
   })
 
   it('repairs user messages that contain only invalid tool blocks', () => {
@@ -898,6 +2212,33 @@ describe('validateToolUseResultProtocol', () => {
           item.content.some((block) => block.type === 'tool_result' || block.type === 'tool_use')
       )
     ).toBe(false)
+  })
+
+  it('applies same-length repairs for invalid assistant tool blocks', () => {
+    const messages = [
+      message('assistant', [toolResult('wrong-role')]),
+      message('assistant', [toolUse('a'), toolUse('a')])
+    ]
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(JSON.stringify(repaired.messages)).toContain('Recovered invalid tool result wrong-role')
+    expect(JSON.stringify(repaired.messages)).toContain('Recovered invalid tool call a')
+    expect(
+      repaired.messages.some(
+        (item) =>
+          item.role === 'assistant' &&
+          Array.isArray(item.content) &&
+          item.content.some((block) => block.type === 'tool_result')
+      )
+    ).toBe(false)
+    expect(
+      repaired.messages
+        .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+        .filter((block) => block.type === 'tool_use' && block.id === 'a')
+    ).toHaveLength(1)
   })
 })
 
@@ -1075,9 +2416,7 @@ describe('compressMessages', () => {
       undefined,
       1
     )
-    const summary = String(
-      result.messages.find((item) => item.meta?.compactSummary)?.content ?? ''
-    )
+    const summary = String(result.messages.find((item) => item.meta?.compactSummary)?.content ?? '')
 
     expect(summary).toContain('[REDACTED')
     expect(summary).not.toContain('summary-secret-value')
@@ -1137,7 +2476,10 @@ describe('compressMessages', () => {
           },
           {
             type: 'image',
-            source: { type: 'url', url: 'https://example.com/secret-image.png?token=image-url-secret' }
+            source: {
+              type: 'url',
+              url: 'https://example.com/secret-image.png?token=image-url-secret'
+            }
           }
         ])
       ]),
@@ -1170,12 +2512,8 @@ describe('formatPostCompactStateContext', () => {
       title: 'Current state',
       workingFolder: 'C:/projects/OpenCowork',
       currentPlan: { title: 'Compression plan', status: 'in_progress' },
-      activeTasks: [
-        { id: 'task-1', subject: 'Implement compaction', status: 'in_progress' }
-      ],
-      recentlyReadFiles: [
-        { filePath: 'src/renderer/src/lib/agent/agent-loop.ts', timestamp: 0 }
-      ]
+      activeTasks: [{ id: 'task-1', subject: 'Implement compaction', status: 'in_progress' }],
+      recentlyReadFiles: [{ filePath: 'src/renderer/src/lib/agent/agent-loop.ts', timestamp: 0 }]
     })
 
     expect(text).toContain('## Current state')

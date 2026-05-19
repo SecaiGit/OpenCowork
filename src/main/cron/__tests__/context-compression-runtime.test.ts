@@ -9,7 +9,10 @@ import {
 
 let nextMessageId = 0
 
-function message(role: MainRuntimeMessage['role'], content: MainRuntimeMessage['content']): MainRuntimeMessage {
+function message(
+  role: MainRuntimeMessage['role'],
+  content: MainRuntimeMessage['content']
+): MainRuntimeMessage {
   nextMessageId += 1
   return { id: `m-${nextMessageId}`, role, content, createdAt: nextMessageId }
 }
@@ -30,10 +33,39 @@ const config: MainRuntimeCompressionConfig = {
   reservedOutputBudget: 20_000
 }
 
+const syntheticAnchorCases: Array<{ name: string; meta: NonNullable<MainRuntimeMessage['meta']> }> =
+  [
+    { name: 'emergency omitted notice', meta: { contextEmergencyShrink: true } },
+    { name: 'post-compact state', meta: { postCompactState: true } },
+    {
+      name: 'compact summary',
+      meta: { compactSummary: { messagesSummarized: 2, recentMessagesPreserved: true } }
+    },
+    {
+      name: 'session memory compact',
+      meta: {
+        sessionMemoryCompact: {
+          status: 'injected',
+          entries: 1,
+          sourceKinds: ['memory'],
+          outputChars: 16,
+          truncated: false
+        }
+      }
+    },
+    {
+      name: 'streaming continuation',
+      meta: { streamingContinuation: { continuationIndex: 1 } }
+    }
+  ]
+
 describe('main runtime context compression preflight', () => {
   it('does not compact below Claude auto threshold', async () => {
     const messages = [
-      { ...message('user', 'small task'), usage: { inputTokens: 1_000, outputTokens: 0, contextTokens: 1_000 } }
+      {
+        ...message('user', 'small task'),
+        usage: { inputTokens: 1_000, outputTokens: 0, contextTokens: 1_000 }
+      }
     ]
 
     const result = await maybeCompactMainRuntimeContext({
@@ -57,7 +89,10 @@ describe('main runtime context compression preflight', () => {
       message('assistant', [toolUse('a')]),
       message('user', [toolResult('a', 'api_key=sk-secret')]),
       message('assistant', 'first result'),
-      { ...message('user', 'second task'), usage: { inputTokens: 180_000, outputTokens: 0, contextTokens: 180_000 } },
+      {
+        ...message('user', 'second task'),
+        usage: { inputTokens: 180_000, outputTokens: 0, contextTokens: 180_000 }
+      },
       message('assistant', [toolUse('b')]),
       message('user', [toolResult('b')]),
       message('assistant', 'second result')
@@ -93,7 +128,9 @@ describe('main runtime context compression preflight', () => {
       }
     ])
     const compressedEvent = result.events.find((event) => event.type === 'context_compressed')
-    expect(compressedEvent && 'messages' in compressedEvent ? compressedEvent.messages[0]?.meta : null).toMatchObject({
+    expect(
+      compressedEvent && 'messages' in compressedEvent ? compressedEvent.messages[0]?.meta : null
+    ).toMatchObject({
       compactBoundary: {
         strategy: 'claude-code-compact-v1',
         trigger: 'auto',
@@ -102,6 +139,174 @@ describe('main runtime context compression preflight', () => {
     })
     expect(JSON.stringify(summarize.mock.calls[0])).not.toContain('sk-secret')
   })
+
+  it('returns emergency-shrunk messages when successful compaction still leaves stale usage over budget', async () => {
+    nextMessageId = 0
+    const summarize = vi.fn(async () => '<summary>Continue after successful compact.</summary>')
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'old result')]),
+      message('assistant', 'old answer'),
+      {
+        ...message('user', 'continue current task'),
+        usage: { inputTokens: 1_500, outputTokens: 0, contextTokens: 1_500 }
+      },
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b', 'latest result')]),
+      message('assistant', 'latest answer')
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: tightConfig,
+      trigger: 'auto',
+      summarize,
+      now: () => 123,
+      createId: (() => {
+        let id = 0
+        return () => `main-emergency-after-compact-${++id}`
+      })()
+    })
+
+    expect(result.blocked).not.toBe(true)
+    expect(result.compressed).toBe(true)
+    expect(result.messages.some((item) => item.usage)).toBe(false)
+    expect(result.events).toEqual([
+      { type: 'context_compression_start' },
+      {
+        type: 'context_compressed',
+        originalCount: 8,
+        newCount: result.messages.length,
+        messages: result.messages
+      }
+    ])
+  })
+
+  it('keeps shrinking with the caller request estimator when compacted messages still overflow', async () => {
+    nextMessageId = 0
+    const summarize = vi.fn(async () => '<summary>Continue after estimator-aware shrink.</summary>')
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 1_000,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a', 'old result')]),
+      message('assistant', 'old answer'),
+      message('user', 'second task'),
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b', 'latest result')]),
+      message('assistant', 'latest answer')
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: tightConfig,
+      trigger: 'auto',
+      estimateTokens: (candidateMessages) => candidateMessages.length * 300,
+      summarize,
+      now: () => 123,
+      createId: (() => {
+        let id = 0
+        return () => `main-estimator-shrink-${++id}`
+      })()
+    })
+
+    expect(result.blocked).not.toBe(true)
+    expect(result.compressed).toBe(true)
+    expect(result.messages.length).toBeLessThanOrEqual(2)
+    expect(result.events).toEqual([
+      { type: 'context_compression_start' },
+      {
+        type: 'context_compressed',
+        originalCount: 8,
+        newCount: result.messages.length,
+        messages: result.messages
+      }
+    ])
+  })
+
+  it('keeps the current user task anchor when final estimator shrink must drop to one message', async () => {
+    nextMessageId = 0
+    const tightConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 700,
+      threshold: 0.8,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 200
+    }
+    const messages = [
+      message('user', 'current task anchor: continue the deploy fix'),
+      message('assistant', 'latest assistant answer that can be regenerated')
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: tightConfig,
+      trigger: 'auto',
+      estimateTokens: (candidateMessages) => candidateMessages.length * 300,
+      summarize: vi.fn()
+    })
+
+    expect(result.blocked).not.toBe(true)
+    expect(result.messages).toHaveLength(1)
+    expect(result.messages[0]).toMatchObject({
+      role: 'user',
+      content: 'current task anchor: continue the deploy fix'
+    })
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: 'context_compression_deferred',
+        blockingNextRequest: false,
+        messagesChanged: true
+      })
+    ])
+  })
+
+  it.each(syntheticAnchorCases)(
+    'blocks instead of treating $name as the current task anchor after final shrink',
+    async ({ meta }) => {
+      nextMessageId = 0
+      const tightConfig: MainRuntimeCompressionConfig = {
+        enabled: true,
+        contextLength: 700,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 200
+      }
+      const messages = [
+        {
+          ...message('user', 'synthetic context state'),
+          meta
+        },
+        message('assistant', 'assistant tail that can be dropped')
+      ]
+
+      const result = await maybeCompactMainRuntimeContext({
+        messages,
+        config: tightConfig,
+        trigger: 'auto',
+        estimateTokens: (candidateMessages) => (candidateMessages.length > 1 ? 1_000 : 100),
+        summarize: vi.fn()
+      })
+
+      expect(result.blocked).toBe(true)
+      expect(result.reason).toBe('hard_context_limit_exceeded')
+      expect(result.messages).toEqual(messages)
+    }
+  )
 
   it('uses the configured threshold when auto compacting before a main runtime request', async () => {
     nextMessageId = 0
@@ -112,13 +317,18 @@ describe('main runtime context compression preflight', () => {
       strategyId: 'claude-code-compact-v1',
       reservedOutputBudget: 20_000
     }
-    const summarize = vi.fn(async () => '<summary>Continue main runtime work after threshold compact.</summary>')
+    const summarize = vi.fn(
+      async () => '<summary>Continue main runtime work after threshold compact.</summary>'
+    )
     const messages = [
       message('user', 'first task'),
       message('assistant', [toolUse('a')]),
       message('user', [toolResult('a')]),
       message('assistant', 'first result'),
-      { ...message('user', 'second task'), usage: { inputTokens: 45_000, outputTokens: 0, contextTokens: 45_000 } },
+      {
+        ...message('user', 'second task'),
+        usage: { inputTokens: 45_000, outputTokens: 0, contextTokens: 45_000 }
+      },
       message('assistant', [toolUse('b')]),
       message('user', [toolResult('b')]),
       message('assistant', 'second result')
@@ -186,12 +396,21 @@ describe('main runtime context compression preflight', () => {
       tailStart: 4
     })
     expect(result.messages[0]?.meta?.compactBoundary?.preservedRange).toBeUndefined()
-    expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
+    expect(result.messages.slice(1).map((item) => item.id)).toEqual([
+      'm-1',
+      'main-partial-2',
+      'm-5',
+      'm-6',
+      'm-7'
+    ])
   })
 
   it('pre-compresses recent large tool result payloads without calling the model', () => {
     const large = 'x'.repeat(50_000)
-    const messages = [message('assistant', [toolUse('large')]), message('user', [toolResult('large', large)])]
+    const messages = [
+      message('assistant', [toolUse('large')]),
+      message('user', [toolResult('large', large)])
+    ]
 
     const result = preCompressMainRuntimeMessages(messages, config)
 
@@ -200,7 +419,7 @@ describe('main runtime context compression preflight', () => {
     expect(result.compactedCount).toBe(1)
   })
 
-  it('blocks when the preflight context remains above the hard context limit after compaction', async () => {
+  it('deterministically shrinks when preflight context remains above the hard context limit after compaction', async () => {
     const hugeConfig: MainRuntimeCompressionConfig = {
       enabled: true,
       contextLength: 1_000,
@@ -217,15 +436,22 @@ describe('main runtime context compression preflight', () => {
       summarize: vi.fn()
     })
 
-    expect(result.blocked).toBe(true)
-    expect(result.reason).toBe('hard_context_limit_exceeded')
+    expect(result.blocked).not.toBe(true)
     expect(result.compressed).toBe(false)
     expect(result.events).toEqual([
-      expect.objectContaining({ type: 'context_compression_blocked', reason: 'hard_context_limit_exceeded' })
+      expect.objectContaining({
+        type: 'context_compression_deferred',
+        reason: 'hard_context_limit_exceeded',
+        blockingNextRequest: false,
+        messagesChanged: true
+      })
     ])
+    expect(JSON.stringify(result.messages)).toContain(
+      '[User input externalized for context budget]'
+    )
   })
 
-  it('blocks when reserved output budget would overflow the next request', async () => {
+  it('strips stale usage when reserved output budget would otherwise overflow the next request', async () => {
     const tightConfig: MainRuntimeCompressionConfig = {
       enabled: true,
       contextLength: 1_000,
@@ -242,8 +468,20 @@ describe('main runtime context compression preflight', () => {
       summarize: vi.fn()
     })
 
-    expect(result.blocked).toBe(true)
-    expect(result.reason).toBe('reserved_output_budget_exceeded')
+    expect(result.blocked).not.toBe(true)
+    expect(result.compressed).toBe(false)
+    expect(String(result.messages[0]?.content)).toContain(
+      '[User input externalized for context budget]'
+    )
+    expect(result.messages[0]?.usage).toBeUndefined()
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        type: 'context_compression_deferred',
+        reason: 'reserved_output_budget_exceeded',
+        blockingNextRequest: false,
+        messagesChanged: true
+      })
+    ])
   })
 
   it('uses caller request token estimates when gating main runtime preflight', async () => {

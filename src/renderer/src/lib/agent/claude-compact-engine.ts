@@ -9,7 +9,7 @@ import type {
   ContextCompressionStrategy
 } from './context-compression'
 import {
-  getClaudeCompactBudget,
+  classifyClaudeContextGate,
   guardClaudeSingleInputPayload,
   runClaudeCompact,
   sanitizeMessagesForClaudeCompact,
@@ -35,12 +35,16 @@ function providerUsesGlobalPromptCacheKey(providerConfig: ProviderConfig): boole
 function isProviderPromptCacheEnabled(providerConfig: ProviderConfig): boolean {
   if (!providerSupportsPromptCache(providerConfig)) return false
   if (providerConfig.type === 'anthropic') {
-    return providerConfig.enablePromptCache !== false || providerConfig.enableSystemPromptCache !== false
+    return (
+      providerConfig.enablePromptCache !== false || providerConfig.enableSystemPromptCache !== false
+    )
   }
   return providerConfig.enablePromptCache !== false
 }
 
-function buildClaudePromptCacheConfig(providerConfig: ProviderConfig): ClaudeCompactPromptCacheConfig {
+function buildClaudePromptCacheConfig(
+  providerConfig: ProviderConfig
+): ClaudeCompactPromptCacheConfig {
   const providerSupportsCache = providerSupportsPromptCache(providerConfig)
   const enabled = isProviderPromptCacheEnabled(providerConfig)
   return {
@@ -94,14 +98,17 @@ async function callClaudeCompactSummarizer(args: {
 function shouldClaudeCompress(inputTokens: number, config: CompressionConfig): boolean {
   if (!config.enabled || config.contextLength <= 0) return false
   if (claudeCompactFailures >= MAX_CLAUDE_COMPACT_FAILURES) return false
-  return inputTokens >= getClaudeCompactBudget(config).autoCompactThreshold
+  const gate = classifyClaudeContextGate({ inputTokens, config })
+  return (
+    gate.kind === 'auto_compact' ||
+    gate.kind === 'reserved_output_exceeded' ||
+    gate.kind === 'hard_limit_exceeded'
+  )
 }
 
 function shouldClaudePreCompress(inputTokens: number, config: CompressionConfig): boolean {
   if (!config.enabled || config.contextLength <= 0) return false
-  const budget = getClaudeCompactBudget(config)
-  const threshold = Math.max(1, budget.autoCompactThreshold - 8_000)
-  return inputTokens >= threshold && inputTokens < budget.autoCompactThreshold
+  return classifyClaudeContextGate({ inputTokens, config }).kind === 'pre_compress'
 }
 
 function guardUserInputPayloadsForCompact(
@@ -113,7 +120,9 @@ function guardUserInputPayloadsForCompact(
   let changed = false
   let guardedCount = 0
   const nextMessages = messages.map((message) => {
-    const guarded = guardClaudeSingleInputPayload(message as unknown as ClaudeCompactMessage, { config })
+    const guarded = guardClaudeSingleInputPayload(message as unknown as ClaudeCompactMessage, {
+      config
+    })
     if (!guarded.changed || guarded.reason !== 'single_input_too_large') return message
 
     changed = true
@@ -171,7 +180,26 @@ async function claudeCompressMessages(
     now: Date.now
   })
 
+  const shouldCountCompactFailure =
+    compacted.result.reason === 'summarizer_failed' ||
+    compacted.result.reason === 'summarizer_prompt_too_long' ||
+    compacted.result.reason === 'unsafe_summary_output'
+
   if (guardedInput.changed) {
+    if (!compacted.result.compressed) {
+      if (shouldCountCompactFailure) {
+        claudeCompactFailures += 1
+      }
+      return {
+        messages,
+        result: {
+          ...compacted.result,
+          originalCount: messages.length,
+          newCount: messages.length
+        }
+      }
+    }
+
     compacted.result = {
       ...compacted.result,
       originalCount: messages.length,
@@ -181,13 +209,12 @@ async function claudeCompressMessages(
   }
 
   if (compacted.result.compressed) {
-    resetRendererPromptCacheBaseline(compacted.messages as unknown as UnifiedMessage[], providerConfig)
+    resetRendererPromptCacheBaseline(
+      compacted.messages as unknown as UnifiedMessage[],
+      providerConfig
+    )
     claudeCompactFailures = 0
-  } else if (
-    compacted.result.reason === 'summarizer_failed' ||
-    compacted.result.reason === 'summarizer_prompt_too_long' ||
-    compacted.result.reason === 'unsafe_summary_output'
-  ) {
+  } else if (shouldCountCompactFailure) {
     claudeCompactFailures += 1
   }
 
@@ -200,7 +227,9 @@ export function createClaudeCodeCompactStrategy(): ContextCompressionStrategy {
     shouldCompress: shouldClaudeCompress,
     shouldPreCompress: shouldClaudePreCompress,
     preCompressMessages: (messages) =>
-      sanitizeMessagesForClaudeCompact(messages as unknown as ClaudeCompactMessage[]) as unknown as UnifiedMessage[],
+      sanitizeMessagesForClaudeCompact(
+        messages as unknown as ClaudeCompactMessage[]
+      ) as unknown as UnifiedMessage[],
     compressMessages: claudeCompressMessages
   }
 }

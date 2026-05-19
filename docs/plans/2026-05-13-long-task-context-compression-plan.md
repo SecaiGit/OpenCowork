@@ -2110,3 +2110,34 @@ npm run dev
 - Type consistency: 使用现有 `UnifiedMessage`、`ContentBlock`、`ToolResultContent`、`CompressionConfig`、`AgentLoopConfig`，新增 `CompressionSkipReason`、`postCompactState` meta、state formatter/adapter 与后续调用保持一致。
 - Architecture review fixes: 已纳入子代理 review 的关键修正：纯 formatter 与 renderer adapter 分离、API round 保护 tool_use/tool_result 配对、PTL retry 基于 `baseMessages` 重新计算、长会话续聊验证覆盖窗口截断风险。
 - Scope check: sidecar/main runtime compression 被明确拆为后续独立计划，避免本次修复范围失控。
+
+---
+
+## 2026-05-19 调研记录：Context 超限恢复需求
+
+### 需求结论
+
+除“最新请求本体、系统提示、工具 schema 或 provider 固定包装本身已经超过模型窗口”这类物理上限外，普通历史消息、本地加载内容、工具输出、旧 usage 统计、摘要失败，都不应导致会话无法继续。
+
+需求上可以接受少量本地加载信息、旧工具输出或旧历史上下文丢失；不接受因为 context 无法压缩而阻断继续对话。
+
+### 已落地的约束
+
+- 手动压缩失败时，不写回为压缩临时 externalize 的用户输入。
+- Renderer Claude strategy 使用 shared context gate，阈值与 main/shared 逻辑一致。
+- 发送前 hard limit / reserved output gate 阻塞前，先执行 deterministic emergency shrink。
+- Emergency shrink 会压缩工具 payload、外置化超大文本、清理 stale usage，并在必要时丢弃最旧 API round。
+- 工具修复逻辑保留 tool_use/tool_result 协议结构，不再把相邻工具输出拆成可渲染的用户输入气泡。
+
+### 仍需跟进
+
+- Provider 已返回 `context length`、`prompt too long`、`too many tokens`、`413` 等超限错误时，当前仍缺少“识别错误 -> emergency shrink/compact -> 自动重试一次”的闭环。
+- 最新活跃工具回合的协议结构不能破坏，但其 payload 必须强制有界；后续应把“当前 tool_result replay 永不无界”作为显式不变量。
+- 固定开销超限需要单独诊断：当 system prompt、tool schema、provider 包装开销本身超过可用窗口时，应返回明确错误，而不是归因到历史 context 压缩失败。
+
+### 后续实现建议
+
+1. 在 renderer `runAgentLoop` provider send catch 中识别 provider context overflow，且仅在尚未产生流式内容时触发自动恢复。
+2. 恢复路径优先运行 emergency shrink；若仍超限，再按可压缩历史执行一次 compact 或旧 round 丢弃。
+3. 增加单元测试：provider 第一次返回 context overflow，第二次使用 shrink 后消息成功继续。
+4. 增加固定开销测试：当工具 schema 或请求包装估算本身超过窗口时，返回专用错误类型。
