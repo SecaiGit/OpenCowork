@@ -36,6 +36,7 @@ import {
 } from '@renderer/lib/format-tokens'
 import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { useChatActions } from '@renderer/hooks/use-chat-actions'
+import type { UnifiedMessage } from '@renderer/lib/api/types'
 import { GoalPanelCard } from '@renderer/components/goal/GoalSessionControls'
 import {
   getCompressionTriggerTokens,
@@ -45,6 +46,16 @@ import {
   resolveCompressionReservedOutputBudget,
   resolveCompressionThreshold
 } from '@renderer/lib/agent/context-compression'
+import {
+  isCompactSummaryContextMessage,
+  isGeneratedContextUserMessage,
+  isUserAuthoredMessage
+} from '@renderer/lib/agent/context-message-classification'
+
+function isVisibleSessionMessage(message: UnifiedMessage): boolean {
+  if (message.role === 'system') return false
+  return !isGeneratedContextUserMessage(message) || isCompactSummaryContextMessage(message)
+}
 
 export function ContextPanel(): React.JSX.Element {
   const { t } = useTranslation('cowork')
@@ -271,11 +282,11 @@ export function ContextPanel(): React.JSX.Element {
               <div className="flex items-center gap-2 text-muted-foreground">
                 <MessageSquare className="size-3 shrink-0" />
                 <span>
-                  {activeSession.messages.filter((m) => m.role !== 'system').length}{' '}
+                  {activeSession.messages.filter(isVisibleSessionMessage).length}{' '}
                   {tCommon('unit.messages')}
                   <span className="text-muted-foreground/50">
                     {' '}
-                    ({activeSession.messages.filter((m) => m.role === 'user').length}{' '}
+                    ({activeSession.messages.filter(isUserAuthoredMessage).length}{' '}
                     {tCommon('unit.turns')})
                   </span>
                 </span>

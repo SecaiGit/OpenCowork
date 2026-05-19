@@ -581,6 +581,85 @@ describe('legacy compact summary extraction safety', () => {
     expect(JSON.stringify(result.messages)).toContain('Fresh post compact state')
     expect(JSON.stringify(result.messages)).not.toContain('stale post compact state')
   })
+
+  it.each([
+    {
+      name: 'post compact state',
+      content: 'Generated working state from compaction',
+      meta: { postCompactState: true as const }
+    },
+    {
+      name: 'emergency shrink notice',
+      content: 'Generated emergency notice',
+      meta: { contextEmergencyShrink: true }
+    },
+    {
+      name: 'compact summary',
+      content: 'Generated compact summary',
+      meta: { compactSummary: { messagesSummarized: 4, recentMessagesPreserved: true } }
+    },
+    {
+      name: 'session memory compact',
+      content: 'Generated session memory',
+      meta: {
+        sessionMemoryCompact: {
+          status: 'injected',
+          entries: 1,
+          sourceKinds: ['memory'],
+          outputChars: 16,
+          truncated: false
+        }
+      }
+    },
+    {
+      name: 'streaming continuation',
+      content: 'Generated streaming continuation',
+      meta: { streamingContinuation: { continuationIndex: 1 } }
+    },
+    {
+      name: 'legacy English compact summary',
+      content: '[Context Memory Compressed Summary]\n\nGenerated compact summary'
+    },
+    {
+      name: 'legacy Chinese compact summary',
+      content: '[\u4e0a\u4e0b\u6587\u8bb0\u5fc6\u538b\u7f29\u6458\u8981]\n\nGenerated compact summary'
+    }
+  ])('does not use generated $name as the original task when compacting again', async ({ content, meta }) => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Older compacted work was summarized.</summary>'
+    )
+    const generatedContext = {
+      ...message('user', content),
+      ...(meta ? { meta } : {})
+    }
+    const messages = [
+      generatedContext,
+      message('assistant', 'state acknowledged'),
+      message('user', 'actual user task'),
+      message('assistant', 'tail result')
+    ]
+
+    await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      1,
+      undefined,
+      undefined,
+      'manual',
+      100,
+      { strategyId: 'partial-summary-v1' }
+    )
+
+    const prompt = String(
+      vi.mocked(runSidecarTextRequest).mock.calls[0]?.[0].messages[0]?.content ?? ''
+    )
+    const originalTaskSection = prompt.match(/## Original Task\n\n([\s\S]*?)\n\n## /)?.[1] ?? ''
+
+    expect(originalTaskSection).toBe('actual user task')
+    expect(prompt).toContain(`[GENERATED_CONTEXT]: ${content}`)
+    expect(prompt).not.toContain(`[USER]: ${content}`)
+  })
 })
 
 describe('claude-code-compact-v1 engine', () => {

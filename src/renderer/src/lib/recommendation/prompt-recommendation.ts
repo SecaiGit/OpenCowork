@@ -11,6 +11,7 @@ import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { runSidecarTextRequest } from '@renderer/lib/ipc/agent-bridge'
 import { RESPONSES_SESSION_SCOPE_PROMPT_RECOMMENDATION } from '@renderer/lib/api/responses-session-policy'
 import type { ContentBlock, ProviderConfig, UnifiedMessage } from '@renderer/lib/api/types'
+import { isUserAuthoredMessage } from '@renderer/lib/agent/context-message-classification'
 import { useSettingsStore } from '@renderer/stores/settings-store'
 import { useChatStore } from '@renderer/stores/chat-store'
 import { modelSupportsVision, useProviderStore } from '@renderer/stores/provider-store'
@@ -70,13 +71,13 @@ function clipText(value: string, maxLength = 1200): string {
   return `${trimmed.slice(0, maxLength)}…`
 }
 
-function collectRecentConversation(
+export function collectRecentRecommendationConversation(
   messages: UnifiedMessage[]
 ): Array<{ role: 'user' | 'assistant'; text: string }> {
   return messages
     .filter(
       (message): message is UnifiedMessage & { role: 'user' | 'assistant' } =>
-        message.role === 'user' || message.role === 'assistant'
+        message.role === 'assistant' || isUserAuthoredMessage(message)
     )
     .map((message) => ({
       role: message.role,
@@ -166,7 +167,7 @@ function buildSystemPrompt(language: 'zh' | 'en', hasDraft: boolean): string {
 }
 
 function buildUserPrompt(context: PromptRecommendationContext, agentsContent?: string): string {
-  const recentConversation = collectRecentConversation(context.recentMessages)
+  const recentConversation = collectRecentRecommendationConversation(context.recentMessages)
   const recentConversationText = recentConversation.length
     ? recentConversation
         .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.text}`)
@@ -308,7 +309,7 @@ export async function requestPromptRecommendation(
 }
 
 export function getRecentConversationFingerprint(messages: UnifiedMessage[]): string {
-  return collectRecentConversation(messages)
+  return collectRecentRecommendationConversation(messages)
     .map((message) => `${message.role}:${message.text}`)
     .join('\n---\n')
 }

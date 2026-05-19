@@ -74,6 +74,30 @@ const syntheticUserMetaCases: Array<{
   }
 ]
 
+const legacySyntheticUserContentCases = [
+  {
+    name: 'legacy English compact summary',
+    content: '[Context Memory Compressed Summary]\n\nEarlier generated summary'
+  },
+  {
+    name: 'legacy Chinese compact summary',
+    content: '[\u4e0a\u4e0b\u6587\u8bb0\u5fc6\u538b\u7f29\u6458\u8981]\n\nEarlier generated summary'
+  }
+]
+
+const generatedContextUserCases: Array<{
+  name: string
+  content: string
+  meta?: NonNullable<ClaudeCompactMessage['meta']>
+}> = [
+  ...syntheticUserMetaCases.map(({ name, meta }) => ({
+    name,
+    content: `generated ${name}`,
+    meta
+  })),
+  ...legacySyntheticUserContentCases
+]
+
 describe('shared Claude compact core', () => {
   describe('shared tool protocol validation', () => {
     it('rejects duplicate tool_use ids and tool blocks on invalid roles', () => {
@@ -799,6 +823,34 @@ describe('shared Claude compact core', () => {
           ...message('user', 'synthetic context state'),
           meta
         }
+        const messages = [
+          currentTask,
+          message('assistant', [toolUse('old-read')]),
+          message('user', [toolResult('old-read', 'old file snapshot')]),
+          message('assistant', 'old read finished'),
+          synthetic,
+          message('assistant', [toolUse('latest-edit')]),
+          message('user', [toolResult('latest-edit', 'latest edit result')]),
+          message('assistant', 'continue with tests')
+        ]
+
+        const selection = selectClaudePartialCompactRanges(messages, {
+          minCompressibleMessages: 2,
+          preservedTailMessages: 3
+        })
+
+        expect(selection.ok).toBe(true)
+        expect(selection.anchorMessage?.id).toBe(currentTask.id)
+        expect(selection.partialRange?.anchor).toBe(0)
+      }
+    )
+
+    it.each(legacySyntheticUserContentCases)(
+      'ignores $name when selecting the current task anchor',
+      ({ content }) => {
+        nextMessageId = 0
+        const currentTask = message('user', 'current task: implement the feature')
+        const synthetic = message('user', content)
         const messages = [
           currentTask,
           message('assistant', [toolUse('old-read')]),
@@ -1994,6 +2046,61 @@ describe('shared Claude compact core', () => {
     expect(result.messages.slice(3).map((item) => item.id)).toEqual(['m-5', 'm-6', 'm-7', 'm-8'])
     expect(JSON.stringify(summarizer.mock.calls[0])).not.toContain('sk-tool-secret')
   })
+
+  it.each(generatedContextUserCases)(
+    'labels $name as generated context in shared compact history',
+    async ({ content, meta }) => {
+      nextMessageId = 0
+      const summarize = vi.fn(
+        async (_args: { systemPrompt: string; userPrompt: string; signal?: AbortSignal }) =>
+          '<summary>Continue actual work.</summary>'
+      )
+      const generatedContext = {
+        ...message('user', content),
+        ...(meta ? { meta } : {})
+      }
+      const messages = [
+        generatedContext,
+        message('assistant', 'generated context acknowledged'),
+        message('user', 'older real user task'),
+        message('assistant', 'older real result'),
+        message('user', 'actual user task'),
+        message('assistant', 'tail result')
+      ]
+
+      const result = await runClaudeCompact({
+        messages,
+        trigger: 'manual',
+        preTokens: 180_000,
+        config: {
+          enabled: true,
+          contextLength: 200_000,
+          threshold: 0.8,
+          strategyId: 'claude-code-compact-v1',
+          reservedOutputBudget: 20_000
+        },
+        summarize,
+        now: () => 123,
+        createId: (() => {
+          let id = 0
+          return () => `compact-${++id}`
+        })()
+      })
+
+      const prompt = String(summarize.mock.calls[0]?.[0].userPrompt ?? '')
+      const filteredControlMessage =
+        meta?.postCompactState === true ||
+        (meta?.streamingContinuation != null && typeof meta.streamingContinuation === 'object')
+
+      expect(result.result.compressed).toBe(true)
+      if (filteredControlMessage) {
+        expect(prompt).not.toContain(content)
+      } else {
+        expect(prompt).toContain(`[GENERATED_CONTEXT]: ${content}`)
+      }
+      expect(prompt).not.toContain(`[USER]: ${content}`)
+    }
+  )
 
   describe('shared Claude recent payload fallback', () => {
     it('dehydrates recent payloads when no historical API round can be summarized', async () => {

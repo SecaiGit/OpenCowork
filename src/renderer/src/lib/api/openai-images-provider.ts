@@ -18,6 +18,7 @@ import {
 import { registerProvider } from './provider'
 import { ipcClient } from '../ipc/ipc-client'
 import { IPC } from '../ipc/channels'
+import { isUserAuthoredMessage } from '../agent/context-message-classification'
 
 function normalizeImageProviderError(error: unknown): { code: ImageErrorCode; message: string } {
   if (error instanceof OpenAIImagesRequestError) {
@@ -83,6 +84,12 @@ async function persistGeneratedImage(image: GeneratedImage): Promise<ImageBlock>
   }
 }
 
+export function findOpenAIImagesPromptMessage(
+  messages: UnifiedMessage[]
+): UnifiedMessage | undefined {
+  return [...messages].reverse().find((message) => isUserAuthoredMessage(message))
+}
+
 class OpenAIImagesProvider implements APIProvider {
   readonly name = 'OpenAI Images'
   readonly type = 'openai-images' as const
@@ -104,8 +111,8 @@ class OpenAIImagesProvider implements APIProvider {
     try {
       yield { type: 'message_start' }
 
-      // Extract the last user message
-      const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user')
+      // Extract the latest user-authored message, ignoring generated compression context.
+      const lastUserMessage = findOpenAIImagesPromptMessage(messages)
       if (!lastUserMessage) {
         throw new Error('No user message found')
       }

@@ -12,6 +12,7 @@ import { ipcStreamRequest, maskHeaders } from '../ipc/api-stream'
 import { ipcClient } from '../ipc/ipc-client'
 import { IPC } from '../ipc/channels'
 import { registerProvider } from './provider'
+import { isUserAuthoredMessage } from '../agent/context-message-classification'
 
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000
 const DEFAULT_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
@@ -301,16 +302,23 @@ function buildApiUrl(
   return `${root}/models/${encodeURIComponent(model)}:${action}`
 }
 
-function isImageModelRequest(messages: UnifiedMessage[], config: ProviderConfig): boolean {
+export function isGeminiImageModelRequest(
+  messages: UnifiedMessage[],
+  config: ProviderConfig
+): boolean {
   const modality = config.requestOverrides?.body?.responseModalities
   if (Array.isArray(modality) && modality.includes('IMAGE')) return true
   if (config.category === 'image') return true
   if (/image/i.test(config.model)) return true
 
-  const latestUserMessage = [...messages].reverse().find((message) => message.role === 'user')
+  const latestUserMessage = [...messages].reverse().find((message) => isUserAuthoredMessage(message))
   if (!latestUserMessage || typeof latestUserMessage.content === 'string') return false
 
   return latestUserMessage.content.some((block) => block.type === 'image')
+}
+
+function isImageModelRequest(messages: UnifiedMessage[], config: ProviderConfig): boolean {
+  return isGeminiImageModelRequest(messages, config)
 }
 
 function extractInlineData(part: GeminiPart): GeminiInlineData | undefined {

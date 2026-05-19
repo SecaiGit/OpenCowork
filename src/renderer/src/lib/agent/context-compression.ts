@@ -24,11 +24,24 @@ import {
 import { createClaudeCodeCompactStrategy } from './claude-compact-engine'
 import { extractClaudeCompactSummary } from './claude-compact-prompt'
 import {
+  isGeneratedContextUserMessage,
+  isLegacyCompactSummaryContent,
+  isUserAuthoredMessage
+} from './context-message-classification'
+import {
   groupMessagesByApiRound,
   redactTextForModelContext,
   repairToolUseResultProtocolForReplay,
   validateToolUseResultProtocol
 } from './context-budget'
+
+export {
+  isCompactSummaryContextMessage,
+  isGeneratedContextMessageMeta,
+  isGeneratedContextUserMessage,
+  isLegacyCompactSummaryContent,
+  isUserAuthoredMessage
+} from './context-message-classification'
 
 export {
   DEFAULT_CONTEXT_COMPRESSION_CONTEXT_LENGTH,
@@ -281,7 +294,7 @@ const SERIALIZED_TOOL_RESULT_LIMIT = 800
 const BASE_RETRY_DELAY_MS = 1_500
 const LEGACY_SUMMARY_PREFIXES = [
   '[Context Memory Compressed Summary]',
-  '[Context Memory Compressed Summary]',
+  '[\u4e0a\u4e0b\u6587\u8bb0\u5fc6\u538b\u7f29\u6458\u8981]',
   '[Context Memory Compressed Summary'
 ]
 
@@ -431,9 +444,7 @@ export function isCompactSummaryMessage(message: UnifiedMessage): boolean {
 }
 
 export function isLegacyCompactSummaryMessage(message: UnifiedMessage): boolean {
-  if (message.role !== 'user' || typeof message.content !== 'string') return false
-  const content = message.content.trim()
-  return LEGACY_SUMMARY_PREFIXES.some((prefix) => content.startsWith(prefix))
+  return message.role === 'user' && isLegacyCompactSummaryContent(message.content)
 }
 
 export function isCompactSummaryLikeMessage(message: UnifiedMessage): boolean {
@@ -1103,9 +1114,7 @@ function serializeMessageContent(content: ContentBlock[]): string {
 
 function findOriginalTaskMessage(messages: UnifiedMessage[]): UnifiedMessage | null {
   for (const message of messages) {
-    if (message.role !== 'user') continue
-    if (message.source === 'team') continue
-    if (isCompactSummaryLikeMessage(message)) continue
+    if (!isUserAuthoredMessage(message)) continue
 
     if (Array.isArray(message.content)) {
       const hasHumanContent = message.content.some(
@@ -1120,11 +1129,16 @@ function findOriginalTaskMessage(messages: UnifiedMessage[]): UnifiedMessage | n
   return null
 }
 
+function getSerializedHistoryRole(message: UnifiedMessage): string {
+  if (isGeneratedContextUserMessage(message)) return 'GENERATED_CONTEXT'
+  return message.role.toUpperCase()
+}
+
 function serializeMessages(messages: UnifiedMessage[]): string {
   const parts: string[] = []
 
   for (const message of messages) {
-    const role = message.role.toUpperCase()
+    const role = getSerializedHistoryRole(message)
 
     if (typeof message.content === 'string') {
       if (message.content.trim()) {

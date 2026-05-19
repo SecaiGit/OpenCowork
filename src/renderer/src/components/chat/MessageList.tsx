@@ -28,6 +28,7 @@ import type { RequestRetryState } from '@renderer/lib/agent/types'
 import { isStreamingPerfEnabled, recordStreamingReactCommit } from '@renderer/lib/streaming-perf'
 import { ipcClient } from '@renderer/lib/ipc/ipc-client'
 import { selectSessionScopedAgentState } from '@renderer/lib/agent/session-scoped-agent-state'
+import { isUserAuthoredMessage } from '@renderer/lib/agent/context-compression'
 
 const modeHints = {
   chat: {
@@ -497,7 +498,16 @@ function buildUserLocatorItem(
   messageCount: number,
   t: TFunction
 ): UserMessageLocatorItem | null {
-  if (source.source === 'team' || source.meta?.compactSummary) return null
+  if (
+    !isUserAuthoredMessage({
+      role: 'user',
+      content: source.content,
+      meta: source.meta,
+      source: source.source
+    })
+  ) {
+    return null
+  }
 
   const textPreview = truncateLocatorPreview(
     normalizeLocatorPreview(getUserMessageText(source.content))

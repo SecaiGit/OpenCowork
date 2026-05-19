@@ -1,4 +1,5 @@
 import type { ClaudeCompactContentBlock, ClaudeCompactMessage } from './types'
+import { hasUserAuthoredClaudeMessageContent } from './synthetic-context'
 
 export interface ApiRoundGroup {
   start: number
@@ -343,21 +344,8 @@ function hasFatalProtocolIssue(issues: ToolUseResultProtocolIssue[]): boolean {
   return issues.some((issue) => issue.kind !== 'unanswered_tool_use')
 }
 
-function isSyntheticUserContextMessage(message: ClaudeCompactMessage): boolean {
-  return (
-    message.meta?.contextEmergencyShrink === true ||
-    message.meta?.postCompactState === true ||
-    !!message.meta?.compactSummary ||
-    !!message.meta?.sessionMemoryCompact ||
-    typeof message.meta?.streamingContinuation === 'object'
-  )
-}
-
 function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
-  if (message.role !== 'user') return false
-  if (isSyntheticUserContextMessage(message)) return false
-  if (typeof message.content === 'string') return message.content.trim().length > 0
-  return message.content.some((block) => block.type !== 'tool_result')
+  return hasUserAuthoredClaudeMessageContent(message)
 }
 
 function findCurrentTaskAnchorIndex(messages: ClaudeCompactMessage[]): number {

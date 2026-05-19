@@ -102,6 +102,7 @@ import {
   compressMessages,
   formatCompressionDiagnosticText,
   isCompactSummaryLikeMessage,
+  isUserAuthoredMessage,
   mergeCompressedMessagesIntoConversation,
   resolveCompressionContextLength,
   resolveCompressionReservedOutputBudget,
@@ -1382,10 +1383,14 @@ function messageContainsImage(message: UnifiedMessage): boolean {
 function latestUserMessageContainsImage(messages: UnifiedMessage[]): boolean {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message?.role !== 'user') continue
+    if (!message || !isUserAuthoredMessage(message)) continue
     return messageContainsImage(message)
   }
   return false
+}
+
+function findLastUserAuthoredMessageIndex(messages: UnifiedMessage[]): number {
+  return messages.findLastIndex((message) => isUserAuthoredMessage(message))
 }
 
 function notifyPendingSessionMessageListeners(): void {
@@ -3854,7 +3859,7 @@ export function useChatActions(): {
 
               if (runtimeReminder) {
                 // Find the last user message and prepend the runtime reminder to its content
-                const lastUserIndex = messagesToSend.findLastIndex((m) => m.role === 'user')
+                const lastUserIndex = findLastUserAuthoredMessageIndex(messagesToSend)
                 if (lastUserIndex >= 0) {
                   const lastUserMsg = messagesToSend[lastUserIndex]
                   const contextBlock = { type: 'text' as const, text: runtimeReminder }
@@ -3908,7 +3913,7 @@ export function useChatActions(): {
                   }
                 ]
               } else {
-                const lastUserIndex = messagesToSend.findLastIndex((m) => m.role === 'user')
+                const lastUserIndex = findLastUserAuthoredMessageIndex(messagesToSend)
                 if (lastUserIndex >= 0) {
                   const lastUserMsg = messagesToSend[lastUserIndex]
                   const newContent =
@@ -3925,9 +3930,7 @@ export function useChatActions(): {
             }
 
             if (pendingPlanRevisionContext && source !== 'continue' && messagesToSend.length > 0) {
-              const lastUserIndex = messagesToSend.findLastIndex(
-                (message) => message.role === 'user'
-              )
+              const lastUserIndex = findLastUserAuthoredMessageIndex(messagesToSend)
               if (lastUserIndex >= 0) {
                 const lastUserMsg = messagesToSend[lastUserIndex]
                 const revisionPrompt = buildPlanRevisionPrompt(

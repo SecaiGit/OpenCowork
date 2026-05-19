@@ -7,7 +7,12 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { runInteractiveAgentLoop } from '../cron-agent-background'
+import {
+  findOriginalContextTaskMessage,
+  runInteractiveAgentLoop,
+  serializeContextCompressionInput,
+  type UnifiedMessage
+} from '../cron-agent-background'
 
 function baseMessages(): Parameters<typeof runInteractiveAgentLoop>[0] {
   return [
@@ -35,6 +40,76 @@ function compressionConfig(): NonNullable<
 }
 
 describe('main interactive agent loop request estimator', () => {
+  it.each([
+    {
+      name: 'emergency omitted notice',
+      content: 'Generated emergency notice',
+      meta: { contextEmergencyShrink: true }
+    },
+    {
+      name: 'post-compact state',
+      content: 'Generated working state',
+      meta: { postCompactState: true }
+    },
+    {
+      name: 'compact summary',
+      content: 'Generated compact summary',
+      meta: { compactSummary: { messagesSummarized: 2, recentMessagesPreserved: true } }
+    },
+    {
+      name: 'session memory compact',
+      content: 'Generated session memory',
+      meta: {
+        sessionMemoryCompact: {
+          status: 'injected',
+          entries: 1,
+          sourceKinds: ['memory'],
+          outputChars: 16,
+          truncated: false
+        }
+      }
+    },
+    {
+      name: 'streaming continuation',
+      content: 'Generated streaming continuation',
+      meta: { streamingContinuation: { continuationIndex: 1 } }
+    },
+    {
+      name: 'legacy English compact summary',
+      content: '[Context Memory Compressed Summary]\n\nGenerated summary'
+    },
+    {
+      name: 'legacy Chinese compact summary',
+      content: '[\u4e0a\u4e0b\u6587\u8bb0\u5fc6\u538b\u7f29\u6458\u8981]\n\nGenerated summary'
+    }
+  ])('labels $name separately in legacy main compression input', ({ content, meta }) => {
+    const generatedContext: UnifiedMessage = {
+      id: 'm-generated',
+      role: 'user',
+      content,
+      createdAt: 1,
+      ...(meta ? { meta } : {})
+    }
+    const realUser: UnifiedMessage = {
+      id: 'm-user',
+      role: 'user',
+      content: 'actual user task',
+      createdAt: 2
+    }
+    const messages = [generatedContext, realUser]
+    const originalTaskMessage = findOriginalContextTaskMessage(messages)
+
+    const serialized = serializeContextCompressionInput(
+      messages,
+      originalTaskMessage?.content
+    )
+
+    expect(originalTaskMessage?.id).toBe('m-user')
+    expect(serialized).toContain('## Original Task\n\nactual user task')
+    expect(serialized).toContain(`[GENERATED_CONTEXT]: ${content}`)
+    expect(serialized).not.toContain(`[USER]: ${content}`)
+  })
+
   it('counts OpenAI Chat requestOverrides.body when gating the next provider request', async () => {
     const abortController = new AbortController()
     const events: Array<{ type?: string; errorType?: string; reason?: string; error?: Error }> = []

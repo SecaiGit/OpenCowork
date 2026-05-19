@@ -9,7 +9,10 @@ import type { UnifiedMessage, ToolResultContent } from '@renderer/lib/api/types'
 import type { RequestRetryState, ToolCallState } from '@renderer/lib/agent/types'
 import type { EditableUserMessageDraft } from '@renderer/lib/image-attachments'
 import type { OrchestrationRun } from '@renderer/lib/orchestration/types'
-import { isCompactSummaryLikeMessage } from '@renderer/lib/agent/context-compression'
+import {
+  isCompactSummaryLikeMessage,
+  isGeneratedContextUserMessage
+} from '@renderer/lib/agent/context-compression'
 import {
   MARKDOWN_REHYPE_PLUGINS,
   MARKDOWN_REMARK_PLUGINS
@@ -120,6 +123,9 @@ function MessageItemInner({
       case 'user': {
         if (isCompactSummaryLikeMessage(message)) {
           return <ContextCompressionMessage message={message} />
+        }
+        if (isGeneratedContextUserMessage(message)) {
+          return null
         }
         if (message.source === 'team') {
           return (

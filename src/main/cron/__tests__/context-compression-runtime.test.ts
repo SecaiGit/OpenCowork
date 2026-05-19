@@ -59,6 +59,17 @@ const syntheticAnchorCases: Array<{ name: string; meta: NonNullable<MainRuntimeM
     }
   ]
 
+const legacySyntheticAnchorCases = [
+  {
+    name: 'legacy English compact summary',
+    content: '[Context Memory Compressed Summary]\n\nGenerated summary'
+  },
+  {
+    name: 'legacy Chinese compact summary',
+    content: '[\u4e0a\u4e0b\u6587\u8bb0\u5fc6\u538b\u7f29\u6458\u8981]\n\nGenerated summary'
+  }
+]
+
 describe('main runtime context compression preflight', () => {
   it('does not compact below Claude auto threshold', async () => {
     const messages = [
@@ -291,6 +302,36 @@ describe('main runtime context compression preflight', () => {
           ...message('user', 'synthetic context state'),
           meta
         },
+        message('assistant', 'assistant tail that can be dropped')
+      ]
+
+      const result = await maybeCompactMainRuntimeContext({
+        messages,
+        config: tightConfig,
+        trigger: 'auto',
+        estimateTokens: (candidateMessages) => (candidateMessages.length > 1 ? 1_000 : 100),
+        summarize: vi.fn()
+      })
+
+      expect(result.blocked).toBe(true)
+      expect(result.reason).toBe('hard_context_limit_exceeded')
+      expect(result.messages).toEqual(messages)
+    }
+  )
+
+  it.each(legacySyntheticAnchorCases)(
+    'blocks instead of treating $name as the current task anchor after final shrink',
+    async ({ content }) => {
+      nextMessageId = 0
+      const tightConfig: MainRuntimeCompressionConfig = {
+        enabled: true,
+        contextLength: 700,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 200
+      }
+      const messages = [
+        message('user', content),
         message('assistant', 'assistant tail that can be dropped')
       ]
 

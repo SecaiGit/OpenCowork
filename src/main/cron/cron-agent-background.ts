@@ -42,6 +42,8 @@ import {
 import {
   classifyClaudeContextGate,
   emergencyShrinkClaudeContextMessages,
+  hasUserAuthoredClaudeMessageContent,
+  isGeneratedClaudeContextUserMessage,
   type ClaudeCompactMessage
 } from '../../shared/claude-context-compression'
 import { ResponsesWebSocketSessionManager } from '../lib/responses-websocket-session-manager'
@@ -234,7 +236,7 @@ type ImageBlock = {
 type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock | ImageBlock
 export type ToolResultContent = AgentToolResultContent
 
-interface UnifiedMessage {
+export interface UnifiedMessage {
   id: string
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | ContentBlock[]
@@ -4214,17 +4216,17 @@ function extractContextMessageText(message?: UnifiedMessage | null): string {
   return serializeContextContent(message.content).trim()
 }
 
-function isContextSummaryLikeMessage(message: UnifiedMessage): boolean {
-  if (message.meta?.compactSummary) return true
-  if (message.role !== 'user' || typeof message.content !== 'string') return false
-  return message.content.trim().startsWith('[Context Memory Compressed Summary')
+function isGeneratedContextUserMessage(message: UnifiedMessage): boolean {
+  return isGeneratedClaudeContextUserMessage(message)
 }
 
-function findOriginalContextTaskMessage(messages: UnifiedMessage[]): UnifiedMessage | null {
+function isUserAuthoredContextMessage(message: UnifiedMessage): boolean {
+  return hasUserAuthoredClaudeMessageContent(message)
+}
+
+export function findOriginalContextTaskMessage(messages: UnifiedMessage[]): UnifiedMessage | null {
   for (const message of messages) {
-    if (message.role !== 'user') continue
-    if (message.source === 'team') continue
-    if (isContextSummaryLikeMessage(message)) continue
+    if (!isUserAuthoredContextMessage(message)) continue
 
     if (Array.isArray(message.content)) {
       const hasHumanContent = message.content.some(
@@ -4239,11 +4241,16 @@ function findOriginalContextTaskMessage(messages: UnifiedMessage[]): UnifiedMess
   return null
 }
 
+function getContextCompressionHistoryRole(message: UnifiedMessage): string {
+  if (isGeneratedContextUserMessage(message)) return 'GENERATED_CONTEXT'
+  return message.role.toUpperCase()
+}
+
 function serializeContextMessages(messages: UnifiedMessage[]): string {
   const parts: string[] = []
 
   for (const message of messages) {
-    const role = message.role.toUpperCase()
+    const role = getContextCompressionHistoryRole(message)
     const content = extractContextMessageText(message)
     if (content) {
       parts.push(`[${role}]: ${content}`)
@@ -4253,7 +4260,7 @@ function serializeContextMessages(messages: UnifiedMessage[]): string {
   return parts.join('\n\n')
 }
 
-function serializeContextCompressionInput(
+export function serializeContextCompressionInput(
   messages: UnifiedMessage[],
   originalTaskContent?: UnifiedMessage['content']
 ): string {

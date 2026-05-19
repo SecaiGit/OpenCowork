@@ -1,6 +1,7 @@
 import { getClaudeCompactBudget } from './budget'
 import { dehydrateClaudeCompactPayloads } from './payload'
 import { dropOldestClaudeCompactRounds, validateToolUseResultProtocol } from './rounds'
+import { hasUserAuthoredClaudeMessageContent } from './synthetic-context'
 import { guardClaudeAssistantFinalizePayload, guardClaudeSingleInputPayload } from './text-guards'
 import type { ClaudeCompactConfig, ClaudeCompactContentBlock, ClaudeCompactMessage } from './types'
 
@@ -121,21 +122,8 @@ function withoutPreviousEmergencyNotice(messages: ClaudeCompactMessage[]): Claud
   return messages.filter((message) => message.meta?.contextEmergencyShrink !== true)
 }
 
-function isSyntheticUserContextMessage(message: ClaudeCompactMessage): boolean {
-  return (
-    message.meta?.contextEmergencyShrink === true ||
-    message.meta?.postCompactState === true ||
-    !!message.meta?.compactSummary ||
-    !!message.meta?.sessionMemoryCompact ||
-    typeof message.meta?.streamingContinuation === 'object'
-  )
-}
-
 function hasRealNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
-  if (message.role !== 'user') return false
-  if (isSyntheticUserContextMessage(message)) return false
-  if (typeof message.content === 'string') return message.content.trim().length > 0
-  return message.content.some((block) => block.type !== 'tool_result')
+  return hasUserAuthoredClaudeMessageContent(message)
 }
 
 function hasRealContinuityAnchor(messages: ClaudeCompactMessage[]): boolean {

@@ -27,6 +27,10 @@ import {
   summarizeToolInputForHistory,
   sanitizeMessagesForToolReplay
 } from '../lib/tools/tool-input-sanitizer'
+import {
+  isGeneratedContextUserMessage,
+  isUserAuthoredMessage
+} from '../lib/agent/context-message-classification'
 
 export type SessionMode = 'chat' | 'clarify' | 'cowork' | 'code' | 'acp'
 
@@ -2731,6 +2735,7 @@ export const useChatStore = create<ChatStore>()(
           assistantIdx = i
           break
         }
+        if (isGeneratedContextUserMessage(m)) continue
         // Skip tool_result-only user messages (they are API-level, not real user input)
         if (
           m.role === 'user' &&
@@ -2761,10 +2766,11 @@ export const useChatStore = create<ChatStore>()(
       const session = get().sessions.find((s) => s.id === sessionId)
       if (!session || session.messages.length === 0) return
       const lastMsg = session.messages[session.messages.length - 1]
-      if (lastMsg.role !== 'user') return
+      if (!isUserAuthoredMessage(lastMsg)) return
       set((state) => {
         const s = state.sessions.find((s) => s.id === sessionId)
-        if (s && s.messages.length > 0 && s.messages[s.messages.length - 1].role === 'user') {
+        const candidate = s?.messages[s.messages.length - 1]
+        if (s && s.messages.length > 0 && candidate && isUserAuthoredMessage(candidate)) {
           s.messages.pop()
           s.messageCount = s.messages.length
           s.loadedRangeStart = 0
@@ -2853,7 +2859,7 @@ export const useChatStore = create<ChatStore>()(
 
         let changed = false
         for (const msg of session.messages) {
-          if (msg.role !== 'user') continue
+          if (!isUserAuthoredMessage(msg)) continue
           if (typeof msg.content === 'string') continue
           if (!Array.isArray(msg.content)) continue
 

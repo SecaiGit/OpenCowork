@@ -5,6 +5,7 @@ import {
   stripSystemCommandTag,
   type SystemCommandSnapshot
 } from './commands/system-command'
+import { isUserAuthoredMessage } from './agent/context-message-classification'
 
 export interface ImageAttachment {
   id: string
@@ -169,7 +170,7 @@ export function extractEditableUserMessageDraft(
 }
 
 export function isEditableUserMessage(message: UnifiedMessage): boolean {
-  if (message.role !== 'user' || message.source === 'team') {
+  if (!isUserAuthoredMessage(message)) {
     return false
   }
 

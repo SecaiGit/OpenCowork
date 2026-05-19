@@ -19,6 +19,7 @@ import {
   withAuxiliaryResponsesRequestPolicy
 } from './responses-session-policy'
 import type { ProviderConfig, UnifiedMessage } from './types'
+import { isUserAuthoredMessage } from '../agent/context-message-classification'
 
 const AUTO_MODEL_LEGACY_SELECTOR_PROMPT = [
   'You are a strict model router.',
@@ -70,7 +71,7 @@ function extractTextContent(content: UnifiedMessage['content']): string {
 export function extractLatestUserInput(messages: UnifiedMessage[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message?.role !== 'user') continue
+    if (!message || !isUserAuthoredMessage(message)) continue
     const text = extractTextContent(message.content)
     if (text) return text
   }

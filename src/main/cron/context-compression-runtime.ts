@@ -2,6 +2,7 @@ import {
   classifyClaudeContextGate,
   dropOldestClaudeCompactRounds,
   emergencyShrinkClaudeContextMessages,
+  hasUserAuthoredClaudeMessageContent,
   runClaudeCompact,
   validateToolUseResultProtocol,
   type ClaudeCompactConfig,
@@ -83,14 +84,7 @@ function isProtocolValid(messages: MainRuntimeMessage[]): boolean {
 }
 
 function hasNonToolResultUserContent(message: MainRuntimeMessage): boolean {
-  if (message.role !== 'user') return false
-  if (message.meta?.contextEmergencyShrink === true) return false
-  if (message.meta?.postCompactState === true) return false
-  if (message.meta?.compactSummary) return false
-  if (message.meta?.sessionMemoryCompact) return false
-  if (typeof message.meta?.streamingContinuation === 'object') return false
-  if (typeof message.content === 'string') return message.content.trim().length > 0
-  return message.content.some((block) => block.type !== 'tool_result')
+  return hasUserAuthoredClaudeMessageContent(message)
 }
 
 function hasContinuityAnchor(messages: MainRuntimeMessage[]): boolean {

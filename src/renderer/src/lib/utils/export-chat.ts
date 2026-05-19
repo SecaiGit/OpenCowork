@@ -1,7 +1,11 @@
-import type { ContentBlock } from '../api/types'
+import type { ContentBlock, UnifiedMessage } from '../api/types'
 import type { Session } from '../../stores/chat-store'
 import { getBillableInputTokens, getBillableTotalTokens } from '../format-tokens'
 import { parseSystemCommandTag } from '../commands/system-command'
+import {
+  isCompactSummaryContextMessage,
+  isGeneratedContextUserMessage
+} from '../agent/context-message-classification'
 
 function formatTextContent(text: string): string {
   const parsed = parseSystemCommandTag(text)
@@ -58,12 +62,23 @@ function contentToMarkdown(content: string | ContentBlock[]): string {
     .join('\n\n')
 }
 
+function isExportableMessage(message: UnifiedMessage): boolean {
+  if (message.role === 'system') return false
+  return !isGeneratedContextUserMessage(message) || isCompactSummaryContextMessage(message)
+}
+
+function getExportLabel(message: UnifiedMessage): string {
+  if (isCompactSummaryContextMessage(message)) return '## Context Compression'
+  return message.role === 'user' ? '## User' : '## Assistant'
+}
+
 export function sessionToMarkdown(session: Session): string {
   const lines: string[] = []
+  const exportableMessages = session.messages.filter(isExportableMessage)
   lines.push(`# ${session.title}`)
   lines.push('')
   lines.push(`- **Mode**: ${session.mode}`)
-  lines.push(`- **Messages**: ${session.messages.filter((m) => m.role !== 'system').length}`)
+  lines.push(`- **Messages**: ${exportableMessages.length}`)
   lines.push(`- **Created**: ${new Date(session.createdAt).toLocaleString()}`)
   lines.push(`- **Updated**: ${new Date(session.updatedAt).toLocaleString()}`)
   if (session.workingFolder) {
@@ -76,9 +91,8 @@ export function sessionToMarkdown(session: Session): string {
   lines.push('---')
   lines.push('')
 
-  for (const msg of session.messages) {
-    if (msg.role === 'system') continue
-    const label = msg.role === 'user' ? '## User' : '## Assistant'
+  for (const msg of exportableMessages) {
+    const label = getExportLabel(msg)
     const time = new Date(msg.createdAt).toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit'

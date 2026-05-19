@@ -23,6 +23,10 @@ import {
 import { dehydrateClaudeCompactPayloads, redactClaudeCompactText } from './payload'
 import { assertClaudeCompactSummarySafe, sanitizeMessagesForClaudeCompact } from './sanitizer'
 import {
+  hasUserAuthoredClaudeMessageContent,
+  isGeneratedClaudeContextUserMessage
+} from './synthetic-context'
+import {
   dropOldestClaudeCompactRounds,
   selectClaudeCompactRanges,
   selectClaudePartialCompactRanges,
@@ -32,12 +36,19 @@ import {
 
 export const MAX_CLAUDE_COMPACT_RETRIES = 3
 
+function getCompactHistoryRole(message: ClaudeCompactMessage): string {
+  if (isGeneratedClaudeContextUserMessage(message)) {
+    return 'GENERATED_CONTEXT'
+  }
+  return message.role.toUpperCase()
+}
+
 function serializeCompactMessages(messages: ClaudeCompactMessage[]): string {
   return messages
     .map((message) => {
       const content =
         typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
-      return `[${message.role.toUpperCase()}]: ${content}`
+      return `[${getCompactHistoryRole(message)}]: ${content}`
     })
     .join('\n\n')
 }
@@ -493,21 +504,8 @@ type EffectiveClaudeCompactSelection =
   | ClaudeCompactRangeSelection
   | ClaudePartialCompactRangeSelection
 
-function isSyntheticUserContextMessage(message: ClaudeCompactMessage): boolean {
-  return (
-    message.meta?.contextEmergencyShrink === true ||
-    message.meta?.postCompactState === true ||
-    !!message.meta?.compactSummary ||
-    !!message.meta?.sessionMemoryCompact ||
-    typeof message.meta?.streamingContinuation === 'object'
-  )
-}
-
 function hasNonToolResultUserContent(message: ClaudeCompactMessage): boolean {
-  if (message.role !== 'user') return false
-  if (isSyntheticUserContextMessage(message)) return false
-  if (typeof message.content === 'string') return message.content.trim().length > 0
-  return message.content.some((block) => block.type !== 'tool_result')
+  return hasUserAuthoredClaudeMessageContent(message)
 }
 
 function shouldPreferPartialSelection(
