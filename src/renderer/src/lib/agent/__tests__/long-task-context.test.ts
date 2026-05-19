@@ -94,6 +94,20 @@ function toolResult(id: string, content: ToolResultContent = 'ok'): ContentBlock
   return { type: 'tool_result', toolUseId: id, content }
 }
 
+function repeatedClosedToolExchangeMessages(count: number): UnifiedMessage[] {
+  const messages: UnifiedMessage[] = [message('user', 'inspect logs')]
+  for (let index = 0; index < count; index += 1) {
+    const toolId = `large-${index}`
+    messages.push(
+      message('assistant', [toolUse(toolId)]),
+      message('user', [toolResult(toolId, `large payload ${index}\n`.repeat(1_000))]),
+      message('assistant', `large log ${index} read complete`)
+    )
+  }
+  messages.push(message('user', 'current task anchor: finish the fix'))
+  return messages
+}
+
 function serializeToolResultContent(content: ToolResultContent): string {
   return typeof content === 'string' ? content : JSON.stringify(content)
 }
@@ -547,6 +561,19 @@ describe('runAgentLoop context gate', () => {
     expect(providerSend).not.toHaveBeenCalled()
     expect(formatMessages).toHaveBeenCalled()
     expect(formatTools).toHaveBeenCalledWith(largeTools)
+    const errorEvent = events.find((event) => event.type === 'error')
+    expect(errorEvent).toMatchObject({
+      type: 'error',
+      errorType: 'hard_context_limit_exceeded',
+      error: expect.objectContaining({
+        message: expect.stringContaining('Context gate blocked model request')
+      })
+    })
+    const errorMessage =
+      (errorEvent as Extract<AgentEvent, { type: 'error' }> | undefined)?.error.message ?? ''
+    expect(errorMessage).toEqual(expect.stringContaining('input='))
+    expect(errorMessage).toEqual(expect.stringContaining('context='))
+    expect(errorMessage).toEqual(expect.stringContaining('reservedOutput='))
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -639,6 +666,68 @@ describe('runAgentLoop context gate', () => {
       ])
     )
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
+  })
+
+  it('does not emit a shrink event when provider overflow has no compressible history', async () => {
+    const events: AgentEvent[] = []
+    const abortController = new AbortController()
+    const providerSend = vi.fn(async function* () {
+      yield {
+        type: 'error',
+        error: { message: 'maximum context length exceeded', type: 'http_400' }
+      }
+    })
+
+    vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+    for await (const event of runAgentLoop(
+      [message('user', 'current task anchor only')],
+      {
+        maxIterations: 1,
+        provider: providerConfig,
+        tools: [],
+        systemPrompt: 'system',
+        signal: abortController.signal,
+        contextCompression: {
+          config: {
+            enabled: true,
+            contextLength: 200_000,
+            threshold: 0.8,
+            strategyId: 'claude-code-compact-v1',
+            reservedOutputBudget: 20_000
+          },
+          compressFn: async (input) => input
+        }
+      },
+      {
+        sessionId: 'session-1',
+        workingFolder: 'C:/projects/OpenCowork',
+        signal: abortController.signal,
+        ipc: {
+          invoke: vi.fn(),
+          send: vi.fn(),
+          on: vi.fn(() => () => {})
+        }
+      },
+      undefined
+    )) {
+      events.push(event)
+    }
+
+    expect(providerSend).toHaveBeenCalledTimes(1)
+    expect(events.some((event) => event.type === 'context_compression_deferred')).toBe(false)
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          errorType: 'hard_context_limit_exceeded',
+          error: expect.objectContaining({
+            message: 'maximum context length exceeded'
+          })
+        }),
+        expect.objectContaining({ type: 'loop_end', reason: 'error' })
+      ])
+    )
   })
 
   it('shrinks history and retries once when the provider reports context overflow before streaming', async () => {
@@ -875,27 +964,31 @@ describe('runAgentLoop context gate', () => {
     expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'completed' })
   })
 
-  it('does not fall back to ordinary retry when provider overflow persists after recovery', async () => {
+  it('keeps shrinking before streaming when provider overflow persists after recovery', async () => {
     vi.useFakeTimers()
     try {
       const events: AgentEvent[] = []
+      const sentRequests: UnifiedMessage[][] = []
       const abortController = new AbortController()
       const providerSend = vi
         .fn()
-        .mockImplementationOnce(async function* () {
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
           yield {
             type: 'error',
             error: { message: 'maximum context length exceeded', type: 'http_400' }
           }
         })
-        .mockImplementationOnce(async function* () {
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
           yield {
             type: 'error',
             error: new Error('prompt is too long for this model')
           }
         })
-        .mockImplementation(async function* () {
-          yield { type: 'text_delta', text: 'should not retry again' }
+        .mockImplementationOnce(async function* (messages: UnifiedMessage[]) {
+          sentRequests.push(messages.map((item) => ({ ...item })))
+          yield { type: 'text_delta', text: 'continued after second shrink' }
           yield { type: 'message_end' }
         })
 
@@ -905,9 +998,13 @@ describe('runAgentLoop context gate', () => {
         for await (const event of runAgentLoop(
           [
             message('user', 'inspect logs'),
-            message('assistant', [toolUse('large')]),
-            message('user', [toolResult('large', 'warning line\n'.repeat(20_000))]),
-            message('assistant', 'large log read complete')
+            message('assistant', [toolUse('large-a')]),
+            message('user', [toolResult('large-a', 'first large payload\n'.repeat(20_000))]),
+            message('assistant', 'first large log read complete'),
+            message('assistant', [toolUse('large-b')]),
+            message('user', [toolResult('large-b', 'second large payload\n'.repeat(20_000))]),
+            message('assistant', 'second large log read complete'),
+            message('user', 'current task anchor: finish the fix')
           ],
           {
             maxIterations: 1,
@@ -945,16 +1042,100 @@ describe('runAgentLoop context gate', () => {
       await vi.runAllTimersAsync()
       await collect
 
-      expect(providerSend).toHaveBeenCalledTimes(2)
+      expect(providerSend).toHaveBeenCalledTimes(3)
+      expect(JSON.stringify(sentRequests[0])).toContain('first large payload')
+      expect(JSON.stringify(sentRequests[0])).toContain('second large payload')
+      expect(JSON.stringify(sentRequests[1])).not.toContain('first large payload')
+      expect(JSON.stringify(sentRequests[1])).toContain('second large payload')
+      expect(JSON.stringify(sentRequests[2])).not.toContain('first large payload')
+      expect(JSON.stringify(sentRequests[2])).not.toContain('second large payload')
+      expect(JSON.stringify(sentRequests[2])).toContain('current task anchor: finish the fix')
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'text_delta',
+            text: 'continued after second shrink'
+          }),
+          expect.objectContaining({ type: 'loop_end', reason: 'completed' })
+        ])
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'error' })])
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('caps repeated pre-stream overflow shrinking', async () => {
+    vi.useFakeTimers()
+    try {
+      const events: AgentEvent[] = []
+      const sentRequests: UnifiedMessage[][] = []
+      const abortController = new AbortController()
+      const providerSend = vi.fn(async function* (messages: UnifiedMessage[]) {
+        sentRequests.push(messages.map((item) => ({ ...item })))
+        yield {
+          type: 'error',
+          error: { message: 'maximum context length exceeded', type: 'http_400' }
+        }
+      })
+
+      vi.mocked(createProvider).mockReturnValue({ sendMessage: providerSend } as never)
+
+      const collect = (async () => {
+        for await (const event of runAgentLoop(
+          repeatedClosedToolExchangeMessages(12),
+          {
+            maxIterations: 1,
+            provider: providerConfig,
+            tools: [],
+            systemPrompt: 'system',
+            signal: abortController.signal,
+            contextCompression: {
+              config: {
+                enabled: true,
+                contextLength: 200_000,
+                threshold: 0.8,
+                strategyId: 'claude-code-compact-v1',
+                reservedOutputBudget: 20_000
+              },
+              compressFn: async (input) => input
+            }
+          },
+          {
+            sessionId: 'session-1',
+            workingFolder: 'C:/projects/OpenCowork',
+            signal: abortController.signal,
+            ipc: {
+              invoke: vi.fn(),
+              send: vi.fn(),
+              on: vi.fn(() => () => {})
+            }
+          },
+          undefined
+        )) {
+          events.push(event)
+        }
+      })()
+
+      await vi.runAllTimersAsync()
+      await collect
+
+      expect(providerSend).toHaveBeenCalledTimes(9)
+      expect(JSON.stringify(sentRequests.at(-1))).toContain('current task anchor: finish the fix')
       expect(events).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             type: 'error',
-            errorType: 'hard_context_limit_exceeded'
-          })
+            errorType: 'hard_context_limit_exceeded',
+            error: expect.objectContaining({
+              message: expect.stringContaining('8 recovery shrink attempts')
+            })
+          }),
+          expect.objectContaining({ type: 'loop_end', reason: 'error' })
         ])
       )
-      expect(events.at(-1)).toMatchObject({ type: 'loop_end', reason: 'error' })
     } finally {
       vi.useRealTimers()
     }

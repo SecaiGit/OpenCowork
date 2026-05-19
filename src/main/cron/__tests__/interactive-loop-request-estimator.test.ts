@@ -37,7 +37,7 @@ function compressionConfig(): NonNullable<
 describe('main interactive agent loop request estimator', () => {
   it('counts OpenAI Chat requestOverrides.body when gating the next provider request', async () => {
     const abortController = new AbortController()
-    const events: Array<{ type?: string; errorType?: string; reason?: string }> = []
+    const events: Array<{ type?: string; errorType?: string; reason?: string; error?: Error }> = []
 
     for await (const event of runInteractiveAgentLoop(
       baseMessages(),
@@ -69,6 +69,17 @@ describe('main interactive agent loop request estimator', () => {
     }
 
     expect(events.some((event) => event.type === 'iteration_start')).toBe(false)
+    const errorEvent = events.find((event) => event.type === 'error')
+    expect(errorEvent).toMatchObject({
+      type: 'error',
+      errorType: 'hard_context_limit_exceeded',
+      error: expect.objectContaining({
+        message: expect.stringContaining('Context gate blocked model request')
+      })
+    })
+    expect(errorEvent?.error?.message ?? '').toEqual(expect.stringContaining('input='))
+    expect(errorEvent?.error?.message ?? '').toEqual(expect.stringContaining('context='))
+    expect(errorEvent?.error?.message ?? '').toEqual(expect.stringContaining('reservedOutput='))
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

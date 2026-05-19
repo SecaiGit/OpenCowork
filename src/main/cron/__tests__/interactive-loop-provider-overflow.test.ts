@@ -50,6 +50,56 @@ function overflowRecoveryMessages(): InteractiveLoopMessages {
   ]
 }
 
+function repeatedOverflowRecoveryMessages(count = 2): InteractiveLoopMessages {
+  const messages: InteractiveLoopMessages = [
+    {
+      id: 'old-user',
+      role: 'user',
+      content: 'old task context',
+      createdAt: 1
+    }
+  ]
+
+  for (let index = 0; index < count; index += 1) {
+    const toolId = `old-tool-${index}`
+    messages.push(
+      {
+        id: `old-tool-use-${index}`,
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: toolId, name: 'Read', input: { file: `old-${index}.txt` } }],
+        createdAt: index * 3 + 2
+      },
+      {
+        id: `old-tool-result-${index}`,
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: toolId,
+            content: `${index === 0 ? 'first' : index === 1 ? 'second' : `old ${index}`} old payload`
+          }
+        ],
+        createdAt: index * 3 + 3
+      },
+      {
+        id: `old-assistant-${index}`,
+        role: 'assistant',
+        content: `old task ${index} done`,
+        createdAt: index * 3 + 4
+      }
+    )
+  }
+
+  messages.push({
+    id: 'current-user',
+    role: 'user',
+    content: 'current task anchor',
+    createdAt: count * 3 + 2
+  })
+
+  return messages
+}
+
 function contextCompression(): NonNullable<InteractiveLoopConfig['contextCompression']> {
   return {
     config: {
@@ -203,6 +253,120 @@ describe('main interactive agent loop provider overflow recovery', () => {
       )
       expect(events).not.toEqual(
         expect.arrayContaining([expect.objectContaining({ type: 'error' })])
+      )
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps shrinking before streaming when provider overflow persists after recovery', async () => {
+    const server = await startProviderServer(({ attempt, res }) => {
+      if (attempt <= 2) {
+        res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' })
+        res.end('maximum context length exceeded')
+        return
+      }
+      writeOpenAIChatTextResponse(res, 'continued after repeated overflow recovery')
+    })
+
+    try {
+      const events = await runLoopWithMessages({
+        baseUrl: server.baseUrl,
+        messages: repeatedOverflowRecoveryMessages(),
+        compression: contextCompression()
+      })
+
+      expect(server.requestBodies).toHaveLength(3)
+      expect(server.requestBodies[0]).toContain('first old payload')
+      expect(server.requestBodies[0]).toContain('second old payload')
+      expect(server.requestBodies[1]).not.toContain('first old payload')
+      expect(server.requestBodies[1]).toContain('second old payload')
+      expect(server.requestBodies[2]).not.toContain('first old payload')
+      expect(server.requestBodies[2]).not.toContain('second old payload')
+      expect(server.requestBodies[2]).toContain('current task anchor')
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'text_delta',
+            text: 'continued after repeated overflow recovery'
+          }),
+          expect.objectContaining({ type: 'loop_end', reason: 'completed' })
+        ])
+      )
+      expect(events).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: 'error' })])
+      )
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('caps repeated pre-stream overflow shrinking', async () => {
+    const server = await startProviderServer(({ res }) => {
+      res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' })
+      res.end('maximum context length exceeded')
+    })
+
+    try {
+      const events = await runLoopWithMessages({
+        baseUrl: server.baseUrl,
+        messages: repeatedOverflowRecoveryMessages(12),
+        compression: contextCompression()
+      })
+
+      expect(server.requestBodies).toHaveLength(9)
+      expect(server.requestBodies.at(-1)).toContain('current task anchor')
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'error',
+            errorType: 'hard_context_limit_exceeded',
+            error: expect.objectContaining({
+              message: expect.stringContaining('8 recovery shrink attempts')
+            })
+          }),
+          expect.objectContaining({ type: 'loop_end', reason: 'error' })
+        ])
+      )
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('does not emit a shrink event when provider overflow has no compressible history', async () => {
+    const server = await startProviderServer(({ res }) => {
+      res.writeHead(413, { 'Content-Type': 'text/plain', Connection: 'close' })
+      res.end('maximum context length exceeded')
+    })
+
+    try {
+      const events = await runLoopWithMessages({
+        baseUrl: server.baseUrl,
+        messages: [
+          {
+            id: 'current-user',
+            role: 'user',
+            content: 'current task anchor only',
+            createdAt: 1
+          }
+        ],
+        compression: contextCompression()
+      })
+
+      expect(server.requestBodies).toHaveLength(1)
+      expect(events.some((event) => event.type === 'context_compression_deferred')).toBe(false)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'error',
+            errorType: 'hard_context_limit_exceeded'
+          }),
+          expect.objectContaining({ type: 'loop_end', reason: 'error' })
+        ])
+      )
+      const errorEvent = events.find((event) => event.type === 'error')
+      expect(String((errorEvent as { error?: Error } | undefined)?.error?.message ?? '')).toContain(
+        'maximum context length exceeded'
       )
     } finally {
       await server.close()

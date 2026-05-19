@@ -54,6 +54,7 @@ const BASH_RESULT_PREVIEW_LINES = 120
 const BASH_IMPORTANT_LINE_LIMIT = 80
 // One initial attempt plus at least five retries for retryable upstream failures.
 const MAX_PROVIDER_RETRIES = 6
+const MAX_CONTEXT_OVERFLOW_RECOVERY_ATTEMPTS = 8
 const BASE_RETRY_DELAY_MS = 1_500
 const PROMPTS_DIR = path.join(os.homedir(), '.open-cowork', 'prompts')
 const AGENTS_DIR = path.join(os.homedir(), '.open-cowork', 'agents')
@@ -3959,6 +3960,12 @@ function createContextGateError(args: {
   )
 }
 
+function createContextOverflowRecoveryLimitError(attempts: number): Error {
+  return new Error(
+    `Context overflow persisted after ${attempts} recovery shrink attempts; fixed request overhead or the current task may be too large for the model window.`
+  )
+}
+
 function estimateSerializedRequestTokens(value: unknown): number {
   try {
     return Math.ceil(JSON.stringify(value).length / 4)
@@ -4641,6 +4648,7 @@ async function* runAgentLoop(
     let assistantUsage: TokenUsage | undefined
     let sendAttempt = 0
     let contextOverflowRecoveryUsed = false
+    let contextOverflowRecoveryAttempts = 0
     let contextOverflowRecoveryRetryPending = false
     while (sendAttempt < MAX_PROVIDER_RETRIES || contextOverflowRecoveryRetryPending) {
       contextOverflowRecoveryRetryPending = false
@@ -5041,11 +5049,21 @@ async function* runAgentLoop(
         }
         const providerError = toProviderError(err)
         const providerContextOverflow = isProviderContextOverflowError(err)
-        if (contextOverflowRecoveryUsed) {
+        const contextOverflowRecoveryLimitReached =
+          providerContextOverflow &&
+          !streamedContent &&
+          contextOverflowRecoveryAttempts >= MAX_CONTEXT_OVERFLOW_RECOVERY_ATTEMPTS
+        if (
+          contextOverflowRecoveryUsed &&
+          (!providerContextOverflow || streamedContent || contextOverflowRecoveryLimitReached)
+        ) {
+          const error = contextOverflowRecoveryLimitReached
+            ? createContextOverflowRecoveryLimitError(contextOverflowRecoveryAttempts)
+            : providerError
           yield* settleInterruptedStream(providerError.message)
           yield {
             type: 'error',
-            error: providerError,
+            error,
             ...(providerContextOverflow ? { errorType: 'hard_context_limit_exceeded' } : {})
           }
           yield buildLoopEndEvent('error')
@@ -5067,6 +5085,7 @@ async function* runAgentLoop(
 
           if (emergencyShrink.changed) {
             contextOverflowRecoveryUsed = true
+            contextOverflowRecoveryAttempts += 1
             rememberExternalizedUserInputs(
               conversationMessages,
               emergencyShrink.messages as unknown as UnifiedMessage[],

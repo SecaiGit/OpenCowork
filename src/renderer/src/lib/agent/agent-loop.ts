@@ -45,6 +45,7 @@ import {
 import { estimateRequestContextTokens } from './context-compression-routing'
 
 const MAX_PROVIDER_RETRIES = 3
+const MAX_CONTEXT_OVERFLOW_RECOVERY_ATTEMPTS = 8
 const BASE_RETRY_DELAY_MS = 1_500
 const DEFAULT_MAX_PARALLEL_TOOLS = 8
 const MAX_STREAMING_CONTINUATIONS = 2
@@ -104,6 +105,12 @@ function findRecentContextUsage(messages: UnifiedMessage[]): number {
 function createContextGateError(gate: ReturnType<typeof classifyClaudeContextGate>): Error {
   return new Error(
     `Context gate blocked model request: ${gate.reason}; input=${gate.inputTokens}; context=${gate.contextLength}; reservedOutput=${gate.reservedOutputTokens}`
+  )
+}
+
+function createContextOverflowRecoveryLimitError(attempts: number): Error {
+  return new Error(
+    `Context overflow persisted after ${attempts} recovery shrink attempts; fixed request overhead or the current task may be too large for the model window.`
   )
 }
 
@@ -463,6 +470,7 @@ export async function* runAgentLoop(
       let sendAttempt = 0
       let accountFailoverUsed = false
       let contextOverflowRecoveryUsed = false
+      let contextOverflowRecoveryAttempts = 0
       let contextOverflowRecoveryRetryPending = false
       let providerResponseId: string | undefined
       let assistantUsage: UnifiedMessage['usage']
@@ -879,16 +887,26 @@ export async function* runAgentLoop(
           }
           const providerError = toProviderError(err)
           const providerContextOverflow = isProviderContextOverflowError(err)
-          if (contextOverflowRecoveryUsed) {
+          const contextOverflowRecoveryLimitReached =
+            providerContextOverflow &&
+            !streamedContent &&
+            contextOverflowRecoveryAttempts >= MAX_CONTEXT_OVERFLOW_RECOVERY_ATTEMPTS
+          if (
+            contextOverflowRecoveryUsed &&
+            (!providerContextOverflow || streamedContent || contextOverflowRecoveryLimitReached)
+          ) {
+            const error = contextOverflowRecoveryLimitReached
+              ? createContextOverflowRecoveryLimitError(contextOverflowRecoveryAttempts)
+              : providerError
             yield* settleInterruptedStream(providerError.message)
             if (providerContextOverflow) {
               yield {
                 type: 'error',
-                error: providerError,
+                error,
                 errorType: 'hard_context_limit_exceeded'
               }
             } else {
-              yield { type: 'error', error: providerError }
+              yield { type: 'error', error }
             }
             yield buildLoopEndEvent('error')
             return
@@ -912,12 +930,7 @@ export async function* runAgentLoop(
               }
             }
           }
-          if (
-            config.contextCompression &&
-            !contextOverflowRecoveryUsed &&
-            !streamedContent &&
-            providerContextOverflow
-          ) {
+          if (config.contextCompression && !streamedContent && providerContextOverflow) {
             const cc = config.contextCompression
             const emergencyShrink = await emergencyShrinkClaudeContextMessages({
               messages: conversationMessages as unknown as ClaudeCompactMessage[],
@@ -932,6 +945,7 @@ export async function* runAgentLoop(
 
             if (emergencyShrink.changed) {
               contextOverflowRecoveryUsed = true
+              contextOverflowRecoveryAttempts += 1
               conversationMessages = [...(emergencyShrink.messages as unknown as UnifiedMessage[])]
               lastObservedContextTokens = 0
               estimatedReplayTokens = estimateProviderRequestTokens(conversationMessages, config)
