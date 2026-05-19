@@ -257,6 +257,7 @@ export interface ClaudeCompactResult {
   messagesSummarized?: number
   payloadsCompacted?: number
   partialCompact?: boolean
+  messagesChanged?: boolean
   reason?: ClaudeCompactSkipReason
 }
 

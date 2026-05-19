@@ -2451,8 +2451,8 @@ async function canUseSidecarForAgentRun(args: {
       compression: args.compression
     })
   ) {
-    // Sidecar/main runtime still does not support compression yet; keep the
-    // renderer loop as a threshold-triggered exception when compression is needed.
+    // Keep the renderer loop as a threshold-triggered exception when compression
+    // is already needed before the run starts.
     return false
   }
 
@@ -2467,7 +2467,7 @@ async function canUseSidecarForAgentRun(args: {
     maxIterations: args.maxIterations,
     forceApproval: args.forceApproval,
     maxParallelTools,
-    compression: null,
+    compression: args.compression,
     sessionMode: 'agent',
     planMode: args.isPlanMode,
     planModeAllowedTools: args.isPlanMode ? [...PLAN_MODE_ALLOWED_TOOLS] : undefined
@@ -3822,8 +3822,8 @@ export function useChatActions(): {
                 .getState()
                 .getSessionMessagesForRequest(sessionId, {
                   includeTrailingAssistantPlaceholder: !!existingAssistantMessage,
-                  // Sidecar/main runtime still does not support compression, so keep
-                  // the renderer loop exception only after threshold routing says it is needed.
+                  // Keep the renderer loop exception only after threshold routing says it
+                  // is needed so in-renderer compaction can load the full safe history.
                   requestContextMaxMessages: null
                 })
               messagesToSend = ensureRequestContainsExpectedUserMessage(
@@ -3960,7 +3960,7 @@ export function useChatActions(): {
               maxIterations: DEFAULT_AGENT_MAX_ITERATIONS,
               forceApproval: false,
               maxParallelTools,
-              compression: null,
+              compression: compressionConfig,
               sessionMode: 'agent',
               planMode: isPlanMode,
               planModeAllowedTools: isPlanMode ? [...PLAN_MODE_ALLOWED_TOOLS] : undefined,

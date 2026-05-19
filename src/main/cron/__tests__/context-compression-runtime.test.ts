@@ -103,6 +103,44 @@ describe('main runtime context compression preflight', () => {
     expect(JSON.stringify(summarize.mock.calls[0])).not.toContain('sk-secret')
   })
 
+  it('uses the configured threshold when auto compacting before a main runtime request', async () => {
+    nextMessageId = 0
+    const thresholdConfig: MainRuntimeCompressionConfig = {
+      enabled: true,
+      contextLength: 100_000,
+      threshold: 0.5,
+      strategyId: 'claude-code-compact-v1',
+      reservedOutputBudget: 20_000
+    }
+    const summarize = vi.fn(async () => '<summary>Continue main runtime work after threshold compact.</summary>')
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a')]),
+      message('assistant', 'first result'),
+      { ...message('user', 'second task'), usage: { inputTokens: 45_000, outputTokens: 0, contextTokens: 45_000 } },
+      message('assistant', [toolUse('b')]),
+      message('user', [toolResult('b')]),
+      message('assistant', 'second result')
+    ]
+
+    const result = await maybeCompactMainRuntimeContext({
+      messages,
+      config: thresholdConfig,
+      trigger: 'auto',
+      summarize,
+      now: () => 123,
+      createId: (() => {
+        let id = 0
+        return () => `main-threshold-${++id}`
+      })()
+    })
+
+    expect(result.compressed).toBe(true)
+    expect(summarize).toHaveBeenCalledTimes(1)
+    expect(result.messages[0]?.meta?.compactBoundary?.preTokens).toBe(45_000)
+  })
+
   it('compacts early current-task substeps through shared partial compact fallback', async () => {
     nextMessageId = 0
     const summarize = vi.fn(async ({ userPrompt }: { userPrompt: string }) => {

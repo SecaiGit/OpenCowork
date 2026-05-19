@@ -46,23 +46,51 @@ function normalizePositiveInteger(value: number, fallback: number): number {
   return Math.max(1, Math.floor(value))
 }
 
+function normalizeRatio(value: number | undefined, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback
+  }
+
+  return Math.min(0.9, Math.max(0.3, value))
+}
+
 export function classifyClaudeContextGate(args: {
   inputTokens: number
-  config: Pick<ClaudeCompactConfig, 'enabled' | 'contextLength' | 'reservedOutputBudget'>
-  /** Token gap from autoCompactThreshold; does not read config.preCompressThreshold. */
+  config: Pick<
+    ClaudeCompactConfig,
+    'enabled' | 'contextLength' | 'threshold' | 'preCompressThreshold' | 'reservedOutputBudget'
+  >
   preCompressGapTokens?: number
 }): ClaudeContextGateResult {
   const inputTokens = normalizeNonNegativeInteger(args.inputTokens)
   const budget = getClaudeCompactBudget(args.config)
   const preCompressGapTokens = normalizePositiveInteger(args.preCompressGapTokens ?? 8_000, 8_000)
-  const preCompressThreshold = Math.max(1, budget.autoCompactThreshold - preCompressGapTokens)
+  const autoRatioThreshold = Math.floor(
+    budget.effectiveContextWindow * normalizeRatio(args.config.threshold, 0.8)
+  )
+  const autoCompactThreshold = Math.max(
+    1,
+    Math.min(autoRatioThreshold, budget.autoCompactThreshold)
+  )
+  const preRatioThreshold = Math.floor(
+    budget.effectiveContextWindow * normalizeRatio(args.config.preCompressThreshold, 0.65)
+  )
+  const preThresholdCandidates = [preRatioThreshold]
+  const preBufferThreshold = budget.effectiveContextWindow - 20_000
+  if (preBufferThreshold > 0) preThresholdCandidates.push(preBufferThreshold)
+  const gapThreshold = autoCompactThreshold - preCompressGapTokens
+  if (gapThreshold > 0) preThresholdCandidates.push(gapThreshold)
+  const preCompressThreshold = Math.max(
+    1,
+    Math.min(...preThresholdCandidates, Math.max(1, autoCompactThreshold - 1))
+  )
 
   const base = {
     inputTokens,
     contextLength: budget.contextLength,
     reservedOutputTokens: budget.reservedOutputTokens,
     effectiveContextWindow: budget.effectiveContextWindow,
-    autoCompactThreshold: budget.autoCompactThreshold,
+    autoCompactThreshold,
     preCompressThreshold
   }
 
@@ -92,7 +120,7 @@ export function classifyClaudeContextGate(args: {
     }
   }
 
-  if (inputTokens >= budget.autoCompactThreshold) {
+  if (inputTokens >= autoCompactThreshold) {
     return {
       ...base,
       kind: 'auto_compact',

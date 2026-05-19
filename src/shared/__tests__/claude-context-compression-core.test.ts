@@ -1205,12 +1205,12 @@ describe('shared Claude compact core', () => {
         kind: 'ok',
         blocking: false
       })
-      expect(classifyClaudeContextGate({ inputTokens: 160_000, config: gateConfig })).toMatchObject({
+      expect(classifyClaudeContextGate({ inputTokens: 120_000, config: gateConfig })).toMatchObject({
         kind: 'pre_compress',
         blocking: false,
         reason: 'near_auto_compact_threshold'
       })
-      expect(classifyClaudeContextGate({ inputTokens: 167_000, config: gateConfig })).toMatchObject({
+      expect(classifyClaudeContextGate({ inputTokens: 144_000, config: gateConfig })).toMatchObject({
         kind: 'auto_compact',
         blocking: false,
         reason: 'auto_compact_threshold_reached'
@@ -1263,50 +1263,52 @@ describe('shared Claude compact core', () => {
     })
 
     it('uses custom pre-compress gap tokens relative to auto-compact threshold', () => {
+      const gapConfig = { ...gateConfig, threshold: 0.9, preCompressThreshold: 0.9 }
       expect(
         classifyClaudeContextGate({
-          inputTokens: 164_000,
-          config: gateConfig,
+          inputTokens: 158_000,
+          config: gapConfig,
           preCompressGapTokens: 4_000
         })
       ).toMatchObject({
         kind: 'pre_compress',
         reason: 'near_auto_compact_threshold',
-        preCompressThreshold: 163_000
+        preCompressThreshold: 158_000
       })
       expect(
         classifyClaudeContextGate({
-          inputTokens: 162_999,
-          config: gateConfig,
+          inputTokens: 157_999,
+          config: gapConfig,
           preCompressGapTokens: 4_000
         })
       ).toMatchObject({
         kind: 'ok',
         reason: 'below_pre_compress_threshold',
-        preCompressThreshold: 163_000
+        preCompressThreshold: 158_000
       })
     })
 
     it('normalizes invalid pre-compress gap tokens to a minimum positive integer', () => {
+      const highPreConfig = { ...gateConfig, preCompressThreshold: 0.9 }
       expect(
         classifyClaudeContextGate({
-          inputTokens: 165_999,
-          config: gateConfig,
+          inputTokens: 143_998,
+          config: highPreConfig,
           preCompressGapTokens: 0
         })
       ).toMatchObject({
         kind: 'ok',
-        preCompressThreshold: 166_999
+        preCompressThreshold: 143_999
       })
       expect(
         classifyClaudeContextGate({
-          inputTokens: 165_999,
-          config: gateConfig,
+          inputTokens: 143_998,
+          config: highPreConfig,
           preCompressGapTokens: -10
         })
       ).toMatchObject({
         kind: 'ok',
-        preCompressThreshold: 166_999
+        preCompressThreshold: 143_999
       })
     })
 

@@ -387,11 +387,23 @@ function textifyInvalidToolBlock(block: ContentBlock, reason: string): ContentBl
   return block
 }
 
+function hasMixedToolResultUserContent(message: UnifiedMessage): boolean {
+  return (
+    message.role === 'user' &&
+    Array.isArray(message.content) &&
+    message.content.some((block) => block.type === 'tool_result') &&
+    message.content.some((block) => block.type !== 'tool_result')
+  )
+}
+
 export function repairToolUseResultProtocolForReplay(
   messages: UnifiedMessage[]
 ): ToolUseResultProtocolRepair {
   const issues = validateToolUseResultProtocol(messages).issues
-  if (issues.length === 0) return { messages, changed: false, issues }
+  const shouldSplitMixedToolResultMessages = messages.some(hasMixedToolResultUserContent)
+  if (issues.length === 0 && !shouldSplitMixedToolResultMessages) {
+    return { messages, changed: false, issues }
+  }
 
   const repaired: UnifiedMessage[] = []
   const seenToolUseIds = new Set<string>()

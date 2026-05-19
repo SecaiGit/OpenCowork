@@ -61,6 +61,7 @@ import {
 } from '../context-compression'
 import { compactToolResultForContext } from '../context-payload-compaction'
 import { formatPostCompactStateContext } from '../context-state-format'
+import { buildTranscriptStaticAnalysis } from '../../../components/chat/transcript-utils'
 
 let nextMessageId = 0
 
@@ -848,6 +849,34 @@ describe('validateToolUseResultProtocol', () => {
       expect.objectContaining({ type: 'tool_result', toolUseId: 'a', isError: true })
     ])
     expect(repaired.issues.map((issue) => issue.kind)).toContain('unanswered_tool_use')
+  })
+
+  it('splits mixed tool result user messages so tool output keeps tool-card rendering', () => {
+    const messages = [
+      message('user', 'inspect files'),
+      message('assistant', [toolUse('a')]),
+      message('user', [{ type: 'text', text: 'runtime note' }, toolResult('a', 'file contents')]),
+      message('assistant', 'done')
+    ]
+
+    expect(validateToolUseResultProtocol(messages)).toEqual({ valid: true, issues: [] })
+
+    const repaired = repairToolUseResultProtocolForReplay(messages)
+    const analysis = buildTranscriptStaticAnalysis(repaired.messages)
+
+    expect(repaired.changed).toBe(true)
+    expect(validateToolUseResultProtocol(repaired.messages)).toEqual({ valid: true, issues: [] })
+    expect(repaired.messages.map((item) => item.id)).toEqual([
+      'm-1',
+      'm-2',
+      'm-3',
+      'm-3-tool-repair-tail-1',
+      'm-4'
+    ])
+    expect(analysis.renderableMessageIds).not.toContain('m-3')
+    expect(analysis.toolResultsLookup.get('m-2')?.get('a')).toMatchObject({
+      content: 'file contents'
+    })
   })
 
   it('repairs user messages that contain only invalid tool blocks', () => {

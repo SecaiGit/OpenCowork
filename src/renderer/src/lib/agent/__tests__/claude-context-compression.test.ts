@@ -50,6 +50,7 @@ import {
   compressMessages,
   formatCompressionDiagnosticText,
   getCompressionStrategy,
+  mergeCompressedMessagesIntoConversation,
   shouldCompress
 } from '../context-compression'
 import { parseManualCompactCommand } from '../manual-compact-command'
@@ -607,6 +608,44 @@ describe('claude-code-compact-v1 engine', () => {
     )
   })
 
+  it('externalizes oversized preserved user input during manual compaction', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue('<summary>Older work was summarized.</summary>')
+    const oversizedInput = `# Exported conversation\n${'Tool Call record\n'.repeat(20_000)}`
+    const messages = [
+      message('user', 'first task'),
+      message('assistant', [toolUse('a')]),
+      message('user', [toolResult('a')]),
+      message('assistant', 'first result'),
+      message('user', oversizedInput),
+      message('assistant', 'acknowledged')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'manual',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    const serialized = JSON.stringify(result.messages)
+
+    expect(result.result.compressed).toBe(true)
+    expect(result.result.messagesChanged).toBe(true)
+    expect(serialized).toContain('[User input externalized for context budget]')
+    expect(serialized).not.toContain('Tool Call record\nTool Call record\nTool Call record')
+  })
+
   it('rejects unsafe summary output and leaves the original messages unchanged', async () => {
     vi.mocked(runSidecarTextRequest).mockResolvedValue(
       '<summary>-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----</summary>'
@@ -725,6 +764,51 @@ describe('claude-code-compact-v1 engine', () => {
     expect(result.messages.slice(-4).map((item) => item.id)).toEqual(['m-1', 'm-5', 'm-6', 'm-7'])
     expect(prompt).toContain('old file snapshot')
     expect(prompt).not.toContain('latest edit result')
+  })
+
+  it('merges partial compact results without restoring the compacted middle range', async () => {
+    vi.mocked(runSidecarTextRequest).mockResolvedValue(
+      '<summary>Old read step is complete. Continue with latest edit validation.</summary>'
+    )
+    const messages = [
+      message('user', 'implement the feature and keep going'),
+      message('assistant', [toolUse('read-old')]),
+      message('user', [toolResult('read-old', 'old file snapshot')]),
+      message('assistant', 'old read finished'),
+      message('assistant', [toolUse('edit-latest')]),
+      message('user', [toolResult('edit-latest', 'latest edit result')]),
+      message('assistant', 'continue with tests')
+    ]
+
+    const result = await compressMessages(
+      messages,
+      providerConfig,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'auto',
+      180_000,
+      {
+        enabled: true,
+        contextLength: 200_000,
+        threshold: 0.8,
+        strategyId: 'claude-code-compact-v1',
+        reservedOutputBudget: 20_000
+      }
+    )
+
+    const merged = mergeCompressedMessagesIntoConversation(messages, result.messages)
+
+    expect(merged?.map((item) => item.id)).toEqual([
+      result.messages[0]!.id,
+      result.messages[1]!.id,
+      'm-1',
+      'm-5',
+      'm-6',
+      'm-7'
+    ])
+    expect(JSON.stringify(merged)).not.toContain('old file snapshot')
   })
 
   it('resets prompt cache baseline after successful renderer Claude compaction', async () => {

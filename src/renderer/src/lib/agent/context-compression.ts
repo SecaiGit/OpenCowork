@@ -543,8 +543,9 @@ export function mergeCompressedMessagesIntoConversation(
   }
 
   const boundaryMessage = compressedMessages.find((message) => isCompactBoundaryMessage(message))
+  const boundaryMeta = boundaryMessage?.meta?.compactBoundary
   const preservedHeadId =
-    boundaryMessage?.meta?.compactBoundary?.preservedSegment?.headId ??
+    boundaryMeta?.preservedSegment?.headId ??
     findFallbackPreservedHeadId(compressedMessages, summaryIndex) ??
     null
 
@@ -552,6 +553,40 @@ export function mergeCompressedMessagesIntoConversation(
     compressedMessages.map((message, index) => [message.id, index])
   )
   const currentIndexById = new Map(currentMessages.map((message, index) => [message.id, index]))
+
+  const partialRange = boundaryMeta?.partialRange
+  if (partialRange) {
+    const indexedTailId = currentMessages[partialRange.tailStart]?.id
+    const tailAnchorId =
+      (indexedTailId && compressedIndexById.has(indexedTailId) && currentIndexById.has(indexedTailId)
+        ? indexedTailId
+        : null) ??
+      (() => {
+        const partialAnchorIndex = compressedIndexById.get(partialRange.anchorId) ?? -1
+        if (partialAnchorIndex < 0) return null
+        for (let index = partialAnchorIndex + 1; index < compressedMessages.length; index += 1) {
+          const candidateId = compressedMessages[index]?.id
+          if (candidateId && currentIndexById.has(candidateId)) return candidateId
+        }
+        return null
+      })()
+
+    if (!tailAnchorId) {
+      return compressedMessages
+    }
+
+    const compressedTailIndex = compressedIndexById.get(tailAnchorId) ?? -1
+    const currentTailIndex = currentIndexById.get(tailAnchorId) ?? -1
+
+    if (compressedTailIndex < 0 || currentTailIndex < 0) {
+      return compressedMessages
+    }
+
+    return [
+      ...compressedMessages.slice(0, compressedTailIndex),
+      ...currentMessages.slice(currentTailIndex)
+    ]
+  }
 
   const anchorId =
     (preservedHeadId &&

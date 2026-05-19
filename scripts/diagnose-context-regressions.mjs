@@ -66,6 +66,37 @@ if (routingBlocksAllEnabledCompression) {
   pass('compression routing only falls back to renderer loop near compression thresholds')
 }
 
+function findBuildSidecarAgentCalls(source) {
+  const calls = []
+  let searchIndex = 0
+  while (searchIndex < source.length) {
+    const callIndex = source.indexOf('buildSidecarAgentRunRequest({', searchIndex)
+    if (callIndex === -1) return calls
+    const openBraceIndex = source.indexOf('{', callIndex)
+    const closeBraceIndex = findMatchingBraceIndex(source, openBraceIndex)
+    if (closeBraceIndex === -1) return calls
+    calls.push(source.slice(callIndex, closeBraceIndex + 2))
+    searchIndex = closeBraceIndex + 1
+  }
+  return calls
+}
+
+const agentSidecarCalls = findBuildSidecarAgentCalls(chatActionsSource).filter((call) =>
+  /sessionMode\s*:\s*'agent'/.test(call)
+)
+const sidecarAgentNullCompression = agentSidecarCalls.some((call) =>
+  /compression\s*:\s*null/.test(call)
+)
+
+if (mainRuntimeSupportsCompression && sidecarAgentNullCompression) {
+  fail('agent sidecar requests drop context compression config', [
+    'src/renderer/src/hooks/use-chat-actions.ts passes compression: null to agent sidecar requests',
+    'forward compressionConfig/args.compression so sidecar runtime can compact during long runs'
+  ])
+} else {
+  pass('agent sidecar requests preserve context compression config')
+}
+
 const legacyCompressionEnabledNullHistoryPattern =
   /requestContextMaxMessages\s*=\s*settings\.contextCompressionEnabled[\s\S]*?\?\s*null\s*:\s*undefined/
 

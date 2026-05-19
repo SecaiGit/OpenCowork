@@ -10,6 +10,7 @@ import type {
 } from './context-compression'
 import {
   getClaudeCompactBudget,
+  guardClaudeSingleInputPayload,
   runClaudeCompact,
   sanitizeMessagesForClaudeCompact,
   type ClaudeCompactMessage,
@@ -103,6 +104,26 @@ function shouldClaudePreCompress(inputTokens: number, config: CompressionConfig)
   return inputTokens >= threshold && inputTokens < budget.autoCompactThreshold
 }
 
+function guardUserInputPayloadsForCompact(
+  messages: UnifiedMessage[],
+  config?: CompressionConfig | null
+): { messages: UnifiedMessage[]; changed: boolean; guardedCount: number } {
+  if (!config) return { messages, changed: false, guardedCount: 0 }
+
+  let changed = false
+  let guardedCount = 0
+  const nextMessages = messages.map((message) => {
+    const guarded = guardClaudeSingleInputPayload(message as unknown as ClaudeCompactMessage, { config })
+    if (!guarded.changed || guarded.reason !== 'single_input_too_large') return message
+
+    changed = true
+    guardedCount += 1
+    return { ...message, content: guarded.message.content as UnifiedMessage['content'] }
+  })
+
+  return { messages: changed ? nextMessages : messages, changed, guardedCount }
+}
+
 async function claudeCompressMessages(
   messages: UnifiedMessage[],
   providerConfig: ProviderConfig,
@@ -127,8 +148,9 @@ async function claudeCompressMessages(
     }
   }
 
+  const guardedInput = guardUserInputPayloadsForCompact(messages, config)
   const compacted = await runClaudeCompact({
-    messages: messages as unknown as ClaudeCompactMessage[],
+    messages: guardedInput.messages as unknown as ClaudeCompactMessage[],
     trigger,
     preTokens,
     config,
@@ -148,6 +170,15 @@ async function claudeCompressMessages(
     createId: nanoid,
     now: Date.now
   })
+
+  if (guardedInput.changed) {
+    compacted.result = {
+      ...compacted.result,
+      originalCount: messages.length,
+      payloadsCompacted: (compacted.result.payloadsCompacted ?? 0) + guardedInput.guardedCount,
+      messagesChanged: true
+    }
+  }
 
   if (compacted.result.compressed) {
     resetRendererPromptCacheBaseline(compacted.messages as unknown as UnifiedMessage[], providerConfig)
